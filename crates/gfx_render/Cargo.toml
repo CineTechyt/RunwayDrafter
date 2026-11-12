@@ -1,0 +1,22 @@
+[package]
+name = "gfx_render"
+description = "wgpu renderers for the 2D pattern canvas and the 3D PBR viewport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cad_core.workspace = true
+topology_sync.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+wgpu.workspace = true
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
+physics_xpbd.workspace = true
+avatar.workspace = true
+io_cad.workspace = true

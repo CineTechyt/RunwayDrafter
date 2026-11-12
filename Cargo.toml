@@ -1,0 +1,74 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/clo360_app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace.dependencies]
+# --- internal crates -------------------------------------------------------
+cad_core = { path = "crates/cad_core" }
+topology_sync = { path = "crates/topology_sync" }
+gfx_render = { path = "crates/gfx_render" }
+app_ui = { path = "crates/app_ui" }
+physics_xpbd = { path = "crates/physics_xpbd" }
+avatar = { path = "crates/avatar" }
+physics_collision = { path = "crates/physics_collision" }
+io_cad = { path = "crates/io_cad" }
+
+# --- math / data -----------------------------------------------------------
+glam = { version = "0.34", features = ["serde", "bytemuck"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+spade = "2"
+rayon = "1.10"
+serde_json = "1"
+# Inflates the compressed arrays of binary FBX files.
+miniz_oxide = "0.8"
+
+# --- gpu / windowing -------------------------------------------------------
+# egui_dock 0.21 pins the egui 0.36 line, which in turn pins wgpu 30 and
+# winit 0.30. Bump these four together.
+wgpu = "30"
+winit = "0.30.13"
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
+egui-winit = "0.36.2"
+egui_dock = "0.21.1"
+
+# --- runtime ---------------------------------------------------------------
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+pollster = "1"
+
+# Debug builds of the app are unusable if the dependencies (tessellation,
+# triangulation, wgpu validation) are unoptimised.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# The inner loops of meshing and simulation are ours, and need full
+# optimisation to be interactive in debug builds too.
+[profile.dev.package.physics_xpbd]
+opt-level = 3
+
+[profile.dev.package.topology_sync]
+opt-level = 3
+
+[profile.dev.package.avatar]
+opt-level = 3
+
+[profile.dev.package.physics_collision]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

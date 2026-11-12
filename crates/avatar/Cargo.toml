@@ -1,0 +1,15 @@
+[package]
+name = "avatar"
+description = "Parametric human body: morphing, tape measurements, measurement fitting and collision field"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+topology_sync.workspace = true
+physics_collision.workspace = true
+cad_core.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+rayon.workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "app_ui"
+description = "egui dock layout and panels (renderer-agnostic: viewports are egui textures)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cad_core.workspace = true
+topology_sync.workspace = true
+avatar.workspace = true
+io_cad.workspace = true
+glam.workspace = true
+egui.workspace = true
+egui_dock.workspace = true
+rfd = { version = "0.15", default-features = false, features = ["gtk3"] }

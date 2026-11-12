@@ -1,0 +1,26 @@
+[package]
+name = "physics_xpbd"
+description = "XPBD cloth solver: anisotropic strain, isometric bending, sewing; rayon CPU and wgpu compute backends"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["gpu"]
+# WGSL compute backend. Without it the crate has no GPU dependency at all.
+gpu = ["dep:wgpu"]
+
+[dependencies]
+cad_core.workspace = true
+topology_sync.workspace = true
+physics_collision.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+rayon.workspace = true
+log.workspace = true
+wgpu = { workspace = true, optional = true }
+
+[dev-dependencies]
+pollster.workspace = true
+avatar.workspace = true

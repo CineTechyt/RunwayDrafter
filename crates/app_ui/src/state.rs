@@ -1,0 +1,438 @@
+//! State shared between panels, and the data the UI hands back each frame.
+
+use avatar::{BodyParams, FitReport, Measure, Measurements, PoseParams};
+use cad_core::{DocumentChange, FabricId, PieceId};
+use topology_sync::{SolverSettings, SolverStats};
+
+use crate::viewport::ViewportInput;
+
+/// The `egui` textures the two viewports are rendered into.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewportTextures {
+    pub canvas: egui::TextureId,
+    pub scene: egui::TextureId,
+}
+
+/// What the garment's surface shows in the 3D view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SurfaceView {
+    #[default]
+    Fabric,
+    /// Heatmap of how far the fabric is stretched.
+    Strain,
+    /// Heatmap of the clearance between fabric and body.
+    Fit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewOptions {
+    pub show_grid: bool,
+    pub show_mesh: bool,
+    pub show_seam_allowance: bool,
+    pub surface: SurfaceView,
+    /// Stretch shown as fully red in the strain map, in percent.
+    pub strain_limit_percent: f32,
+    /// Clearance shown as fully blue in the fit map, in millimetres.
+    pub fit_range_mm: f32,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        Self {
+            show_grid: true,
+            show_mesh: false,
+            show_seam_allowance: true,
+            surface: SurfaceView::Fabric,
+            strain_limit_percent: 10.0,
+            fit_range_mm: 40.0,
+        }
+    }
+}
+
+/// File formats the application can write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    /// 2D pattern, DXF-AAMA.
+    DxfAama,
+    /// 2D pattern, DXF-ASTM.
+    DxfAstm,
+    /// Draped garment, Wavefront OBJ (+ MTL).
+    Obj,
+    /// Draped garment, binary FBX.
+    Fbx,
+}
+
+impl ExportFormat {
+    pub const ALL: [Self; 4] = [Self::DxfAama, Self::DxfAstm, Self::Obj, Self::Fbx];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DxfAama => "Pattern · DXF-AAMA",
+            Self::DxfAstm => "Pattern · DXF-ASTM",
+            Self::Obj => "Garment 3D · OBJ",
+            Self::Fbx => "Garment 3D · FBX",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::DxfAama | Self::DxfAstm => "dxf",
+            Self::Obj => "obj",
+            Self::Fbx => "fbx",
+        }
+    }
+}
+
+/// Units scale mode when importing pattern vectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScaleMode {
+    #[default]
+    Auto,
+    Millimetres,
+    Points72Dpi,
+    Pixels96Dpi,
+    Custom,
+}
+
+impl ScaleMode {
+    pub const ALL: [Self; 5] = [
+        Self::Auto,
+        Self::Millimetres,
+        Self::Points72Dpi,
+        Self::Pixels96Dpi,
+        Self::Custom,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (from file units)",
+            Self::Millimetres => "1:1 Millimetres",
+            Self::Points72Dpi => "72 DPI / Points (standard PDF)",
+            Self::Pixels96Dpi => "96 DPI / Pixels (standard SVG)",
+            Self::Custom => "Custom factor",
+        }
+    }
+}
+
+/// The pattern import inspector state (PDF & SVG).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternImportState {
+    pub window_open: bool,
+    pub file_path: String,
+    pub selected_piece_index: usize,
+    pub scale_mode: ScaleMode,
+    pub custom_scale: f32,
+    pub flip_y: bool,
+    pub default_allowance_mm: f32,
+    pub pattern: Option<io_cad::ImportedPattern>,
+    pub status: Option<Result<String, String>>,
+    pub replace_project: bool,
+}
+
+impl Default for PatternImportState {
+    fn default() -> Self {
+        Self {
+            window_open: false,
+            file_path: String::new(),
+            selected_piece_index: 0,
+            scale_mode: ScaleMode::Auto,
+            custom_scale: 1.0,
+            flip_y: true,
+            default_allowance_mm: 10.0,
+            pattern: None,
+            status: None,
+            replace_project: true,
+        }
+    }
+}
+
+/// The import/export window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IoState {
+    pub window_open: bool,
+    /// Avatar file to import (.obj, .gltf, .glb, .fbx).
+    pub avatar_path: String,
+    pub export_path: String,
+    pub export_format: ExportFormat,
+    /// Size written into DXF files.
+    pub sample_size: String,
+    /// 3D export: lay the UVs out like the 2D pattern instead of per
+    /// fabric tile.
+    pub pattern_uvs: bool,
+    /// An imported avatar replaces the built-in one.
+    pub avatar_imported: bool,
+    /// Outcome of the last import or export: `Ok(message)` or `Err(why)`.
+    pub status: Option<Result<String, String>>,
+}
+
+impl Default for IoState {
+    fn default() -> Self {
+        Self {
+            window_open: false,
+            avatar_path: String::new(),
+            export_path: "garment".to_owned(),
+            export_format: ExportFormat::DxfAama,
+            sample_size: "M".to_owned(),
+            pattern_uvs: false,
+            avatar_imported: false,
+            status: None,
+        }
+    }
+}
+
+/// Figures shown in the status bar; filled in by the application.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SceneStats {
+    pub vertices: usize,
+    pub triangles: usize,
+    pub stitches: usize,
+    pub frame_ms: f32,
+    pub backend: String,
+}
+
+/// Play/pause state and frame counter of the simulation timeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Timeline {
+    pub playing: bool,
+    pub frame: u32,
+    pub end_frame: u32,
+    /// Simulation steps per second.
+    pub fps: f32,
+    pub looping: bool,
+    accumulator: f32,
+}
+
+impl Default for Timeline {
+    fn default() -> Self {
+        Self {
+            playing: false,
+            frame: 0,
+            end_frame: 240,
+            fps: 30.0,
+            looping: false,
+            accumulator: 0.0,
+        }
+    }
+}
+
+impl Timeline {
+    /// Most steps taken in one rendered frame; avoids a spiral of death when
+    /// rendering is slower than the simulation rate.
+    const MAX_STEPS_PER_FRAME: u32 = 4;
+
+    /// Fixed step length in seconds.
+    pub fn step_seconds(&self) -> f32 {
+        1.0 / self.fps.max(1.0)
+    }
+
+    pub fn seconds(&self) -> f32 {
+        self.frame as f32 * self.step_seconds()
+    }
+
+    pub fn toggle(&mut self) {
+        if !self.playing && self.frame >= self.end_frame {
+            self.frame = 0;
+        }
+        self.playing = !self.playing;
+        self.accumulator = 0.0;
+    }
+
+    pub fn rewind(&mut self) {
+        self.frame = 0;
+        self.accumulator = 0.0;
+    }
+
+    pub fn stop(&mut self) {
+        self.playing = false;
+        self.rewind();
+    }
+
+    /// Advances by wall-clock time `dt` and returns how many fixed simulation
+    /// steps are due.
+    pub fn advance(&mut self, dt: f32) -> u32 {
+        if !self.playing {
+            return 0;
+        }
+        let step = self.step_seconds();
+        self.accumulator = (self.accumulator + dt).min(step * Self::MAX_STEPS_PER_FRAME as f32);
+        let mut steps = 0;
+        while self.accumulator >= step {
+            self.accumulator -= step;
+            if self.frame >= self.end_frame {
+                if self.looping {
+                    self.frame = 0;
+                } else {
+                    self.playing = false;
+                    break;
+                }
+            }
+            self.frame += 1;
+            steps += 1;
+        }
+        steps
+    }
+}
+
+/// Simulation controls shared between the UI and the application.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimulationState {
+    pub settings: SolverSettings,
+    /// Requested mesh resolution in mm. The application re-meshes (and
+    /// resets the drape) when this differs from the current mesh.
+    pub particle_distance: f32,
+    /// Whether the GPU compute backend can be selected.
+    pub gpu_available: bool,
+    /// Reported by the solver after every step.
+    pub stats: SolverStats,
+}
+
+impl SimulationState {
+    /// Coarse grid for drafting: fast, soft folds.
+    pub const DRAFT_MM: f32 = 20.0;
+    pub const MEDIUM_MM: f32 = 10.0;
+    /// Fine grid for final folds: 16× the particles of the draft grid.
+    pub const FINE_MM: f32 = 5.0;
+}
+
+impl Default for SimulationState {
+    fn default() -> Self {
+        Self {
+            settings: SolverSettings::default(),
+            particle_distance: Self::DRAFT_MM,
+            gpu_available: false,
+            stats: SolverStats::default(),
+        }
+    }
+}
+
+/// The avatar as the UI sees it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AvatarState {
+    /// Edited directly by the build sliders; the application rebuilds the
+    /// body whenever this changes.
+    pub params: BodyParams,
+    pub pose: PoseParams,
+    /// Tape measurements the body must have, in metres, indexed by
+    /// `Measure as usize`. The application solves the shape so that all of
+    /// them hold at once and keeps them through later edits.
+    pub targets: [Option<f32>; Measure::ALL.len()],
+    /// A slider or field is being dragged: preview only, solve on release.
+    pub dragging: bool,
+    /// Result of the last solve, if any targets are set.
+    pub fit: Option<FitReport>,
+    /// Arm and leg angles the body was modelled with, in degrees.
+    pub modelled_angles: (f32, f32),
+    /// Taken off the current body by the application.
+    pub measurements: Measurements,
+    pub window_open: bool,
+    /// False if the body model could not be loaded (placeholder avatar).
+    pub available: bool,
+}
+
+impl Default for AvatarState {
+    fn default() -> Self {
+        Self {
+            params: BodyParams::female(),
+            pose: PoseParams::default(),
+            targets: [None; Measure::ALL.len()],
+            dragging: false,
+            fit: None,
+            modelled_angles: (30.0, 5.0),
+            measurements: Measurements::default(),
+            window_open: true,
+            available: false,
+        }
+    }
+}
+
+/// Selection, view options and timeline: UI state that outlives a frame and
+/// that the application reads as well.
+#[derive(Debug, Clone, Default)]
+pub struct EditorState {
+    pub avatar: AvatarState,
+    pub io: IoState,
+    pub pattern_import: PatternImportState,
+    pub file_browser: crate::file_browser::FileBrowserState,
+    pub simulation: SimulationState,
+    pub selected_piece: Option<PieceId>,
+    pub selected_edge: Option<cad_core::EdgeRef>,
+    pub sewing_mode: bool,
+    pub sewing_select_b: bool,
+    pub sewing_edges_a: Vec<cad_core::EdgeRef>,
+    pub sewing_edges_b: Vec<cad_core::EdgeRef>,
+    pub sewing_reversed: bool,
+    pub selected_fabric: Option<FabricId>,
+    pub view: ViewOptions,
+    pub timeline: Timeline,
+    pub stats: SceneStats,
+    /// Labels of the next undo/redo steps, for the Edit menu.
+    pub undo_label: Option<String>,
+    pub redo_label: Option<String>,
+}
+
+/// Requests the UI cannot fulfil itself.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiCommand {
+    Undo,
+    Redo,
+    /// Put every piece back to its flat arrangement.
+    ResetDrape,
+    /// Advance the simulation by exactly one step.
+    StepSimulation,
+    FitCanvas,
+    /// Put the pieces back around the avatar and reset the drape.
+    ArrangePieces,
+    ResetCamera3d,
+    /// Copy the outermost garment into a new layer worn over it.
+    AddOuterLayer,
+    /// Replace the avatar with the geometry in this file.
+    ImportAvatar(std::path::PathBuf),
+    /// Go back to the built-in parametric avatar.
+    RestoreAvatar,
+    /// Write the pattern or the draped garment to this file.
+    Export(std::path::PathBuf),
+    /// Inspect/load a pattern file (.pdf or .svg) for the pattern import inspector.
+    InspectPatternFile(std::path::PathBuf),
+    /// Apply the configured imported pattern pieces into the document.
+    ApplyImportedPattern {
+        pattern: Box<io_cad::ImportedPattern>,
+        replace_project: bool,
+    },
+    Quit,
+}
+
+/// Everything one UI frame produced.
+#[derive(Debug, Default)]
+pub struct UiOutput {
+    /// Edits made through property panels, already applied to the document.
+    pub changes: Vec<DocumentChange>,
+    pub commands: Vec<UiCommand>,
+    /// `None` when the tab is hidden; the viewport then need not render.
+    pub canvas: Option<ViewportInput>,
+    pub scene: Option<ViewportInput>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeline_steps_at_a_fixed_rate_and_stops_at_the_end() {
+        let mut t = Timeline {
+            fps: 10.0,
+            end_frame: 3,
+            ..Timeline::default()
+        };
+        assert_eq!(t.advance(1.0), 0, "paused timelines do not advance");
+        t.toggle();
+        assert_eq!(t.advance(0.05), 0);
+        assert_eq!(t.advance(0.05), 1);
+        assert_eq!(t.advance(0.25), 2);
+        assert_eq!(t.frame, 3);
+        assert_eq!(t.advance(0.2), 0);
+        assert!(!t.playing);
+        t.toggle(); // restarts from the beginning
+        assert_eq!(t.frame, 0);
+        assert!(t.playing);
+    }
+}

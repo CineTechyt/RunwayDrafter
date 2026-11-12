@@ -1,0 +1,13 @@
+[package]
+name = "topology_sync"
+description = "Bi-directional mapping between 2D pattern outlines and the 3D garment mesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cad_core.workspace = true
+glam.workspace = true
+physics_collision.workspace = true
+spade.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "cad_core"
+description = "2D vector CAD data model for garment patterns (no GPU, no UI dependencies)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+thiserror.workspace = true

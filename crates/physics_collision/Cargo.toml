@@ -1,0 +1,11 @@
+[package]
+name = "physics_collision"
+description = "Collision detection for cloth: BVH, continuous vertex-triangle tests, body sweeps and layered cloth contacts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+rayon.workspace = true
