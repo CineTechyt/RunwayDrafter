@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 
-use avatar::{BodyMesh, BodyModel, BodyParams, Measurements, PoseParams, PosedBody};
+use avatar::{Appearance, BodyMesh, BodyModel, BodyParams, LookMesh, Measurements, Pose, PoseParams, PosedBody};
 use glam::{Affine3A, Vec3};
 use physics_collision::TriangleMesh;
 use topology_sync::DistanceField;
@@ -42,6 +42,26 @@ pub struct Body {
     pending: Option<Receiver<(DistanceField, TriangleMesh)>>,
     /// `mesh` changed after the pending voxelisation started.
     field_outdated: bool,
+    /// An animation's pose, shown instead of `pose` while set.
+    animated: Option<Pose>,
+    /// Bumped whenever the shape changes (not the pose).
+    shape_version: u64,
+    looks: Option<Looks>,
+}
+
+/// The avatar's looks, built on the body in its modelled pose and carried
+/// along with the head: building them is slow, moving them is not.
+pub struct Looks {
+    appearance: Appearance,
+    shape_version: u64,
+    pub skin_colors: Vec<[f32; 3]>,
+    /// In the modelled pose.
+    pub eyes: LookMesh,
+    pub hair: LookMesh,
+    /// Where the strands start, in the modelled pose.
+    pub hair_root: glam::Vec3,
+    /// A skin vertex on top of the head: eyes and hair move with it.
+    pub anchor: usize,
 }
 
 impl Body {
@@ -53,7 +73,23 @@ impl Body {
         // simulation step already collides.
         let field = Some(Arc::new(avatar::distance_field(&mesh, FIELD_VOXEL, closing)));
         let collider = Some(Arc::new(mesh.collider()));
-        Self { model, params, pose, closing, rest, mesh, transforms, measurements, field, collider, pending: None, field_outdated: false }
+        Self {
+            model,
+            params,
+            pose,
+            closing,
+            rest,
+            mesh,
+            transforms,
+            measurements,
+            field,
+            collider,
+            pending: None,
+            field_outdated: false,
+            animated: None,
+            shape_version: 0,
+            looks: None,
+        }
     }
 
     pub fn model(&self) -> &BodyModel {
@@ -70,7 +106,74 @@ impl Body {
         self.params = params;
         self.rest = self.model.build(&params);
         self.measurements = avatar::measure(&self.model, &self.rest);
+        self.shape_version += 1;
         self.repose();
+    }
+
+    /// Shows an animation's pose instead of the edited one (`None` goes
+    /// back to it).
+    pub fn set_animated(&mut self, pose: Option<Pose>) {
+        if pose.is_none() && self.animated.is_none() {
+            return;
+        }
+        self.animated = pose;
+        self.repose();
+    }
+
+    pub fn is_animated(&self) -> bool {
+        self.animated.is_some()
+    }
+
+    /// Bumped whenever the shape changes.
+    pub fn shape_version(&self) -> u64 {
+        self.shape_version
+    }
+
+    /// The body in its modelled pose, unposed.
+    pub fn rest(&self) -> &BodyMesh {
+        &self.rest
+    }
+
+    /// The body as it stands now, with what took it there from `rest`.
+    pub fn posed(&self) -> PosedBody<'_> {
+        PosedBody { rest: &self.rest, posed: &self.mesh, transforms: &self.transforms }
+    }
+
+    /// The looks for `appearance`, rebuilt only when it or the shape changed.
+    pub fn looks(&mut self, appearance: &Appearance) -> Option<&Looks> {
+        let current = self.looks.as_ref().is_some_and(|l| l.appearance == *appearance && l.shape_version == self.shape_version);
+        if !current {
+            let head = avatar::Head::find(&self.rest)?;
+            let crown = glam::Vec3::new(0.0, head.crown, head.axis_z);
+            let anchor = self
+                .rest
+                .positions
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.distance_squared(crown).total_cmp(&b.1.distance_squared(crown)))
+                .map_or(0, |(i, _)| i);
+            self.looks = Some(Looks {
+                appearance: *appearance,
+                shape_version: self.shape_version,
+                skin_colors: avatar::look::skin_colors(&self.rest, Some(&head), appearance),
+                eyes: avatar::look::eyeballs(&head, appearance),
+                hair: avatar::look::hair(&self.rest, &head, appearance),
+                hair_root: avatar::look::hair_root(&head, &appearance.hair),
+                anchor,
+            });
+        }
+        self.looks.as_ref()
+    }
+
+    /// The looks as last built by [`Body::looks`].
+    pub fn cached_looks(&self) -> Option<&Looks> {
+        self.looks.as_ref()
+    }
+
+    /// How the head has moved from the modelled pose to now: what to apply
+    /// to the eyes and hair.
+    pub fn head_transform(&self, looks: &Looks) -> glam::Affine3A {
+        self.transforms.get(looks.anchor).copied().unwrap_or(glam::Affine3A::IDENTITY)
     }
 
     pub fn set_pose(&mut self, pose: PoseParams) {
@@ -87,7 +190,8 @@ impl Body {
     }
 
     fn repose(&mut self) {
-        (self.mesh, self.transforms) = self.model.pose_with_transforms(&self.rest, &self.pose.to_pose(&self.model, &self.rest));
+        let pose = self.animated.clone().unwrap_or_else(|| self.pose.to_pose(&self.model, &self.rest));
+        (self.mesh, self.transforms) = self.model.pose_with_transforms(&self.rest, &pose);
         self.field_outdated = true;
     }
 

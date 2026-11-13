@@ -39,11 +39,8 @@ impl Panel for PatternPropertiesPanel {
 
         let mut duplicate_mirrored = None;
         ui.horizontal(|ui| {
-            if ui.button("⧉ Duplicate").clicked() {
+            if ui.button("Duplicate").clicked() {
                 duplicate_mirrored = Some(false);
-            }
-            if ui.button("↔ Mirror copy").clicked() {
-                duplicate_mirrored = Some(true);
             }
         });
         if let Some(mirrored) = duplicate_mirrored {
@@ -66,6 +63,34 @@ impl Panel for PatternPropertiesPanel {
             .map(|f| (f.id, f.name.clone()))
             .collect();
         let edge_count = cx.document.piece(id).map_or(0, |p| p.outline.edge_count());
+        // Every seam on this piece: (id, partner name, length here, length there).
+        let seams: Vec<(cad_core::SeamId, String, f32, f32)> = cx
+            .document
+            .seams()
+            .iter()
+            .filter(|s| s.a.piece == id || s.b.piece == id)
+            .filter_map(|s| {
+                let (mine, theirs) = if s.a.piece == id { ((s.a.piece, s.a_span()), (s.b.piece, s.b_span())) } else { ((s.b.piece, s.b_span()), (s.a.piece, s.a_span())) };
+                let here = cx.document.piece(mine.0)?.outline.span_length(mine.1);
+                let other = cx.document.piece(theirs.0)?;
+                let name = if theirs.0 == id { "itself".to_owned() } else { other.name.clone() };
+                Some((s.id, name, here, other.outline.span_length(theirs.1)))
+            })
+            .collect();
+        // The piece's lines in order: (span, length, sewn?).
+        let lines: Vec<(cad_core::EdgeSpan, f32, bool)> = cx.document.piece(id).map_or_else(Vec::new, |piece| {
+            piece
+                .outline
+                .lines()
+                .into_iter()
+                .map(|span| {
+                    let sewn = span.edges(edge_count).any(|edge| cx.document.seam_of(EdgeRef::new(id, edge)).is_some());
+                    (span, piece.outline.span_length(span), sewn)
+                })
+                .collect()
+        });
+        // Where the other pieces sit around the body, for the placement dial.
+        let others: Vec<f32> = cx.document.pieces().iter().filter(|p| p.id != id).map(|p| p.placement.angle).collect();
         let seam_partner: Vec<Option<String>> = (0..edge_count)
             .map(|edge| {
                 let this = EdgeRef::new(id, edge);
@@ -79,6 +104,21 @@ impl Panel for PatternPropertiesPanel {
             })
             .collect();
         // let selected_edge = cx.editor.selected_edge; // Obsolete line removed
+
+        // Every buttonhole of the garment, for the "done up through" lists.
+        let holes: Vec<(cad_core::ButtonholeRef, String)> = cx
+            .document
+            .pieces()
+            .iter()
+            .flat_map(|p| {
+                (0..p.buttonholes.len()).map(move |index| {
+                    (cad_core::ButtonholeRef { piece: p.id, index: index as u32 }, format!("{} · hole {}", p.name, index + 1))
+                })
+            })
+            .collect();
+        let taken: Vec<cad_core::ButtonholeRef> =
+            cx.document.pieces().iter().flat_map(|p| &p.buttons).filter_map(|b| b.fastened_to).collect();
+        let mut button_action = None;
 
         let Some(piece) = cx.document.piece_mut(id) else {
             return;
@@ -117,6 +157,7 @@ impl Panel for PatternPropertiesPanel {
                         );
                     }
                 });
+
             ui.end_row();
 
             ui.label("Layer");
@@ -131,6 +172,201 @@ impl Panel for PatternPropertiesPanel {
             ui.label("Area");
             ui.label(format!("{area_cm2:.0} cm²"));
             ui.end_row();
+        });
+
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new(format!("Buttons ({}) and buttonholes ({})", piece.buttons.len(), piece.buttonholes.len()))
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.weak("Place them with the toolbar tools on the 2D or 3D view. A button done up through a buttonhole holds the two together in the simulation.");
+                let mut remove_button = None;
+                for (index, button) in piece.buttons.iter_mut().enumerate() {
+                    ui.push_id(("button", index), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(format!("Button {}", index + 1));
+                            let mut moved = ui.add(egui::DragValue::new(&mut button.position.x).speed(0.5).prefix("x ").suffix(" mm")).changed();
+                            moved |= ui.add(egui::DragValue::new(&mut button.position.y).speed(0.5).prefix("y ").suffix(" mm")).changed();
+                            // The fastening stitch is re-picked where the button now is.
+                            note(moved, if button.fastened_to.is_some() { DocumentChange::Seams } else { DocumentChange::PieceAnnotations(id) });
+                            if ui.small_button("🗑").on_hover_text("Remove the button").clicked() {
+                                remove_button = Some(index);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            note(ui.add(egui::DragValue::new(&mut button.diameter).range(6.0..=60.0).speed(0.25).suffix(" mm")).on_hover_text("Diameter").changed(), DocumentChange::PieceAnnotations(id));
+                            egui::ComboBox::from_id_salt("style").width(76.0).selected_text(button.style.label()).show_ui(ui, |ui| {
+                                for style in cad_core::ButtonStyle::ALL {
+                                    note(ui.selectable_value(&mut button.style, style, style.label()).changed(), DocumentChange::PieceAnnotations(id));
+                                }
+                            });
+                            egui::ComboBox::from_id_salt("finish").width(110.0).selected_text(button.finish.label()).show_ui(ui, |ui| {
+                                for finish in cad_core::ButtonFinish::ALL {
+                                    if ui.selectable_value(&mut button.finish, finish, finish.label()).changed() {
+                                        button.color = finish.default_color();
+                                        note(true, DocumentChange::PieceAnnotations(id));
+                                    }
+                                }
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Colour");
+                            note(ui.color_edit_button_rgb(&mut button.color).changed(), DocumentChange::PieceAnnotations(id));
+                            if button.style.holes() > 0 {
+                                ui.label("Thread");
+                                note(ui.color_edit_button_rgb(&mut button.thread_color).changed(), DocumentChange::PieceAnnotations(id));
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Done up through").on_hover_text(
+                                "The buttonhole this button closes through. The piece with the holes laps over the one with the buttons and is placed on top when the pieces are arranged.",
+                            );
+                            let current = button.fastened_to.and_then(|r| holes.iter().find(|(h, _)| *h == r)).map_or("— (open)", |(_, name)| name.as_str());
+                            egui::ComboBox::from_id_salt(("fasten", id, index)).selected_text(current).show_ui(ui, |ui| {
+                                note(ui.selectable_value(&mut button.fastened_to, None, "— (open)").changed(), DocumentChange::Seams);
+                                for (hole, name) in &holes {
+                                    let taken = taken.contains(hole) && button.fastened_to != Some(*hole);
+                                    let entry = ui.add_enabled(!taken, egui::Button::selectable(button.fastened_to == Some(*hole), name));
+                                    if entry.clicked() {
+                                        button.fastened_to = Some(*hole);
+                                        note(true, DocumentChange::Seams);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    ui.add_space(2.0);
+                }
+                if let Some(index) = remove_button {
+                    piece.buttons.remove(index);
+                    note(true, DocumentChange::Seams);
+                }
+                if !piece.buttonholes.is_empty() {
+                    ui.separator();
+                }
+                for (index, hole) in piece.buttonholes.iter_mut().enumerate() {
+                    ui.push_id(("hole", index), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(format!("Hole {}", index + 1));
+                            let mut moved = ui.add(egui::DragValue::new(&mut hole.position.x).speed(0.5).prefix("x ").suffix(" mm")).changed();
+                            moved |= ui.add(egui::DragValue::new(&mut hole.position.y).speed(0.5).prefix("y ").suffix(" mm")).changed();
+                            note(moved, DocumentChange::Seams);
+                            note(ui.add(egui::DragValue::new(&mut hole.length).range(4.0..=100.0).speed(0.25).suffix(" mm")).on_hover_text("Length").changed(), DocumentChange::PieceAnnotations(id));
+                            let mut degrees = hole.angle.to_degrees();
+                            if ui.add(egui::DragValue::new(&mut degrees).speed(1.0).suffix("°")).on_hover_text("Angle: 0° across the piece, 90° along it").changed() {
+                                hole.angle = degrees.to_radians();
+                                note(true, DocumentChange::PieceAnnotations(id));
+                            }
+                            if ui.small_button("🗑").on_hover_text("Remove the buttonhole").clicked() {
+                                button_action = Some(ButtonAction::RemoveHole(index));
+                            }
+                        });
+                    });
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Fasten all").on_hover_text(
+                        "Do up every open button: each piece's buttons go through the free holes of the piece placed nearest to them, in order down the row (top button through the top hole). Arrange the pieces around the avatar first; fix single buttons with “Done up through”.",
+                    ).clicked() {
+                        button_action = Some(ButtonAction::FastenAll);
+                    }
+                    if ui.button("Undo all").on_hover_text("Open every button of the garment").clicked() {
+                        button_action = Some(ButtonAction::UnfastenAll);
+                    }
+                });
+            });
+
+        // --- placement on the avatar ----------------------------------------------
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new("Placement on the avatar").default_open(true).show(ui, |ui| {
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                changed |= placement_dial(ui, &mut piece.placement.angle, &others);
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        for (label, angle) in [("Front", 0.0), ("Left", 90.0), ("Back", 180.0), ("Right", -90.0)] {
+                            if ui.selectable_label((piece.placement.angle - angle).abs() < 0.5, label).clicked() {
+                                piece.placement.angle = angle;
+                                changed = true;
+                            }
+                        }
+                    });
+                    property_grid(ui, "placement", |ui| {
+                        ui.label("Around body");
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut piece.placement.angle).range(-180.0..=180.0).speed(1.0).suffix("°"))
+                            .on_hover_text("0° centre front, 90° the avatar's left side, 180° centre back, -90° its right side")
+                            .changed();
+                        ui.end_row();
+                        ui.label("Height");
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut piece.placement.height).range(-800.0..=800.0).speed(1.0).suffix(" mm"))
+                            .on_hover_text("Raise or lower the piece from where it is placed automatically")
+                            .changed();
+                        ui.end_row();
+                    });
+                    ui.weak("Pieces are placed on the avatar and sewn from there. Click the ring to choose a spot.");
+                });
+            });
+            if changed {
+                note(true, DocumentChange::PieceAnnotations(id));
+                cx.editor.timeline.stop();
+                cx.output.commands.push(crate::state::UiCommand::ArrangePieces);
+            }
+        });
+
+        // --- seams ------------------------------------------------------------------
+        egui::CollapsingHeader::new(format!("Seams ({})", seams.len())).default_open(true).show(ui, |ui| {
+            if seams.is_empty() {
+                ui.weak("Use the sewing tool (S) on the 2D view: click a line, then the line it is sewn to.");
+            }
+            egui::Grid::new("seams").num_columns(3).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
+                for (seam, partner, here, there) in &seams {
+                    ui.label(format!("to {partner}"));
+                    let difference = here - there;
+                    let text = format!("{here:.0} / {there:.0} mm");
+                    if difference.abs() > 3.0 {
+                        // Sewing unequal lengths gathers the longer side.
+                        ui.colored_label(egui::Color32::from_rgb(240, 180, 90), text)
+                            .on_hover_text(format!("The lines differ by {:.1} mm: the longer one will be gathered.", difference.abs()));
+                    } else {
+                        ui.label(text);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Flip").on_hover_text("Turn the seam around: its start meets the other end").clicked() {
+                            cx.output.commands.push(crate::state::UiCommand::FlipSeam(*seam));
+                        }
+                        if ui.small_button("Remove").clicked() {
+                            cx.output.commands.push(crate::state::UiCommand::DeleteSeam(*seam));
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        });
+
+        // --- lines -----------------------------------------------------------------
+        egui::CollapsingHeader::new(format!("Lines ({})", lines.len())).default_open(false).show(ui, |ui| {
+            ui.weak("A line runs from one turn point to the next. Join two neighbours to sew them as one; with the point tool, double-click a point to join or split there.");
+            for (index, (span, length, sewn)) in lines.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let selected = cx.editor.selected_edge.is_some_and(|e| e.piece == id && span.contains(e.edge, edge_count));
+                    if ui.selectable_label(selected, format!("Line {}", index + 1)).clicked() {
+                        cx.editor.selected_edge = Some(EdgeRef::new(id, span.first));
+                    }
+                    ui.label(format!("{length:.0} mm"));
+                    if *sewn {
+                        ui.weak("sewn");
+                    }
+                });
+                // The turn point between this line and the next.
+                if lines.len() > 1 {
+                    let next = (span.first + span.count) % edge_count;
+                    let label = if index + 1 == lines.len() { "Join last and first line" } else { "Join with the line below" };
+                    if ui.small_button(label).clicked() {
+                        cx.output.commands.push(crate::state::UiCommand::SetPointKind { piece: id, anchor: next, kind: cad_core::PointKind::Smooth });
+                    }
+                }
+            }
         });
 
         // --- seam allowance & edges -------------------------------------------
@@ -152,7 +388,7 @@ impl Panel for PatternPropertiesPanel {
             ui.add_space(3.0);
             ui.horizontal(|ui| {
                 if ui
-                    .button("Convert: Cutting Line → Sew Line")
+                    .button("Convert: Cutting Line ➡ Sew Line")
                     .on_hover_text("If this piece was imported as a cutting line, shrink it inward by the seam allowance so the sewing line stitches correctly")
                     .clicked()
                 {
@@ -160,7 +396,7 @@ impl Panel for PatternPropertiesPanel {
                 }
 
                 if ui
-                    .button("Convert: Sew Line → Cut Line")
+                    .button("Convert: Sew Line ➡ Cut Line")
                     .on_hover_text("Expand the piece outline outwards by the seam allowance")
                     .clicked()
                 {
@@ -358,7 +594,7 @@ impl Panel for PatternPropertiesPanel {
                     piece.notches.remove(index);
                     note(true, annotation);
                 }
-                if ui.button("＋ Add notch").clicked() {
+                if ui.button("➕ Add notch").clicked() {
                     piece.notches.push(Notch {
                         edge: 0,
                         t: 0.5,
@@ -429,9 +665,69 @@ impl Panel for PatternPropertiesPanel {
                 });
             });
 
+        // Edits that reach beyond this piece, now that it is no longer borrowed.
+        let structural = match button_action {
+            Some(ButtonAction::RemoveHole(index)) => cx.document.remove_buttonhole(id, index).is_some(),
+            Some(ButtonAction::FastenAll) => cx.document.fasten_buttons(0.25) > 0,
+            Some(ButtonAction::UnfastenAll) => cx.document.unfasten_buttons() > 0,
+            None => false,
+        };
+        if structural && !changes.contains(&DocumentChange::Seams) {
+            changes.push(DocumentChange::Seams);
+        }
+
         if !changes.is_empty() {
             cx.document.touch();
             cx.output.changes.extend(changes);
         }
     }
+}
+
+/// Button edits that touch other pieces than the selected one.
+enum ButtonAction {
+    RemoveHole(usize),
+    FastenAll,
+    UnfastenAll,
+}
+
+/// A ring seen from above the avatar (front at the bottom): this piece's
+/// spot, the other pieces' spots in grey. Click or drag to move it.
+/// Returns `true` if the angle changed.
+fn placement_dial(ui: &mut egui::Ui, angle: &mut f32, others: &[f32]) -> bool {
+    let size = 104.0;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    let centre = rect.center();
+    let radius = size * 0.38;
+    let visuals = ui.visuals();
+    // Seen from above with the front at the bottom: +x (the avatar's left)
+    // is on the right, +z (front) points down.
+    let at = |degrees: f32| {
+        let a = degrees.to_radians();
+        centre + egui::vec2(a.sin(), a.cos()) * radius
+    };
+    painter.circle_stroke(centre, radius, egui::Stroke::new(1.0, visuals.weak_text_color()));
+    // The body's cross-section and the direction it faces.
+    painter.add(egui::Shape::ellipse_filled(centre, egui::vec2(radius * 0.62, radius * 0.4), visuals.faint_bg_color.gamma_multiply(2.0)));
+    painter.add(egui::Shape::ellipse_stroke(centre, egui::vec2(radius * 0.62, radius * 0.4), egui::Stroke::new(1.0, visuals.weak_text_color())));
+    let small = egui::FontId::proportional(9.0);
+    painter.text(rect.center_bottom() + egui::vec2(0.0, -1.0), egui::Align2::CENTER_BOTTOM, "front", small.clone(), visuals.weak_text_color());
+    painter.text(rect.center_top() + egui::vec2(0.0, 1.0), egui::Align2::CENTER_TOP, "back", small.clone(), visuals.weak_text_color());
+    painter.text(rect.right_center(), egui::Align2::RIGHT_CENTER, "L", small.clone(), visuals.weak_text_color());
+    painter.text(rect.left_center(), egui::Align2::LEFT_CENTER, "R", small, visuals.weak_text_color());
+    for &other in others {
+        painter.circle_filled(at(other), 3.0, visuals.weak_text_color());
+    }
+    let mut changed = false;
+    if let Some(pointer) = response.interact_pointer_pos().filter(|_| response.clicked() || response.dragged()) {
+        let d = pointer - centre;
+        if d.length() > 4.0 {
+            let new = d.x.atan2(d.y).to_degrees().round();
+            changed = (new - *angle).abs() > 0.1;
+            *angle = new;
+        }
+    }
+    painter.circle_filled(at(*angle), 5.5, visuals.selection.bg_fill);
+    painter.circle_stroke(at(*angle), 5.5, egui::Stroke::new(1.5, visuals.strong_text_color()));
+    changed
 }

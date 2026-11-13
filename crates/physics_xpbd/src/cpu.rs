@@ -144,13 +144,13 @@ pub fn project(
         if length < 1e-9 {
             continue; // direction undefined; for rest = 0 it is also solved
         }
-        let rest = if row.flags & ROW_SEAM != 0 { row.rest * seam_gap } else { row.rest };
+        let rest = if row.flags & ROW_SEAM != 0 { row.seam_rest(seam_gap) } else { row.rest };
         // Past its fold limit a bending row stiffens with the fourth power
         // of the overshoot: gentle curves stay soft, sharp creases cannot
         // form.
         let mut compliance = row.compliance;
-        if row.fold_limit > 0.0 && length > row.fold_limit {
-            let ratio = row.fold_limit / length;
+        if row.fold_limit() > 0.0 && length > row.fold_limit() {
+            let ratio = row.fold_limit() / length;
             compliance *= ratio * ratio * ratio * ratio;
         }
         let denominator = w[0] * c[0] * c[0] + w[1] * c[1] * c[1] + w[2] * c[2] * c[2] + w[3] * c[3] * c[3]
@@ -242,14 +242,33 @@ fn collide_ellipsoid(x: Vec3A, e: &Ellipsoid, margin: f32) -> Option<(Vec3A, Vec
     Some((e.center + e.rotation * (on_sphere * radii), normal))
 }
 
+/// `x` moved out of the ellipsoid (by `margin`), if it was inside.
+pub(crate) fn push_out_of_ellipsoid(x: Vec3A, e: &Ellipsoid, margin: f32) -> Option<Vec3A> {
+    collide_ellipsoid(x, e, margin).map(|(corrected, _)| corrected)
+}
+
 /// Position-based Coulomb friction. `corrected` is `x` pushed out of the
 /// collider; the push-out distance stands in for the normal force, so the
 /// sliding of this sub-step is reduced by at most `friction` times that
 /// distance (static friction when the sliding is smaller).
 #[inline]
 fn apply_friction(x: Vec3A, corrected: Vec3A, normal: Vec3A, start: Vec3A, friction: f32) -> Vec3A {
-    let depth = (corrected - x).length();
-    let motion = corrected - start;
+    apply_friction_moving(x, corrected, normal, start, friction, Vec3A::ZERO)
+}
+
+/// [`apply_friction`] against a surface that moved by `surface` during the
+/// sub-step (a body in motion): friction acts on the cloth's motion
+/// relative to the skin, so a moving body carries the cloth it presses on,
+/// and cloth it moves past faster than friction can hold slides.
+fn apply_friction_moving(x: Vec3A, corrected: Vec3A, normal: Vec3A, start: Vec3A, friction: f32, surface: Vec3A) -> Vec3A {
+    // How hard the cloth pressed into the surface: by the two closing in
+    // on each other this sub-step, at most the penetration. A body posed
+    // anew each frame jumps into the cloth by much more than it really
+    // pressed; that jump must not count as pressure, or cloth would stick
+    // to every limb that moves.
+    let pressed = (-(x - start - surface).dot(normal)).max(0.0);
+    let depth = (corrected - x).length().min(pressed);
+    let motion = corrected - start - surface;
     let sliding = motion - normal * motion.dot(normal);
     let distance = sliding.length();
     if distance < 1e-9 {
@@ -297,13 +316,16 @@ fn finalize(
         // The body mesh, through its distance field: move out along the
         // gradient until the particle is `margin` away from the skin.
         let mut resting_on = None;
+        let mut skin_velocity = Vec3A::ZERO;
         if let Some(field) = body
             && let Some((distance, gradient)) = field.sample((*x).into())
             && distance < p.margin + CONTACT_BAND
             && let Some(normal) = Vec3A::from(gradient).try_normalize()
         {
+            skin_velocity = Vec3A::from(field.velocity_at((*x).into()));
             if distance < p.margin {
-                *x = apply_friction(*x, *x + normal * (p.margin - distance), normal, *previous, p.friction);
+                let corrected = *x + normal * (p.margin - distance);
+                *x = apply_friction_moving(*x, corrected, normal, *previous, p.friction, skin_velocity * p.h);
             }
             resting_on = Some(normal);
         }
@@ -316,8 +338,13 @@ fn finalize(
         // Contact is inelastic: being pushed out of the body must not
         // become outward speed, or cloth under tension bounces on the skin
         // forever instead of coming to rest.
-        for normal in resting_on_cloth.into_iter().flatten().chain(resting_on) {
+        for normal in resting_on_cloth.into_iter().flatten() {
             *v -= normal * v.dot(normal).max(0.0);
+        }
+        // Against the body, relative to its skin: cloth it pushes keeps its
+        // pace, but does not fly off it.
+        if let Some(normal) = resting_on {
+            *v -= normal * (*v - skin_velocity).dot(normal).max(0.0);
         }
     };
     let State { positions, previous, velocities } = state;
@@ -325,5 +352,50 @@ fn finalize(
         positions.par_iter_mut().zip(&*previous).zip(velocities).zip(&model.inverse_mass).enumerate().for_each(step);
     } else {
         positions.iter_mut().zip(&*previous).zip(velocities).zip(&model.inverse_mass).enumerate().for_each(step);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UP: Vec3A = Vec3A::Y;
+
+    #[test]
+    fn a_body_moving_into_sliding_cloth_does_not_grip_it() {
+        // Cloth sliding sideways over the skin, 1 mm this sub-step, while the
+        // body (posed once per frame) has jumped 2 cm into it.
+        let start = Vec3A::new(0.0, 0.0, 0.0);
+        let x = Vec3A::new(0.001, 0.0, 0.0);
+        let corrected = x + UP * 0.02;
+        let out = apply_friction(x, corrected, UP, start, 0.4);
+        // Pushed out, still sliding: the body did not grab it.
+        assert!((out.y - 0.02).abs() < 1e-6);
+        assert!((out.x - 0.001).abs() < 1e-6, "the slide was braked to {}", out.x);
+    }
+
+    #[test]
+    fn a_moving_body_carries_the_cloth_it_presses_on() {
+        // The skin moves 1 mm sideways and 0.5 mm up into still cloth: the
+        // cloth comes along sideways rather than staying behind.
+        let start = Vec3A::ZERO;
+        let x = Vec3A::ZERO;
+        let corrected = x + UP * 0.0005;
+        let surface = Vec3A::new(0.001, 0.0005, 0.0);
+        let out = apply_friction_moving(x, corrected, UP, start, 0.4, surface);
+        assert!(out.x > 1e-5, "the cloth stayed behind: {}", out.x);
+        assert!(out.x <= 0.001 + 1e-6, "the cloth overtook the body: {}", out.x);
+    }
+
+    #[test]
+    fn cloth_pressing_into_the_body_still_feels_friction() {
+        // Cloth moving down into a still body by 1 mm while slipping
+        // sideways 1 mm: friction takes some of the slip.
+        let start = Vec3A::new(0.0, 0.0005, 0.0);
+        let x = Vec3A::new(0.001, -0.0005, 0.0);
+        let corrected = Vec3A::new(0.001, 0.0, 0.0);
+        let out = apply_friction(x, corrected, UP, start, 0.4);
+        assert!(out.x < 0.001 - 1e-5, "no friction: {}", out.x);
+        assert!(out.x > 0.0, "friction reversed the motion: {}", out.x);
     }
 }

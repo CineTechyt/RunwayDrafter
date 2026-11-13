@@ -5,7 +5,7 @@ use app_ui::{EditorState, ExportFormat, SurfaceView, UiCommand, UiOutput};
 use cad_core::{DocumentChange, History, PatternDocument, PieceId};
 use gfx_render::{Camera2D, CanvasOverlay, OrbitCamera, SurfaceMaterial, SurfaceOverlay};
 use glam::Vec2;
-use topology_sync::{ClothSolver, Collider, GarmentTopology, MeshingParams, SolverContext, TopologySync};
+use topology_sync::{ClothSolver, Collider, GarmentTopology, MeshingParams, SolverContext, TopologySync, SolverBackend, SolverSettings};
 
 use avatar::Measure;
 
@@ -17,6 +17,13 @@ use crate::controllers::{self, CanvasTool};
 pub fn closing_radius(particle_distance_mm: f32) -> f32 {
     (0.5 * particle_distance_mm * 1e-3).clamp(0.002, 0.015)
 }
+
+/// What a garment simulation is for: the motion, the body's shape version
+/// and the document's revision.
+type GarmentKey = (avatar::Motion, u64, u64);
+
+/// A garment being simulated: its messages, how far it is, and what for.
+type GarmentBake = (std::sync::mpsc::Receiver<crate::garment_motion::Message>, f32, GarmentKey);
 
 /// Simulation steps run after the avatar changed under a worn garment.
 const SETTLE_STEPS: u32 = 60;
@@ -42,6 +49,8 @@ pub struct Session {
     /// Collision shapes of the placeholder mannequin used without `body`.
     colliders: Vec<Collider>,
     avatar_dirty: bool,
+    /// The avatar's looks as last drawn.
+    shown_appearance: avatar::Appearance,
     /// The targets the body was last solved for.
     solved_targets: [Option<f32>; Measure::ALL.len()],
     /// Targets or build changed while dragging: solve on release.
@@ -54,7 +63,39 @@ pub struct Session {
     settle_steps: u32,
     fit_canvas: bool,
     garment_dirty: bool,
+    /// Piece names being read from drawn lettering, for the pattern in the
+    /// import window.
+    pending_names: Option<std::sync::mpsc::Receiver<io_cad::ImportedPattern>>,
+    /// The worn garment held to the skin while an animation plays.
+    attachments: Option<Vec<avatar::Attachment>>,
+    /// The animation frame the body shows.
+    animation_shown: Option<(avatar::Motion, f32)>,
+    /// The motion played through on this body, and the shape it was for.
+    performance: Option<(u64, avatar::Performance)>,
+    /// The garment simulated through an animation, and one being simulated
+    /// (its messages and how far it is).
+    garment_motion: Option<crate::garment_motion::GarmentMotion>,
+    garment_bake: Option<GarmentBake>,
+    pub(crate) garment_bake_duration: Option<f32>,
+    /// What the garment was last simulated for automatically, so a failed
+    /// or superseded simulation is not started over and over.
+    garment_auto: Option<GarmentKey>,
+    /// A simulation that went wrong (overstretched cloth) and is not shown.
+    garment_rejected: Option<GarmentKey>,
+    /// Whether a worn garment is simulated through an animation by itself.
+    pub(crate) auto_simulate: bool,
+    /// The garment as worn before the animation started, to go back to.
+    garment_at_rest: Option<Vec<glam::Vec3>>,
+    /// The chair for sitting, for a body shape: `(shape version, min, max)`.
+    chair: Option<(u64, glam::Vec3, glam::Vec3)>,
+    scene_grab: Option<SceneGrab>,
     pub quit_requested: bool,
+}
+
+struct SceneGrab {
+    vertex: u32,
+    origin: glam::Vec3,
+    normal: glam::Vec3,
 }
 
 impl Session {
@@ -99,12 +140,26 @@ impl Session {
             overlay_shown: SurfaceView::Fabric,
             colliders,
             avatar_dirty: true,
+            shown_appearance: avatar::Appearance::default(),
             solved_targets: [None; Measure::ALL.len()],
             fit_due: false,
             draped: false,
             settle_steps: 0,
             fit_canvas: true,
             garment_dirty: true,
+            pending_names: None,
+            attachments: None,
+            animation_shown: None,
+            performance: None,
+            garment_motion: None,
+            garment_bake: None,
+            garment_bake_duration: None,
+            garment_at_rest: None,
+            garment_auto: None,
+            garment_rejected: None,
+            auto_simulate: true,
+            chair: None,
+            scene_grab: None,
             quit_requested: false,
         }
     }
@@ -117,6 +172,11 @@ impl Session {
         let mut arrange = false;
 
         // --- avatar ------------------------------------------------------------
+        // Looks are display only: just redraw.
+        if self.editor.avatar.appearance != self.shown_appearance {
+            self.shown_appearance = self.editor.avatar.appearance;
+            self.avatar_dirty = true;
+        }
         if let Some(imported) = &mut self.imported {
             imported.set_closing(closing_radius(self.editor.simulation.particle_distance));
         } else if let Some(body) = &mut self.body {
@@ -182,6 +242,9 @@ impl Session {
             body.poll_field();
         }
 
+        self.animate(dt);
+        self.collect_piece_names();
+
         for command in commands {
             match command {
                 UiCommand::Undo => self.apply_history(History::undo, &mut changes),
@@ -191,6 +254,112 @@ impl Session {
                 UiCommand::FitCanvas => self.fit_canvas = true,
                 UiCommand::ArrangePieces => arrange = true,
                 UiCommand::ResetCamera3d => self.scene_camera = OrbitCamera::default(),
+                UiCommand::TransformPiece(transform) => {
+                    if let Some(id) = self.editor.selected_piece {
+                        self.edit(transform.label(), |document| document.transform_piece(id, transform), &mut changes);
+                        arrange = true;
+                    }
+                }
+                UiCommand::MirrorCopy => {
+                    if let Some(id) = self.editor.selected_piece {
+                        let mut copy = None;
+                        self.edit("Mirrored copy", |document| {
+                            copy = document.duplicate_piece(id, true);
+                            copy.is_some()
+                        }, &mut changes);
+                        if copy.is_some() {
+                            self.editor.selected_piece = copy;
+                            self.editor.selected_edge = None;
+                            arrange = true;
+                        }
+                    }
+                }
+                UiCommand::DeletePiece => {
+                    if let Some(id) = self.editor.selected_piece {
+                        self.edit("Delete piece", |document| document.remove_piece(id).is_some(), &mut changes);
+                        self.editor.selected_piece = None;
+                        self.editor.selected_edge = None;
+                        self.editor.sew_a = None;
+                        self.editor.sew_b = None;
+                    }
+                }
+                UiCommand::TidyLayout => {
+                    self.edit("Tidy layout", |document| {
+                        document.tidy_layout(40.0);
+                        true
+                    }, &mut changes);
+                    self.fit_canvas = true;
+                }
+                UiCommand::DeleteSelection => {
+                    let seam = (self.editor.canvas_tool == app_ui::CanvasTool::Sew)
+                        .then_some(self.editor.selected_edge)
+                        .flatten()
+                        .and_then(|edge| self.document.seam_of(edge))
+                        .map(|seam| seam.id);
+                    match seam {
+                        Some(seam) => self.edit("Remove seam", |document| document.remove_seam(seam).is_some(), &mut changes),
+                        None => {
+                            if let Some(id) = self.editor.selected_piece {
+                                self.edit("Delete piece", |document| document.remove_piece(id).is_some(), &mut changes);
+                                self.editor.selected_piece = None;
+                                self.editor.selected_edge = None;
+                            }
+                        }
+                    }
+                }
+                UiCommand::SetPointKind { piece, anchor, kind } => {
+                    let label = if kind == cad_core::PointKind::Smooth { "Join lines" } else { "Split line" };
+                    self.edit(label, |document| {
+                        let changed = document.piece_mut(piece).is_some_and(|p| p.outline.set_point_kind(anchor, kind));
+                        if changed {
+                            document.touch();
+                        }
+                        changed
+                    }, &mut changes);
+                }
+                UiCommand::SaveProject(path) => {
+                    let avatar = self.body.as_ref().map(|body| {
+                        crate::project::AvatarFile::new(&body.params, &body.pose, &self.editor.avatar.targets, &self.editor.avatar.appearance)
+                    });
+                    let project = crate::project::Project::new(self.document.clone(), avatar, self.editor.simulation.particle_distance);
+                    self.editor.project_status = Some(match project.save(&path) {
+                        Ok(()) => {
+                            self.editor.project_path = Some(path.clone());
+                            Ok(format!("Saved {}", path.display()))
+                        }
+                        Err(error) => Err(format!("{error:#}")),
+                    });
+                }
+                UiCommand::OpenProject(path) => match crate::project::Project::load(&path) {
+                    Ok(project) => {
+                        if let Some(avatar) = &project.avatar {
+                            // Applied with the next frame's avatar update.
+                            self.editor.avatar.params = avatar.params();
+                            self.editor.avatar.pose = avatar.pose();
+                            self.editor.avatar.targets = avatar.targets();
+                            self.editor.avatar.appearance = avatar.appearance();
+                        }
+                        self.editor.simulation.particle_distance = project.particle_distance;
+                        self.replace_document(project.document, &mut changes);
+                        arrange = true;
+                        self.editor.project_path = Some(path.clone());
+                        self.editor.project_status = Some(Ok(format!("Opened {}", path.display())));
+                    }
+                    Err(error) => self.editor.project_status = Some(Err(format!("Cannot open {}: {error:#}", path.display()))),
+                },
+                UiCommand::SimulateGarmentMotion => self.simulate_garment_motion(),
+                UiCommand::NewProject(sample) => {
+                    self.replace_document(sample.document(), &mut changes);
+                    arrange = true;
+                    self.editor.project_path = None;
+                    self.editor.project_status = Some(Ok(format!("New project: {}", sample.label())));
+                }
+                UiCommand::DeleteSeam(seam) => {
+                    self.edit("Remove seam", |document| document.remove_seam(seam).is_some(), &mut changes);
+                }
+                UiCommand::FlipSeam(seam) => {
+                    self.edit("Flip seam", |document| document.flip_seam(seam), &mut changes);
+                }
                 UiCommand::AddOuterLayer => {
                     // Next to the existing pieces on the canvas.
                     let width = self
@@ -244,9 +413,8 @@ impl Session {
                         self.document = pattern.to_document();
                         self.editor.selected_piece = self.document.pieces().first().map(|p| p.id);
                         self.editor.selected_edge = None;
-                        self.editor.sewing_edges_a.clear();
-                        self.editor.sewing_edges_b.clear();
-                        self.editor.sewing_select_b = false;
+                        self.editor.sew_a = None;
+                        self.editor.sew_b = None;
                         self.editor.timeline.stop();
                         self.history = History::default();
                         arrange = true;
@@ -299,7 +467,13 @@ impl Session {
             );
         }
         if let Some(input) = &scene {
-            controllers::update_scene(input, &mut self.scene_camera, &self.topology, &mut self.editor);
+            if self.editor.canvas_tool == app_ui::CanvasTool::Pull {
+                self.update_scene_pull(input);
+            } else if matches!(self.editor.canvas_tool, app_ui::CanvasTool::Button | app_ui::CanvasTool::Buttonhole) {
+                self.update_scene_annotation(input, &mut changes);
+            } else {
+                controllers::update_scene(input, &mut self.scene_camera, &self.topology, &mut self.editor);
+            }
         }
 
         // Particle distance switcher: a new resolution re-meshes everything.
@@ -315,6 +489,9 @@ impl Session {
 
         let step = self.editor.timeline.step_seconds();
         let mut steps = self.editor.timeline.advance(dt) + extra_steps;
+        if self.scene_grab.is_some() {
+            steps = steps.max(1);
+        }
         // After the avatar moved, let the garment settle even when paused.
         if steps == 0 && self.settle_steps > 0 {
             steps = self.settle_steps.min(2);
@@ -400,6 +577,263 @@ impl Session {
         self.editor.redo_label = self.history.redo_label().map(str::to_owned);
     }
 
+    /// Plays the avatar's animation: poses the body for this frame and
+    /// carries a worn garment along with it.
+    fn animate(&mut self, dt: f32) {
+        if !self.draped {
+            self.attachments = None;
+            self.garment_at_rest = None;
+        }
+        self.poll_garment_motion();
+        if self.animate_body(dt) {
+            self.simulate_garment_motion();
+        }
+    }
+
+    /// Poses the body for this frame and moves the garment with it. Returns
+    /// whether the garment should now be simulated through the motion.
+    fn animate_body(&mut self, dt: f32) -> bool {
+        let (Some(body), None) = (&mut self.body, &self.imported) else { return false };
+        let state = &mut self.editor.avatar.animation;
+        let follows = state.garment_follows;
+        let revision = self.document.revision();
+        let simulated = |motion: avatar::Motion, body: &Body, garment: &Option<crate::garment_motion::GarmentMotion>| {
+            garment.as_ref().is_some_and(|g| g.motion == motion && g.shape_version == body.shape_version() && g.document_revision == revision)
+        };
+        state.garment = match (&self.garment_bake, state.motion) {
+            (Some((_, done, _)), _) => app_ui::GarmentStatus::Simulating(*done),
+            (None, Some(motion)) if simulated(motion, body, &self.garment_motion) => app_ui::GarmentStatus::Simulated,
+            (None, Some(motion)) if self.garment_rejected == Some((motion, body.shape_version(), revision)) => app_ui::GarmentStatus::Unreliable,
+            _ if !self.draped && self.garment_at_rest.is_none() => app_ui::GarmentStatus::NotWorn,
+            _ => app_ui::GarmentStatus::Carried,
+        };
+        match state.motion {
+            None => {
+                if body.is_animated() {
+                    body.set_animated(None);
+                    self.animation_shown = None;
+                    self.avatar_dirty = true;
+                    // Back to the edited pose, and the garment as it was worn.
+                    self.attachments = None;
+                    if let Some(worn) = self.garment_at_rest.take() {
+                        self.topology.mesh_mut().positions = worn;
+                        self.topology.mesh_mut().recompute_normals();
+                        if let Some(solver) = &mut self.solver {
+                            solver.set_positions(self.topology.mesh());
+                        }
+                        self.garment_dirty = true;
+                    }
+                }
+            }
+            Some(motion) => {
+                if state.playing {
+                    state.time = (state.time + dt * state.speed).rem_euclid(motion.duration());
+                }
+                let frame = (motion, state.time);
+                if self.animation_shown == Some(frame) && body.is_animated() {
+                    return false;
+                }
+                if self.draped && self.garment_at_rest.is_none() {
+                    self.garment_at_rest = Some(self.topology.mesh().positions.clone());
+                }
+                if self.draped && follows && self.attachments.is_none() {
+                    // To the torso and the legs, never the arms: an arm raised
+                    // over the head would haul the armholes up with it.
+                    let not_arms: Vec<bool> = body.model().arm_vertices().into_iter().map(|arm| !arm).collect();
+                    self.attachments = Some(avatar::attach_to(&self.topology.mesh().positions, body.posed(), Some(&not_arms)));
+                }
+                let current = self.performance.as_ref().is_some_and(|(version, p)| *version == body.shape_version() && p.motion() == motion);
+                if !current {
+                    self.performance = Some((body.shape_version(), avatar::Performance::bake(motion, body.model(), body.rest())));
+                }
+                let pose = match &self.performance {
+                    Some((_, performance)) => performance.pose(state.time, body.model(), body.rest()),
+                    None => motion.angles(state.time).to_pose(body.model(), body.rest()),
+                };
+                body.set_animated(Some(pose));
+                self.animation_shown = Some(frame);
+                self.avatar_dirty = true;
+                if !follows {
+                    return false;
+                }
+                // The garment moves with the animation now, not the drape.
+                self.editor.timeline.playing = false;
+                let is_simulated = simulated(motion, body, &self.garment_motion);
+                // A worn garment is simulated through the motion by itself,
+                // once for each motion, body and version of the garment.
+                let key = (motion, body.shape_version(), revision);
+                let simulate = self.auto_simulate
+                    && !is_simulated
+                    && self.garment_bake.is_none()
+                    && self.garment_at_rest.is_some()
+                    && self.garment_auto != Some(key);
+                if simulate {
+                    self.garment_auto = Some(key);
+                }
+                if is_simulated && let Some(garment) = &self.garment_motion {
+                    // Played back as simulated.
+                    garment.positions(state.time, &mut self.topology.mesh_mut().positions);
+                } else if let Some(attachments) = &self.attachments {
+                    // Until then, carried with the skin it rests on.
+                    avatar::follow(attachments, body.posed(), &mut self.topology.mesh_mut().positions);
+                } else {
+                    return simulate;
+                }
+                self.topology.mesh_mut().recompute_normals();
+                if let Some(solver) = &mut self.solver {
+                    solver.set_positions(self.topology.mesh());
+                }
+                self.garment_dirty = true;
+                return simulate;
+            }
+        }
+        false
+    }
+
+    /// Whether the garment has been simulated since it was arranged: sewn
+    /// and worn rather than laid out.
+    pub fn is_draped(&self) -> bool {
+        self.draped
+    }
+
+    /// Starts simulating the worn garment through the current animation.
+    fn simulate_garment_motion(&mut self) {
+        let Some(motion) = self.editor.avatar.animation.motion else { return };
+        let (Some(body), None) = (&self.body, &self.imported) else { return };
+        // The same simulation already under way: let it finish.
+        let key = (motion, body.shape_version(), self.document.revision());
+        if self.garment_bake.as_ref().is_some_and(|(_, _, running)| *running == key) {
+            return;
+        }
+        self.garment_auto = Some(key);
+        if !self.draped && self.garment_at_rest.is_none() {
+            return;
+        }
+        // From the garment as worn in the edited pose.
+        let mut mesh = self.topology.mesh().clone();
+        if let Some(worn) = &self.garment_at_rest {
+            mesh.positions = worn.clone();
+            mesh.recompute_normals();
+        }
+        let job = crate::garment_motion::Job {
+            motion,
+            shape_version: body.shape_version(),
+            document: self.document.clone(),
+            mesh,
+            model: body.model().clone(),
+            rest: body.rest().clone(),
+            start_pose: body.pose.to_pose(body.model(), body.rest()),
+            // Animation is baked offline, so it always gets the contact
+            // solver: cloth that lifts off the body, follows it through
+            // friction and never passes through itself. The live view
+            // keeps whichever solver runs in real time.
+            settings: SolverSettings { backend: SolverBackend::Contact, ..self.editor.simulation.settings },
+            closing: closing_radius(self.editor.simulation.particle_distance),
+            duration: self.garment_bake_duration.take(),
+        };
+        self.garment_bake = Some((crate::garment_motion::start(job), 0.0, key));
+    }
+
+    /// Collects the progress and result of a garment being simulated.
+    fn poll_garment_motion(&mut self) {
+        let Some((receiver, done, _)) = &mut self.garment_bake else { return };
+        loop {
+            match receiver.try_recv() {
+                Ok(crate::garment_motion::Message::Progress(fraction)) => *done = fraction,
+                Ok(crate::garment_motion::Message::Done(garment)) => {
+                    let key = self.garment_bake.as_ref().map(|(_, _, key)| *key);
+                    if garment.stretch > crate::garment_motion::RELIABLE_STRETCH {
+                        log::warn!(
+                            "the garment simulation through {:?} overstretched the cloth ({:.0} %); showing it carried with the skin",
+                            garment.motion,
+                            garment.stretch * 100.0
+                        );
+                        self.garment_rejected = key;
+                        self.garment_bake = None;
+                        return;
+                    }
+                    self.garment_motion = Some(garment);
+                    self.garment_bake = None;
+                    self.animation_shown = None; // show it now
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.garment_bake = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The chair of the sitting animation as `(min, max)` corners, risen
+    /// out of the floor as far as it is at this moment; `None` when there is
+    /// none. Placed under where the hips actually come to rest in the played
+    /// motion, and kept clear of the body as it stands before sitting, so it
+    /// rises behind the legs rather than through them.
+    pub fn chair(&mut self) -> Option<(glam::Vec3, glam::Vec3)> {
+        let state = self.editor.avatar.animation;
+        let grow = state.motion?.chair(state.time)?;
+        let body = self.body.as_ref().filter(|_| self.imported.is_none())?;
+        let (_, performance) = self.performance.as_ref().filter(|(v, p)| *v == body.shape_version() && p.motion() == avatar::Motion::SitOnChair)?;
+        if self.chair.is_none_or(|(version, ..)| version != body.shape_version()) {
+            let (model, rest) = (body.model(), body.rest());
+            let seated = model.pose(rest, &performance.pose(4.6, model, rest));
+            let standing = model.pose(rest, &performance.pose(0.0, model, rest));
+            let hips = ["upperleg01.L", "upperleg01.R"]
+                .iter()
+                .filter_map(|name| model.bone(name).map(|i| seated.joints[i].head))
+                .sum::<glam::Vec3>()
+                * 0.5;
+            // The seat is where the buttocks and the backs of the thighs are lowest.
+            let seat = seated
+                .positions
+                .iter()
+                .filter(|p| p.x.abs() < 0.2 && (p.z - hips.z).abs() < 0.14 && p.y < hips.y)
+                .map(|p| p.y)
+                .fold(f32::MAX, f32::min);
+            let seat = if seat < f32::MAX { seat - 0.004 } else { 0.45 };
+            // The back of the standing body (buttocks, calves, heels) at the
+            // chair's height: its front edge stays behind that.
+            let back = standing
+                .positions
+                .iter()
+                .filter(|p| p.x.abs() < 0.3 && p.y < seat + 0.05)
+                .map(|p| p.z)
+                .fold(f32::MAX, f32::min);
+            let front = (hips.z + 0.16).min(back - 0.03);
+            let depth = 0.42;
+            self.chair = Some((body.shape_version(), glam::Vec3::new(-0.23, 0.0, front - depth), glam::Vec3::new(0.23, seat, front)));
+        }
+        let (_, min, max) = self.chair?;
+        (grow > 0.0).then(|| (min, glam::Vec3::new(max.x, max.y * grow, max.z)))
+    }
+
+    /// Starts over with `document`: nothing selected, no history, not draped.
+    fn replace_document(&mut self, document: PatternDocument, changes: &mut Vec<DocumentChange>) {
+        self.document = document;
+        self.editor.selected_piece = None;
+        self.editor.selected_edge = None;
+        self.editor.sew_a = None;
+        self.editor.sew_b = None;
+        self.editor.timeline.stop();
+        self.history = History::default();
+        self.draped = false;
+        self.fit_canvas = true;
+        changes.push(DocumentChange::Everything);
+    }
+
+    /// Runs an edit with one undo step for all of it. `edit` returns
+    /// whether it changed anything.
+    fn edit(&mut self, label: &str, edit: impl FnOnce(&mut PatternDocument) -> bool, changes: &mut Vec<DocumentChange>) {
+        let before = self.document.clone();
+        if edit(&mut self.document) {
+            self.history.record(Box::new(cad_core::DocumentSnapshot::new(label, before, self.document.clone())));
+            self.editor.timeline.stop();
+            changes.push(DocumentChange::Everything);
+        }
+    }
+
     fn apply_history(
         &mut self,
         step: fn(&mut History, &mut PatternDocument) -> Option<Result<DocumentChange, cad_core::EditError>>,
@@ -429,6 +863,93 @@ impl Session {
             (None, Some(body)) => Some((&body.mesh, &body.measurements)),
             (None, None) => None,
         }
+
+    }
+
+    fn update_scene_pull(&mut self, input: &app_ui::ViewportInput) {
+            let viewport = Vec2::new(input.size[0] as f32, input.size[1] as f32);
+            if input.secondary.dragging || input.middle.dragging {
+                self.scene_camera.pan(input.drag_delta, viewport.y);
+            }
+
+            if input.zoom != 1.0 {
+                self.scene_camera.dolly(input.zoom);
+            }
+            let Some(pointer) = input.pointer else { return };
+            let (origin, direction) = self.scene_camera.ray(pointer, viewport);
+            if input.primary.started && self.scene_grab.is_none()
+                && let Some((hit, point)) = controllers::surface_hit(&self.topology, origin, direction)
+            {
+                let triangle = self.topology.mesh().triangle(hit.triangle);
+                let weights = [hit.barycentric.x, hit.barycentric.y, hit.barycentric.z];
+                let vertex = triangle
+                    .into_iter()
+                    .zip(weights)
+                    .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                    .map(|(vertex, _)| vertex);
+                if let Some(vertex) = vertex {
+                    self.scene_grab = Some(SceneGrab { vertex, origin: point, normal: direction.normalize_or_zero() });
+                }
+            }
+            if let Some(grab) = &self.scene_grab {
+                let denominator = direction.dot(grab.normal);
+                if denominator.abs() > 1e-5 {
+                    let distance = (grab.origin - origin).dot(grab.normal) / denominator;
+                    if distance.is_finite() && distance >= 0.0 {
+                        let target = origin + direction * distance;
+                    if let Some(solver) = &mut self.solver {
+                        // A broad, soft influence rearranges a patch of
+                        // cloth instead of pinching one particle.
+                        // Keep the grab broad and low-force. This changes
+                        // only the interaction, not the textile model or
+                        // its spring parameters.
+                        solver.set_grab(grab.vertex, target, 0.30, 0.08);
+                        self.garment_dirty = true;
+                    } else {
+                        self.garment_dirty = true;
+                    }
+                }
+            }
+            if input.primary.stopped {
+                if self.scene_grab.take().is_some() {
+                    if let Some(solver) = &mut self.solver {
+                        solver.clear_grab();
+                        solver.set_positions(self.topology.mesh());
+                    }
+                    self.topology.mesh_mut().recompute_normals();
+                    self.garment_dirty = true;
+                }
+            }
+        }
+    }
+
+    fn update_scene_annotation(&mut self, input: &app_ui::ViewportInput, changes: &mut Vec<DocumentChange>) {
+        if !input.clicked {
+            return;
+        }
+        let viewport = Vec2::new(input.size[0] as f32, input.size[1] as f32);
+        let Some(pointer) = input.pointer else { return };
+        let (origin, direction) = self.scene_camera.ray(pointer, viewport);
+        let Some((location, _)) = controllers::surface_hit(&self.topology, origin, direction) else { return };
+        let Some(pattern) = self.topology.surface_to_pattern(location) else { return };
+        let before = self.document.clone();
+        let Some(piece) = self.document.piece_mut(pattern.piece) else { return };
+        match self.editor.canvas_tool {
+            app_ui::CanvasTool::Button => piece.buttons.push(cad_core::Button::new(pattern.position, 18.0)),
+            app_ui::CanvasTool::Buttonhole => {
+                piece.buttonholes.push(cad_core::Buttonhole::for_button(pattern.position, 18.0));
+            }
+            _ => return,
+        }
+        self.document.touch();
+        self.editor.selected_piece = Some(pattern.piece);
+        self.history.record(Box::new(cad_core::DocumentSnapshot::new(
+            if self.editor.canvas_tool == app_ui::CanvasTool::Button { "Add button" } else { "Add buttonhole" },
+            before,
+            self.document.clone(),
+        )));
+        changes.push(DocumentChange::PieceAnnotations(pattern.piece));
+        self.garment_dirty = true;
     }
 
     /// Per-vertex values for the garment's technical view (empty for the
@@ -487,6 +1008,40 @@ impl Session {
         })
     }
 
+    /// Takes over piece names read in the background, for pieces the user
+    /// has not renamed meanwhile.
+    fn collect_piece_names(&mut self) {
+        let Some(receiver) = &self.pending_names else { return };
+        let named = match receiver.try_recv() {
+            Ok(named) => named,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending_names = None;
+                return;
+            }
+        };
+        self.pending_names = None;
+        let import = &mut self.editor.pattern_import;
+        let Some(pattern) = &mut import.pattern else { return };
+        let mut count = 0;
+        for (piece, read) in pattern.pieces.iter_mut().zip(&named.pieces) {
+            if piece.name.starts_with("Piece ") && !read.name.starts_with("Piece ") {
+                piece.name = read.name.clone();
+                count += 1;
+            }
+        }
+        let note = format!("{count} piece name(s) read from the pattern");
+        import.status = Some(Ok(match import.status.take() {
+            Some(Ok(message)) => format!("{} · {note}", message.split(" · reading").next().unwrap_or(&message)),
+            _ => note,
+        }));
+    }
+
+    /// Whether background work needs the UI to keep redrawing.
+    pub fn busy(&self) -> bool {
+        self.pending_names.is_some()
+    }
+
     fn inspect_pattern(&mut self, path: &std::path::Path) {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         let bytes = match std::fs::read(path) {
@@ -537,11 +1092,29 @@ impl Session {
         match result {
             Ok(pattern) => {
                 let count = pattern.pieces.len();
-                self.editor.pattern_import.status = Some(Ok(format!(
-                    "Loaded {}: {} piece candidate(s) detected",
-                    path.display(),
-                    count
-                )));
+                let unnamed = pattern.pieces.iter().filter(|p| p.name.starts_with("Piece ")).count();
+                let mut message = format!("Loaded {}: {count} piece(s)", path.display());
+                if unnamed > 0 {
+                    // Names drawn as pen strokes need text recognition,
+                    // which takes a moment: done in the background.
+                    match io_cad::drawn_text::TesseractCli::find() {
+                        Some(reader) => {
+                            let (sender, receiver) = std::sync::mpsc::channel();
+                            let mut named = pattern.clone();
+                            std::thread::spawn(move || {
+                                io_cad::drawn_text::name_pieces(&mut named, &reader);
+                                let _ = sender.send(named);
+                            });
+                            self.pending_names = Some(receiver);
+                            message.push_str(" · reading piece names drawn on the pattern…");
+                        }
+                        None => message.push_str(
+                            " · piece names are drawn as lines in this file; install Tesseract OCR \
+                             (e.g. `sudo apt install tesseract-ocr`) to read them",
+                        ),
+                    }
+                }
+                self.editor.pattern_import.status = Some(Ok(message));
                 self.editor.pattern_import.pattern = Some(pattern);
             }
             Err(e) => {
@@ -564,22 +1137,56 @@ impl Session {
     /// Whether the session needs continuous redraws.
     pub fn animating(&self) -> bool {
         self.editor.timeline.playing
+            || (self.editor.avatar.animation.playing && self.editor.avatar.animation.motion.is_some())
+            || self.garment_bake.is_some()
+            || self.busy()
             || self.settle_steps > 0
             || (self.imported.is_none() && self.body.as_ref().is_some_and(Body::field_pending))
     }
 
     pub fn canvas_overlay(&self) -> CanvasOverlay {
+        use app_ui::CanvasTool;
+        use gfx_render::LineHighlight;
+        let editor = &self.editor;
+        let mut highlights = Vec::new();
+        let line_of = |edge: cad_core::EdgeRef| {
+            self.document.piece(edge.piece).map(|piece| (edge.piece, piece.outline.line_span(edge.edge)))
+        };
+        if let Some((piece, span)) = self.canvas_tool.hovered_line
+            && editor.canvas_tool != CanvasTool::Points
+        {
+            highlights.push(LineHighlight { piece, span, color: gfx_render::srgba(255, 255, 255, 0.35), start_at_end: None });
+        }
+        if let Some((piece, span)) = editor.selected_edge.and_then(line_of) {
+            highlights.push(LineHighlight { piece, span, color: gfx_render::srgba(255, 185, 40, 1.0), start_at_end: None });
+        }
+        // The sides being sewn, with the end each seam starts at.
+        for (pick, color) in [(&editor.sew_a, gfx_render::srgba(64, 210, 135, 1.0)), (&editor.sew_b, gfx_render::srgba(70, 180, 245, 1.0))] {
+            if let Some(pick) = pick
+                && let Some(piece) = self.document.piece(pick.piece)
+            {
+                let at_end = piece.outline.span_fraction(pick.span, pick.at) > 0.5;
+                highlights.push(LineHighlight { piece: pick.piece, span: pick.span, color, start_at_end: Some(at_end) });
+            }
+        }
         CanvasOverlay {
             hovered: self.canvas_tool.hovered,
             active: self.canvas_tool.active(),
-            selected_piece: self.editor.selected_piece,
-            selected_edge: self.editor.selected_edge,
-            sewing_edges_a: self.editor.sewing_edges_a.clone(),
-            sewing_edges_b: self.editor.sewing_edges_b.clone(),
-            show_grid: self.editor.view.show_grid,
-            show_mesh: self.editor.view.show_mesh,
-            show_seam_allowance: self.editor.view.show_seam_allowance,
+            selected_piece: editor.selected_piece,
+            handles_for: editor.selected_piece.filter(|_| editor.canvas_tool == CanvasTool::Points),
+            highlights,
+            show_grid: editor.view.show_grid,
+            show_mesh: editor.view.show_mesh,
+            show_seam_allowance: editor.view.show_seam_allowance,
+            sketch_points: editor.sketch_points.clone(),
         }
+    }
+
+    /// How thick a piece's fabric is drawn, in metres: its thickness, but
+    /// at least enough to be seen at the edges.
+    pub fn fabric_thickness(&self, piece: PieceId) -> f32 {
+        let fabric = self.document.piece(piece).and_then(|p| self.document.fabric(p.fabric));
+        fabric.map_or(0.6, |f| f.physics.thickness).max(0.8) * 1e-3
     }
 
     /// Viewport material of a piece: its fabric, highlighted when selected.
@@ -590,7 +1197,7 @@ impl Session {
             roughness: f.roughness,
             metallic: f.metallic,
             weave_strength: f.weave_strength,
-            emissive: [0.0; 3],
+            ..SurfaceMaterial::default()
         });
         if self.editor.selected_piece == Some(piece) {
             material.emissive = [0.10, 0.08, 0.03];

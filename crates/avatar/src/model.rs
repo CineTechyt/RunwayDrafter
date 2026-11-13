@@ -194,13 +194,15 @@ pub struct BodyMesh {
     pub shoulder_points: [u32; 2],
     /// One entry per bone of the model's skeleton, in the same order.
     pub joints: Vec<Joint>,
+    /// Centres of rotation for skinning, worked out on first posing.
+    pub(crate) centres: std::sync::OnceLock<std::sync::Arc<Vec<Vec3>>>,
 }
 
 impl BodyMesh {
     /// A body from plain geometry (an imported avatar): no skeleton, and
     /// every triangle counts as skin.
     pub fn from_triangles(positions: Vec<Vec3>, normals: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Self {
-        Self { skin_triangles: triangles.len(), positions, normals, triangles, shoulder_points: [0; 2], joints: Vec::new() }
+        Self { skin_triangles: triangles.len(), positions, normals, triangles, shoulder_points: [0; 2], joints: Vec::new(), centres: Default::default() }
     }
 
     /// The skin behind a BVH, for ray casts and continuous collision.
@@ -258,6 +260,8 @@ pub struct BodyModel {
     skin_triangles: usize,
     targets: HashMap<String, Target>,
     shoulder_points: [u32; 2],
+    /// Triangles grouped by skin weights, for the centres of rotation.
+    pub(crate) bins: std::sync::Arc<crate::skinning::Bins>,
 }
 
 /// Weights of the low/average/high targets for a 0..=1 slider.
@@ -339,6 +343,7 @@ impl BodyModel {
             weights.push((influence, weight));
         }
         let bone_names = bones.iter().enumerate().map(|(i, b)| (b.name.clone(), i)).collect();
+        let bins = std::sync::Arc::new(crate::skinning::Bins::new(&weights, &triangles[..skin_triangles]));
 
         let mut model = Self {
             rest,
@@ -350,6 +355,7 @@ impl BodyModel {
             skin_triangles,
             targets,
             shoulder_points: [0, 0],
+            bins,
         };
         let neutral = model.build(&BodyParams { gender: 0.5, ..BodyParams::female() });
         model.shoulder_points = crate::measure::find_shoulder_points(&model, &neutral);
@@ -399,6 +405,23 @@ impl BodyModel {
         out
     }
 
+    /// Per mesh vertex: whether it moves mostly with the arms (upper arm,
+    /// forearm, hand), rather than with the torso or the legs.
+    pub fn arm_vertices(&self) -> Vec<bool> {
+        let arm: Vec<bool> = self
+            .bones
+            .iter()
+            .map(|bone| ["upperarm", "lowerarm", "wrist", "finger", "metacarpal", "thumb"].iter().any(|stem| bone.name.starts_with(stem)))
+            .collect();
+        self.weights
+            .iter()
+            .map(|(bones, weights)| {
+                let share: f32 = bones.iter().zip(weights).filter(|(b, _)| arm.get(**b as usize).copied().unwrap_or(false)).map(|(_, w)| w).sum();
+                share > 0.5
+            })
+            .collect()
+    }
+
     pub fn bones(&self) -> &[Bone] {
         &self.bones
     }
@@ -444,6 +467,7 @@ impl BodyModel {
             triangles: self.triangles.clone(),
             skin_triangles: self.skin_triangles,
             shoulder_points: self.shoulder_points,
+            centres: Default::default(),
         };
         mesh.recompute_normals();
         mesh

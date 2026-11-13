@@ -13,6 +13,7 @@
 //! they can be used on the web as well; only [`import_avatar`] and
 //! external glTF buffers touch the file system.
 
+pub mod drawn_text;
 pub mod dxf;
 pub mod fbx;
 pub mod gltf;

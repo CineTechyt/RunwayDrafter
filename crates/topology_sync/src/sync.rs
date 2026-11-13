@@ -140,18 +140,38 @@ impl GarmentTopology {
             })
             .collect();
 
-        let get = |plan: &HashMap<PieceId, Vec<u32>>, e: EdgeRef| plan.get(&e.piece)?.get(e.edge as usize).copied();
-        // An edge can only be in one seam today, but iterating to a fixed
-        // point keeps this correct once 1:N seams exist.
+        // Both sides of a seam need the same number of mesh edges. A side
+        // can be several pattern edges (one line made of several segments);
+        // the side with fewer gets more, spread by length.
+        let lengths: HashMap<PieceId, Vec<f32>> =
+            doc.pieces().iter().map(|piece| (piece.id, triangulate::edge_lengths(piece, &self.params))).collect();
         for _ in 0..doc.seams().len().max(1) {
             let mut stable = true;
             for seam in doc.seams() {
-                let (Some(a), Some(b)) = (get(&plan, seam.a), get(&plan, seam.b)) else { continue };
-                if a != b {
-                    stable = false;
-                    let n = a.max(b);
-                    plan.get_mut(&seam.a.piece).unwrap()[seam.a.edge as usize] = n;
-                    plan.get_mut(&seam.b.piece).unwrap()[seam.b.edge as usize] = n;
+                let sides = [(seam.a.piece, seam.a_span()), (seam.b.piece, seam.b_span())];
+                let Some(edges) = sides
+                    .iter()
+                    .map(|&(piece, span)| {
+                        let n = plan.get(&piece)?.len() as u32;
+                        (n > 0).then(|| span.edges(n).map(|e| e as usize).collect::<Vec<_>>())
+                    })
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                let total = |side: usize| edges[side].iter().map(|&e| plan[&sides[side].0][e]).sum::<u32>();
+                let (a, b) = (total(0), total(1));
+                if a == b {
+                    continue;
+                }
+                stable = false;
+                let (side, target) = if a < b { (0, b) } else { (1, a) };
+                let piece = sides[side].0;
+                let edge_lengths: Vec<f32> = edges[side].iter().map(|&e| lengths[&piece][e].max(1e-3)).collect();
+                let counts = distribute(target, &edge_lengths);
+                let piece_plan = plan.get_mut(&piece).unwrap();
+                for (&edge, count) in edges[side].iter().zip(counts) {
+                    piece_plan[edge] = count;
                 }
             }
             if stable {
@@ -159,6 +179,18 @@ impl GarmentTopology {
             }
         }
         plan
+    }
+
+    /// The boundary vertices along a run of edges, start to end, with the
+    /// shared corners counted once.
+    fn span_vertices(&self, piece: PieceId, span: cad_core::EdgeSpan, edge_count: u32) -> Option<Vec<u32>> {
+        let mut chain: Vec<u32> = Vec::new();
+        for edge in span.edges(edge_count) {
+            let part = self.edge_map.get(&EdgeRef::new(piece, edge))?;
+            let skip = usize::from(!chain.is_empty());
+            chain.extend_from_slice(&part[skip.min(part.len())..]);
+        }
+        Some(chain)
     }
 
     /// Copies solver-written positions back into the per-piece cache so that
@@ -259,7 +291,11 @@ impl GarmentTopology {
 
         if topology_changed {
             for seam in doc.seams() {
-                let (Some(a), Some(b)) = (self.edge_map.get(&seam.a), self.edge_map.get(&seam.b)) else {
+                let edge_count = |piece| doc.piece(piece).map_or(0, |p| p.outline.edge_count());
+                let (Some(a), Some(b)) = (
+                    self.span_vertices(seam.a.piece, seam.a_span(), edge_count(seam.a.piece)),
+                    self.span_vertices(seam.b.piece, seam.b_span(), edge_count(seam.b.piece)),
+                ) else {
                     continue;
                 };
                 // Equal by construction (see `plan`); `zip` guards the rest.
@@ -267,6 +303,15 @@ impl GarmentTopology {
                 let pairs: Box<dyn Iterator<Item = (&u32, &u32)>> =
                     if seam.reversed { Box::new(a.iter().zip(b.iter().rev())) } else { Box::new(a.iter().zip(b.iter())) };
                 mesh.stitches.extend(pairs.map(|(&a, &b)| Stitch { seam: seam.id, a, b }));
+            }
+            // A done-up button holds its buttonhole on itself: one stitch
+            // between the mesh vertices nearest to each.
+            for (button_piece, button, hole_piece, hole) in doc.fastenings() {
+                if let (Some(a), Some(b)) =
+                    (mesh.nearest_vertex(button_piece, button.position), mesh.nearest_vertex(hole_piece, hole.position))
+                {
+                    mesh.stitches.push(Stitch { seam: Stitch::FASTENING, a, b });
+                }
             }
         }
 
@@ -277,6 +322,27 @@ impl GarmentTopology {
     fn triangles_of(&self, piece: PieceId) -> impl Iterator<Item = u32> + '_ {
         self.mesh.span(piece).into_iter().flat_map(|s| s.indices.start / 3..s.indices.end / 3)
     }
+}
+
+/// Splits `total` mesh edges over pattern edges in proportion to their
+/// lengths, at least one each (largest remainder method).
+fn distribute(total: u32, lengths: &[f32]) -> Vec<u32> {
+    let total = total.max(lengths.len() as u32);
+    let sum: f32 = lengths.iter().sum::<f32>().max(1e-6);
+    let spare = total - lengths.len() as u32;
+    let ideal: Vec<f32> = lengths.iter().map(|l| l / sum * spare as f32).collect();
+    let mut counts: Vec<u32> = ideal.iter().map(|x| 1 + x.floor() as u32).collect();
+    let mut left = total - counts.iter().sum::<u32>();
+    let mut order: Vec<usize> = (0..lengths.len()).collect();
+    order.sort_by(|&i, &j| (ideal[j] - ideal[j].floor()).total_cmp(&(ideal[i] - ideal[i].floor())));
+    for &i in order.iter().cycle() {
+        if left == 0 {
+            break;
+        }
+        counts[i] += 1;
+        left -= 1;
+    }
+    counts
 }
 
 impl TopologySync for GarmentTopology {
@@ -394,6 +460,41 @@ mod tests {
         let back = mesh.span(doc.pieces()[1].id).unwrap();
         assert!(mesh.normals[front.vertices.start as usize].z > 0.99);
         assert!(mesh.normals[back.vertices.start as usize].z < -0.99);
+    }
+
+    #[test]
+    fn a_seam_over_several_edges_pairs_up_with_a_single_edge() {
+        use cad_core::{EdgeSpan, Outline};
+        let mut doc = PatternDocument::new();
+        let fabric = doc.add_fabric("Test", [0.5; 3]);
+        // Piece A: its right side is two edges (a kink at x = 100, y = 120);
+        // piece B: its left side is one straight edge of similar length.
+        let a = doc.add_piece(
+            "A",
+            Outline::polygon([Vec2::ZERO, Vec2::new(100.0, 0.0), Vec2::new(100.0, 120.0), Vec2::new(100.0, 300.0), Vec2::new(0.0, 300.0)]),
+            fabric,
+        );
+        let b = doc.add_piece(
+            "B",
+            Outline::polygon([Vec2::new(200.0, 0.0), Vec2::new(300.0, 0.0), Vec2::new(300.0, 300.0), Vec2::new(200.0, 300.0)]),
+            fabric,
+        );
+        // A's edges 1 and 2 run upwards; B's edge 3 runs downwards.
+        doc.add_seam_spans((a, EdgeSpan { first: 1, count: 2 }), (b, EdgeSpan::single(3)), true);
+
+        let mut topo = GarmentTopology::new(MeshingParams { particle_distance: 25.0, ..Default::default() });
+        topo.rebuild(&doc);
+        let mesh = topo.mesh();
+        let stitches = &mesh.stitches;
+        let side_a = topo.span_vertices(a, EdgeSpan { first: 1, count: 2 }, 5).unwrap();
+        let side_b = topo.edge_vertices(EdgeRef::new(b, 3)).unwrap().to_vec();
+        assert_eq!(side_a.len(), side_b.len());
+        assert_eq!(stitches.len(), side_a.len());
+        // Every stitch joins points at the same height: the seam is not twisted.
+        for stitch in stitches {
+            let (pa, pb) = (mesh.pattern_positions[stitch.a as usize], mesh.pattern_positions[stitch.b as usize]);
+            assert!((pa.y - pb.y).abs() < 15.0, "{pa} vs {pb}");
+        }
     }
 
     #[test]

@@ -4,16 +4,24 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use glam::Vec3A;
+use glam::{Vec3, Vec3A};
 use physics_collision::{ClothContacts, ContactParams};
 use topology_sync::{ClothSolver, DistanceField, GarmentMesh, SolverBackend, SolverContext, SolverStats};
 
 use crate::cpu::{self, Ellipsoid, State, SubstepParams};
 use crate::model::Model;
+use crate::ogc::{Ogc, StepInput};
 
 /// Speed limit in m/s; far above anything cloth does under gravity.
 const MAX_SPEED: f32 = 20.0;
 const MAX_SUBSTEPS: u32 = 64;
+/// Iterations per sub-step of the contact solver.
+const CONTACT_ITERATIONS: usize = 2;
+/// Rounds of body points against cloth faces per step.
+const PUSH_ROUNDS: usize = 3;
+/// How far behind a cloth face a body point may be and still lift it,
+/// in metres: less than the thinnest body part the cloth meets.
+const PUSH_DEPTH: f32 = 0.01;
 
 /// XPBD cloth solver with a CPU backend and, when a device is supplied, a
 /// compute-shader backend. The backend is chosen per step from
@@ -30,6 +38,10 @@ pub struct XpbdSolver {
     scratch: Vec<[Vec3A; 4]>,
     /// Cloth-against-cloth contacts, detected once per step.
     contacts: ClothContacts,
+    /// The cloth triangles, for body points against cloth faces.
+    triangles: Vec<[u32; 3]>,
+    /// The contact solver's topology and contacts.
+    ogc: Ogc,
     /// The GPU holds contact planes that are not all empty.
     planes_on_gpu: bool,
     /// Positions at the start of the step, for the continuous tests.
@@ -40,6 +52,8 @@ pub struct XpbdSolver {
     motion_on_gpu: bool,
     /// GPU particle buffers match `state` (false after CPU steps).
     gpu_current: bool,
+    /// Soft area grab: vertex, target, influence radius and per-step strength.
+    grab: Option<(u32, Vec3A, f32, f32)>,
     stats: SolverStats,
 }
 
@@ -54,6 +68,23 @@ impl XpbdSolver {
     #[cfg(feature = "gpu")]
     pub fn with_gpu(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         Self { gpu: Some(crate::gpu::GpuBackend::new(device, queue)), ..Self::default() }
+    }
+
+    /// Moves the cloth to `mesh.positions` keeping its motion: where it
+    /// was carried along (by the body it rests on), it carries on as it
+    /// was moving. Unlike [`ClothSolver::set_positions`], which leaves it
+    /// at rest.
+    pub fn carry_along(&mut self, mesh: &GarmentMesh) {
+        if mesh.vertex_count() != self.state.positions.len() {
+            return;
+        }
+        self.pull_motion_from_gpu();
+        for ((position, previous), &new) in self.state.positions.iter_mut().zip(&mut self.state.previous).zip(&mesh.positions) {
+            let delta = Vec3A::from(new) - *position;
+            *position += delta;
+            *previous += delta;
+        }
+        self.gpu_current = false;
     }
 
     pub fn has_gpu(&self) -> bool {
@@ -86,7 +117,7 @@ impl XpbdSolver {
                 })
             };
             if element.rows[0].flags & ROW_SEAM != 0 {
-                gap = gap.max(combine(&element.rows[0]).length());
+                gap = gap.max(combine(&element.rows[0]).length() - element.rows[0].seam_rest(0.0));
             } else if element.rows[0].rest == 1.0 {
                 for row in &element.rows[..2] {
                     let strain = (combine(row).length() - 1.0).abs();
@@ -138,10 +169,16 @@ impl XpbdSolver {
             let layer = ctx.document.piece(span.piece).map_or(0, |piece| piece.layer);
             layers[span.vertices.start as usize..span.vertices.end as usize].fill(layer);
         }
-        let triangles = mesh.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        self.triangles.clone_from(&triangles);
         let stitches: Vec<(u32, u32)> = mesh.stitches.iter().map(|s| (s.a, s.b)).collect();
         // Undistorted edge lengths come from the pattern, in millimetres.
         let rest: Vec<Vec3A> = mesh.pattern_positions.iter().map(|p| Vec3A::new(p.x, p.y, 0.0) * 1e-3).collect();
+        // Buttons are not sewing: the layers they hold together still
+        // collide right up to the button, which keeps the lap on top.
+        let sewn: Vec<(u32, u32)> =
+            mesh.stitches.iter().filter(|s| s.seam != topology_sync::Stitch::FASTENING).map(|s| (s.a, s.b)).collect();
+        self.ogc = Ogc::new(&self.model, triangles.clone(), &sewn, &rest);
         self.contacts = ClothContacts::new(triangles, layers, &stitches, &rest);
         self.clear_planes();
     }
@@ -163,6 +200,7 @@ impl XpbdSolver {
     fn collide(&mut self, ctx: &SolverContext<'_>, ran_on_gpu: bool) -> bool {
         let settings = ctx.settings;
         let mut moved: Vec<u32> = Vec::new();
+        let mut lifted: Vec<(u32, Vec3A)> = Vec::new();
         self.stats.body_stops = 0;
         if settings.continuous_body_collision
             && let Some(body) = ctx.body_mesh
@@ -170,6 +208,24 @@ impl XpbdSolver {
             let margin = settings.collision_margin.max(0.0);
             moved.extend(body.sweep_all(&self.step_start, &mut self.state.positions, margin).iter().map(|(i, _)| *i));
             self.stats.body_stops = moved.len();
+            // The other way round: skin features between cloth vertices
+            // (collarbones, shoulder points, the bust) lift the faces they
+            // poke through. A few rounds, as lifting one face can lower
+            // its neighbour onto the next feature.
+            let field = self.body.clone();
+            let sample = |p: Vec3A| {
+                let (distance, gradient) = field.as_ref()?.sample(p.into())?;
+                Some((distance, Vec3A::from(gradient).try_normalize()?))
+            };
+            let sample = field.is_some().then_some(&sample as &(dyn Fn(Vec3A) -> Option<(f32, Vec3A)> + Sync));
+            for _ in 0..PUSH_ROUNDS {
+                let round = body.push_out_cloth(&self.triangles, &mut self.state.positions, margin, PUSH_DEPTH, sample);
+                if round.is_empty() {
+                    break;
+                }
+                lifted.extend(round);
+            }
+            self.stats.body_stops += lifted.len();
         }
 
         if settings.self_collision {
@@ -199,14 +255,23 @@ impl XpbdSolver {
             self.clear_planes();
         }
 
-        if moved.is_empty() {
+        if moved.is_empty() && lifted.is_empty() {
             return false;
         }
-        // A particle that was put back starts the next step at rest;
-        // otherwise it would run into the same obstacle again.
         if ran_on_gpu {
             self.pull_motion_from_gpu();
         }
+        // A lifted face keeps sliding along the skin, only stops moving
+        // into it: it is carried by the body, not stopped dead.
+        for &(i, delta) in &lifted {
+            if let Some(n) = delta.try_normalize() {
+                let v = &mut self.state.velocities[i as usize];
+                *v -= n * v.dot(n).min(0.0);
+            }
+            self.state.previous[i as usize] = self.state.positions[i as usize];
+        }
+        // A particle that was put back starts the next step at rest;
+        // otherwise it would run into the same obstacle again.
         for &i in &moved {
             self.state.velocities[i as usize] = Vec3A::ZERO;
             self.state.previous[i as usize] = self.state.positions[i as usize];
@@ -288,6 +353,7 @@ impl ClothSolver for XpbdSolver {
         if mesh.vertex_count() != self.state.positions.len() {
             return;
         }
+
         self.state = State::at_rest(mesh.positions.iter().map(|&p| Vec3A::from(p)));
         // Found for where the cloth was; they would hold it back there.
         self.clear_planes();
@@ -297,6 +363,15 @@ impl ClothSolver for XpbdSolver {
         }
         self.gpu_current = true;
         self.motion_on_gpu = false;
+    }
+
+    fn set_grab(&mut self, vertex: u32, position: Vec3, radius: f32, strength: f32) {
+        self.grab = Some((vertex, position.into(), radius.max(0.01), strength.clamp(0.01, 1.0)));
+    }
+
+    fn clear_grab(&mut self) {
+        self.pull_motion_from_gpu();
+        self.grab = None;
     }
 
     fn step(&mut self, mesh: &mut GarmentMesh, ctx: &SolverContext<'_>) -> bool {
@@ -347,6 +422,11 @@ impl ClothSolver for XpbdSolver {
             })
             .collect();
 
+        if settings.backend == SolverBackend::Contact {
+            self.step_contact(ctx, &substeps);
+            return self.finish_step(mesh, &substeps, started, "CPU · contact (VBD + OGC)");
+        }
+
         let mut ran_on_gpu = false;
         #[cfg(feature = "gpu")]
         if settings.backend == SolverBackend::Gpu
@@ -379,18 +459,120 @@ impl ClothSolver for XpbdSolver {
         }
         let _ = SolverBackend::Cpu; // referenced in both cfgs
         self.collide(ctx, ran_on_gpu);
-
-        self.seam_clock += ctx.dt;
-        for (out, p) in mesh.positions.iter_mut().zip(&self.state.positions) {
-            *out = (*p).into();
-        }
-        self.stats.backend = if ran_on_gpu { "GPU compute" } else { "CPU (rayon)" };
-        self.stats.seam_gap = substeps.last().map_or(0.0, |p| p.seam_gap);
-        self.stats.step_ms = started.elapsed().as_secs_f32() * 1000.0;
-        true
+        self.finish_step(mesh, &substeps, started, if ran_on_gpu { "GPU compute" } else { "CPU (rayon)" })
     }
 
     fn stats(&self) -> SolverStats {
         self.stats.clone()
+    }
+}
+
+impl XpbdSolver {
+    /// One step with the contact solver: fewer, implicit sub-steps, each
+    /// iterated, with contact found inside them.
+    fn step_contact(&mut self, ctx: &SolverContext<'_>, substeps: &[SubstepParams]) {
+        self.pull_motion_from_gpu();
+        self.gpu_current = false;
+        let settings = ctx.settings;
+        // As many sub-steps as the explicit solver, each iterated twice:
+        // block descent, like XPBD, converges best with short steps.
+        // Fewer, longer sub-steps with more (accelerated) iterations were
+        // tried and stretch the cloth more for the same time.
+        let count = substeps.len().max(1);
+        // The body may have moved since the last step.
+        self.ogc.invalidate();
+        let h = ctx.dt / count as f32;
+        let mut stats = crate::ogc::OgcStats::default();
+        for index in 0..count {
+            // The schedule (seams, gravity, friction) at this point of the step.
+            let p = substeps[((index + 1) * substeps.len() / count).saturating_sub(1).min(substeps.len() - 1)];
+            let input = StepInput {
+                h,
+                gravity: p.gravity,
+                damping: (-settings.damping.max(0.0) * h).exp(),
+                seam_gap: p.seam_gap,
+                friction: p.friction,
+                margin: p.margin,
+                thickness: settings.cloth_thickness.max(0.0),
+                ground: p.ground,
+                max_speed: p.max_speed,
+                iterations: CONTACT_ITERATIONS,
+                acceleration: 0.0,
+                body: self.body.as_deref(),
+                body_mesh: ctx.body_mesh.map(|m| &**m),
+                self_collision: settings.self_collision,
+                body_lag: h * (count - 1 - index) as f32,
+                colliders: &self.colliders,
+            };
+            self.ogc.substep(&self.model, &mut self.state, &input);
+            let s = self.ogc.stats;
+            stats.self_contacts = stats.self_contacts.max(s.self_contacts);
+            stats.body_contacts = stats.body_contacts.max(s.body_contacts);
+            stats.truncated += s.truncated;
+            stats.detections += s.detections;
+            stats.detect_us += s.detect_us;
+            stats.solve_us += s.solve_us;
+        }
+        log::trace!(
+            "contact step: {count} sub-steps, {} detections ({} ms), solve {} ms, {} truncated",
+            stats.detections,
+            stats.detect_us / 1000,
+            stats.solve_us / 1000,
+            stats.truncated
+        );
+        // Safety net for what the distance field cannot see (a body part
+        // thinner than its voxels, or a body without one): no vertex ends
+        // the step on the far side of a skin triangle it passed through.
+        // Only its motion into the skin is taken away; it keeps sliding.
+        let mut stopped = 0;
+        if settings.continuous_body_collision
+            && let Some(body) = ctx.body_mesh
+        {
+            let margin = settings.collision_margin.max(0.0);
+            for (i, normal) in body.sweep_all(&self.step_start, &mut self.state.positions, margin) {
+                let v = &mut self.state.velocities[i as usize];
+                *v -= normal * v.dot(normal).min(0.0);
+                stopped += 1;
+            }
+        }
+        self.stats.cloth_contacts = stats.self_contacts;
+        self.stats.cloth_crossings = stats.truncated;
+        self.stats.body_stops = stats.body_contacts + stopped;
+        self.stats.batches = self.ogc.colour_count();
+    }
+
+    /// Bookkeeping after either kind of step: the seam clock, the output
+    /// positions and the interactive grab.
+    fn finish_step(&mut self, mesh: &mut GarmentMesh, substeps: &[SubstepParams], started: Instant, backend: &'static str) -> bool {
+        self.seam_clock += substeps.iter().map(|p| p.h).sum::<f32>();
+        for (out, p) in mesh.positions.iter_mut().zip(&self.state.positions) {
+            *out = (*p).into();
+        }
+        if let Some((vertex, target, radius, strength)) = self.grab
+            && let Some(center) = self.state.positions.get(vertex as usize).copied()
+        {
+            let delta = target - center;
+            if delta.length_squared() > 1e-10 {
+                for (index, position) in self.state.positions.iter_mut().enumerate() {
+                    let distance = position.distance(center);
+                    let falloff = (1.0 - distance / radius).clamp(0.0, 1.0);
+                    let influence = falloff * falloff * strength;
+                    if influence <= 0.0 {
+                        continue;
+                    }
+                    *position += delta * influence;
+                    self.state.previous[index] = *position;
+                    self.state.velocities[index] = Vec3A::ZERO;
+                    if let Some(out) = mesh.positions.get_mut(index) {
+                        *out = (*position).into();
+                    }
+                }
+                mesh.recompute_normals();
+            }
+        }
+        self.stats.backend = backend;
+        self.stats.seam_gap = substeps.last().map_or(0.0, |p| p.seam_gap);
+        self.stats.step_ms = started.elapsed().as_secs_f32() * 1000.0;
+        true
     }
 }

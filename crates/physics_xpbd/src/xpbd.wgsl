@@ -86,7 +86,7 @@ struct Motion {
 @group(1) @binding(1) var<storage, read_write> motion: array<Motion>;
 @group(1) @binding(2) var<storage, read> elements: array<Element>;
 // Cloth-against-cloth contacts found on the CPU once per step: particle i
-// must satisfy dot(n, x) + d >= 0 for planes[2i] and planes[2i + 1]
+// must satisfy dot(n, x) + d >= 0 for planes[4i] through planes[4i + 3]
 // (xyz = n, w = d; all zero = unused).
 @group(1) @binding(3) var<storage, read> planes: array<vec4<f32>>;
 
@@ -152,12 +152,15 @@ fn solve(@builtin(global_invocation_id) id: vec3<u32>) {
             continue;
         }
         var rest = row.rest;
+        // Seam rows keep the gap they close to in `fold_limit`.
+        var fold_limit = row.fold_limit;
         if (row.flags & ROW_SEAM) != 0u {
-            rest *= frame.seam_gap;
+            rest = row.fold_limit + (row.rest - row.fold_limit) * frame.seam_gap;
+            fold_limit = 0.0;
         }
         var compliance = row.compliance;
-        if row.fold_limit > 0.0 && len > row.fold_limit {
-            let ratio = row.fold_limit / len;
+        if fold_limit > 0.0 && len > fold_limit {
+            let ratio = fold_limit / len;
             compliance *= ratio * ratio * ratio * ratio;
         }
         let denominator = w[0] * c[0] * c[0] + w[1] * c[1] * c[1] + w[2] * c[2] * c[2] + w[3] * c[3] * c[3]
@@ -204,7 +207,11 @@ fn rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
 // Position-based Coulomb friction: the push-out distance stands in for the
 // normal force, so sliding is reduced by at most friction * depth.
 fn apply_friction(x: vec3<f32>, corrected: vec3<f32>, normal: vec3<f32>, start: vec3<f32>) -> vec3<f32> {
-    let depth = length(corrected - x);
+    // Pressure from the cloth's own motion into the surface, at most the
+    // penetration: a body moving into resting cloth pushes it out without
+    // gripping it (see `apply_friction` in cpu.rs).
+    let pressed = max(-dot(x - start, normal), 0.0);
+    let depth = min(length(corrected - x), pressed);
     let motion = corrected - start;
     let sliding = motion - normal * dot(motion, normal);
     let distance = length(sliding);
@@ -262,10 +269,10 @@ fn finalize(@builtin(global_invocation_id) id: vec3<u32>) {
     var x = p.xyz;
 
     // Other cloth first, so that the body has the last word.
-    var cloth_normals: array<vec3<f32>, 2>;
-    for (var k = 0u; k < 2u; k++) {
+    var cloth_normals: array<vec3<f32>, 4>;
+    for (var k = 0u; k < 4u; k++) {
         cloth_normals[k] = vec3<f32>(0.0);
-        let plane = planes[2u * i + k];
+        let plane = planes[4u * i + k];
         if dot(plane.xyz, plane.xyz) == 0.0 {
             continue;
         }

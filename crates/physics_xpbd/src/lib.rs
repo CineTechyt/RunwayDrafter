@@ -35,6 +35,7 @@ pub mod cpu;
 pub mod gpu;
 pub mod material;
 pub mod model;
+pub mod ogc;
 mod solver;
 
 pub use model::{Element, Model, Row};

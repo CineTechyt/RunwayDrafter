@@ -8,6 +8,11 @@ use cad_core::{
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
+/// How far a simplified outline may deviate from the drawn one, in mm.
+const SIMPLIFY_TOLERANCE_MM: f32 = 0.25;
+/// Outlines turning by more than this at a point keep a corner there.
+const CORNER_DEGREES: f32 = 15.0;
+
 /// The semantic role of a vector line or loop in a pattern piece.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum LineRole {
@@ -89,6 +94,27 @@ impl RawSubpath {
 
     pub fn is_empty(&self) -> bool {
         self.segments.is_empty()
+    }
+
+    /// The path as a polyline, curves flattened to within `tolerance`.
+    pub fn polyline(&self, tolerance: f32) -> Vec<Vec2> {
+        use cad_core::geometry::{CubicBezier, Curve, QuadBezier};
+        let mut points = vec![self.start];
+        let mut current = self.start;
+        for segment in &self.segments {
+            match *segment {
+                RawSegment::Line { to } => points.push(to),
+                RawSegment::Quadratic { ctrl, to } => QuadBezier { p0: current, p1: ctrl, p2: to }.flatten_into(tolerance, &mut points),
+                RawSegment::Cubic { ctrl1, ctrl2, to } => {
+                    CubicBezier { p0: current, p1: ctrl1, p2: ctrl2, p3: to }.flatten_into(tolerance, &mut points)
+                }
+            }
+            current = segment.end();
+        }
+        if self.closed && points.first() != points.last() {
+            points.push(self.start);
+        }
+        points
     }
 
     pub fn reverse(&mut self) {
@@ -176,6 +202,21 @@ impl RawVectorDrawing {
 
         let mut candidate_loops = Vec::new();
         let mut open_lines = Vec::new();
+        // Marks keep their drawn shape: chaining and simplifying, which
+        // tidy up outlines, would wreck letters a few millimetres tall.
+        let marks: Vec<RawSubpath> = self
+            .subpaths
+            .iter()
+            .filter(|path| {
+                let closed = path.closed || path.start.distance(path.end()) < 1.0;
+                let outline_sized = path.to_outline().is_some_and(|o| {
+                    let (min, max) = o.bounds();
+                    o.signed_area().abs() > 100.0 && min.distance(max) > 15.0
+                });
+                !(closed && outline_sized) && !path.is_empty()
+            })
+            .cloned()
+            .collect();
 
         for subpath in chained {
             if subpath.is_empty() {
@@ -183,7 +224,9 @@ impl RawVectorDrawing {
             }
             let is_closed = subpath.closed || subpath.start.distance(subpath.end()) < 1.0;
             if is_closed {
-                if let Some(outline) = subpath.to_outline() {
+                // Few segments with smooth curve points, instead of the
+                // dozens of short pieces CAD exports draw curves with.
+                if let Some(outline) = subpath.to_outline().map(|o| o.simplified(SIMPLIFY_TOLERANCE_MM, CORNER_DEGREES)) {
                     let (min, max) = outline.bounds();
                     let area = outline.signed_area().abs();
                     let diag = min.distance(max);
@@ -323,19 +366,38 @@ impl RawVectorDrawing {
                 .map(|label| clean_piece_name(&label.text))
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| format!("Piece {piece_num}"));
+            let grainline = find_grainline(&polygons[root], &marks);
             pieces.push(ImportedPieceCandidate {
                 name,
                 enabled: true,
                 loops,
                 seam_allowance_mm: allowance_mm,
+                grainline,
             });
         }
 
         ImportedPattern {
             pieces,
             unassigned_open_lines: open_lines,
+            marks,
         }
     }
+}
+
+/// The grain line of a piece: the longest straight drawn line inside it
+/// that spans at least a third of the piece.
+fn find_grainline(polygon: &[Vec2], marks: &[RawSubpath]) -> Option<(Vec2, Vec2)> {
+    let (lo, hi) = polygon.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+    let minimum = (hi - lo).max_element() / 3.0;
+    marks
+        .iter()
+        .filter(|mark| !mark.closed)
+        .map(|mark| mark.polyline(0.25))
+        .filter(|points| points.len() >= 2 && cad_core::fit::is_straight(points, 0.75))
+        .map(|points| (points[0], points[points.len() - 1]))
+        .filter(|(a, b)| a.distance(*b) >= minimum)
+        .filter(|(a, b)| geometry::point_in_polygon(*a, polygon) && geometry::point_in_polygon(*b, polygon))
+        .max_by(|x, y| x.0.distance(x.1).total_cmp(&y.0.distance(y.1)))
 }
 
 /// Chains open subpaths whose ends and starts match within tolerance.
@@ -484,15 +546,23 @@ fn loop_contains(
 
 fn is_pattern_annotation(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
-    ["grain", "cut line", "cutting line", "sew line", "seam allowance", "piece qty", "fabric type"]
-        .iter()
-        .any(|marker| text.contains(marker))
+    [
+        "grain",
+        "cut line",
+        "cutting line",
+        "sew line",
+        "seam allowance",
+        "piece qty",
+        "fabric type",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
 }
 
 fn clean_piece_name(text: &str) -> String {
     text.split_whitespace()
-    .map(|word| word.replace(['_', '-'], " "))
-    .collect::<Vec<_>>()
+        .map(|word| word.replace(['_', '-'], " "))
+        .collect::<Vec<_>>()
         .join(" ")
 }
 
@@ -654,6 +724,8 @@ pub struct ImportedPieceCandidate {
     pub enabled: bool,
     pub loops: Vec<ImportedLoop>,
     pub seam_allowance_mm: f32,
+    /// End points of the grain line drawn on the piece, if one was found.
+    pub grainline: Option<(Vec2, Vec2)>,
 }
 
 impl ImportedPieceCandidate {
@@ -710,7 +782,18 @@ impl ImportedPieceCandidate {
         let mut piece = PatternPiece::new(id, self.name.clone(), outline, fabric);
         piece.seam_allowance.enabled = self.seam_allowance_mm > 0.0;
         piece.seam_allowance.default_width = self.seam_allowance_mm;
+        self.apply_grainline(&mut piece);
         Some(piece)
+    }
+
+    /// Takes over the drawn grain line: the fabric's warp runs along it.
+    fn apply_grainline(&self, piece: &mut PatternPiece) {
+        let Some((a, b)) = self.grainline else { return };
+        let direction = b - a;
+        // Either end may come first: keep the angle in [0, π).
+        let angle = direction.y.atan2(direction.x).rem_euclid(std::f32::consts::PI);
+        piece.grainline = cad_core::Grainline { origin: (a + b) * 0.5, angle, length: direction.length() };
+        piece.uv = cad_core::UvMapping::aligned_to_grain(&piece.grainline);
     }
 }
 
@@ -719,6 +802,9 @@ impl ImportedPieceCandidate {
 pub struct ImportedPattern {
     pub pieces: Vec<ImportedPieceCandidate>,
     pub unassigned_open_lines: Vec<RawSubpath>,
+    /// Every drawn path that is not a piece outline: lines, ticks, dots and
+    /// the strokes of text drawn as lines (see [`crate::drawn_text`]).
+    pub marks: Vec<RawSubpath>,
 }
 
 impl ImportedPattern {
@@ -756,6 +842,7 @@ impl ImportedPattern {
             if let Some(piece) = doc.piece_mut(id) {
                 piece.seam_allowance.enabled = allowance > 0.0;
                 piece.seam_allowance.default_width = allowance;
+                candidate.apply_grainline(piece);
             }
             piece_ids.push(id);
         }
@@ -781,6 +868,20 @@ mod tests {
         path.segments.push(RawSegment::Line {
             to: Vec2::splat(min),
         });
+        path.closed = true;
+        path
+    }
+
+    fn rectangle(min: Vec2, max: Vec2) -> RawSubpath {
+        let mut path = RawSubpath::new(min);
+        path.segments.push(RawSegment::Line {
+            to: Vec2::new(max.x, min.y),
+        });
+        path.segments.push(RawSegment::Line { to: max });
+        path.segments.push(RawSegment::Line {
+            to: Vec2::new(min.x, max.y),
+        });
+        path.segments.push(RawSegment::Line { to: min });
         path.closed = true;
         path
     }
@@ -839,6 +940,21 @@ mod tests {
         assert_eq!(pattern.pieces[0].loops[0].role, LineRole::CuttingLine);
         assert_eq!(pattern.pieces[0].loops[1].role, LineRole::SeamAllowance);
         assert_eq!(pattern.pieces[0].loops[2].role, LineRole::Internal);
+    }
+
+    #[test]
+    fn nested_sew_line_touching_cutline_bounds_stays_on_the_same_piece() {
+        let mut drawing = RawVectorDrawing::new();
+        drawing.subpaths.extend([
+            square(0.0, 200.0),
+            rectangle(Vec2::new(0.0, 10.0), Vec2::new(190.0, 190.0)),
+        ]);
+
+        let pattern = drawing.assemble_pattern(10.0);
+        assert_eq!(pattern.pieces.len(), 1);
+        assert_eq!(pattern.pieces[0].loops.len(), 2);
+        assert_eq!(pattern.pieces[0].loops[0].role, LineRole::CuttingLine);
+        assert_eq!(pattern.pieces[0].loops[1].role, LineRole::SeamAllowance);
     }
 
     #[test]

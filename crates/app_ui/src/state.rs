@@ -1,6 +1,6 @@
 //! State shared between panels, and the data the UI hands back each frame.
 
-use avatar::{BodyParams, FitReport, Measure, Measurements, PoseParams};
+use avatar::{Appearance, BodyParams, FitReport, Measure, Measurements, PoseParams};
 use cad_core::{DocumentChange, FabricId, PieceId};
 use topology_sync::{SolverSettings, SolverStats};
 
@@ -305,6 +305,72 @@ impl Default for SimulationState {
     }
 }
 
+/// Built-in garments a new project can start from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sample {
+    SleevelessTop,
+    /// A waistcoat that buttons down the front.
+    Waistcoat,
+}
+
+impl Sample {
+    pub const ALL: [Sample; 2] = [Sample::SleevelessTop, Sample::Waistcoat];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sample::SleevelessTop => "Sleeveless top",
+            Sample::Waistcoat => "Waistcoat with buttons",
+        }
+    }
+
+    pub fn document(self) -> cad_core::PatternDocument {
+        match self {
+            Sample::SleevelessTop => cad_core::PatternDocument::demo_top(),
+            Sample::Waistcoat => cad_core::PatternDocument::demo_waistcoat(),
+        }
+    }
+}
+
+/// An animation of the avatar and how it is being played.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimationState {
+    /// What is shown; `None` is the edited pose.
+    pub motion: Option<avatar::Motion>,
+    pub playing: bool,
+    /// Seconds into the motion.
+    pub time: f32,
+    /// 1 is real time.
+    pub speed: f32,
+    /// A worn garment moves with the body.
+    pub garment_follows: bool,
+    /// Whether the garment has been simulated through this motion; set by
+    /// the application.
+    pub garment: GarmentStatus,
+}
+
+/// How a worn garment moves in an animation.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum GarmentStatus {
+    /// Carried along with the skin (a preview).
+    #[default]
+    Carried,
+    /// Being simulated: the fraction done.
+    Simulating(f32),
+    /// Simulated: played back as simulated.
+    Simulated,
+    /// Nothing to simulate: no garment is worn yet.
+    NotWorn,
+    /// Simulated, but the cloth got caught somewhere (overstretched): shown
+    /// carried with the skin instead.
+    Unreliable,
+}
+
+impl Default for AnimationState {
+    fn default() -> Self {
+        Self { motion: None, playing: false, time: 0.0, speed: 1.0, garment_follows: true, garment: GarmentStatus::default() }
+    }
+}
+
 /// The avatar as the UI sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AvatarState {
@@ -325,6 +391,9 @@ pub struct AvatarState {
     /// Taken off the current body by the application.
     pub measurements: Measurements,
     pub window_open: bool,
+    /// Skin, eyes and hair: display only.
+    pub appearance: Appearance,
+    pub animation: AnimationState,
     /// False if the body model could not be loaded (placeholder avatar).
     pub available: bool,
 }
@@ -340,9 +409,69 @@ impl Default for AvatarState {
             modelled_angles: (30.0, 5.0),
             measurements: Measurements::default(),
             window_open: true,
+            appearance: Appearance::default(),
+            animation: AnimationState::default(),
             available: false,
         }
     }
+}
+
+/// The tools of the 2D pattern view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CanvasTool {
+    /// Select pieces and lines, drag pieces around.
+    #[default]
+    Select,
+    /// Edit the points and curve handles of the selected piece.
+    Points,
+    /// Sew a line of one piece to a line of another.
+    Sew,
+    /// Click points to draw a new straight-edged pattern piece.
+    SketchLine,
+    /// Click points to draw a new piece and fit its outline with curves.
+    SketchSpline,
+    /// Place a button on the selected piece.
+    Button,
+    /// Place a buttonhole on the selected piece.
+    Buttonhole,
+    /// Pull a selected piece around the flat layout.
+    Pull,
+}
+
+impl CanvasTool {
+    pub const ALL: [Self; 8] = [
+        Self::Select,
+        Self::Points,
+        Self::Sew,
+        Self::SketchLine,
+        Self::SketchSpline,
+        Self::Button,
+        Self::Buttonhole,
+        Self::Pull,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Select => "Select / move pieces (V)",
+            Self::Points => "Edit points (P)",
+            Self::Sew => "Sew lines (S)",
+            Self::SketchLine => "Draw polygon (L)",
+            Self::SketchSpline => "Draw spline (B)",
+            Self::Button => "Place button",
+            Self::Buttonhole => "Place buttonhole",
+            Self::Pull => "Pull fabric (move piece)",
+        }
+    }
+}
+
+/// One side of a seam being made: a run of lines on one piece and where
+/// it was clicked, which says which end the seam starts at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SewPick {
+    pub piece: PieceId,
+    pub span: cad_core::EdgeSpan,
+    /// Pattern-space point of the first click.
+    pub at: glam::Vec2,
 }
 
 /// Selection, view options and timeline: UI state that outlives a frame and
@@ -355,12 +484,25 @@ pub struct EditorState {
     pub file_browser: crate::file_browser::FileBrowserState,
     pub simulation: SimulationState,
     pub selected_piece: Option<PieceId>,
+    /// The edge last clicked; the whole line it belongs to is selected.
     pub selected_edge: Option<cad_core::EdgeRef>,
-    pub sewing_mode: bool,
-    pub sewing_select_b: bool,
-    pub sewing_edges_a: Vec<cad_core::EdgeRef>,
-    pub sewing_edges_b: Vec<cad_core::EdgeRef>,
-    pub sewing_reversed: bool,
+    /// The active tool of the 2D pattern view.
+    pub canvas_tool: CanvasTool,
+    /// Sewing in progress: the first side, then the second.
+    pub sew_a: Option<SewPick>,
+    pub sew_b: Option<SewPick>,
+    /// Points collected by one of the sketch tools before the new piece is closed.
+    pub sketch_points: Vec<glam::Vec2>,
+    /// What the 2D view's tool tells the user, shown inside the view.
+    pub canvas_hint: String,
+    /// The project file being edited, once saved or opened.
+    pub project_path: Option<std::path::PathBuf>,
+    /// Outcome of the last save or open, for the status bar.
+    pub project_status: Option<Result<String, String>>,
+    /// A save (`Some(true)`: save as) or open requested by shortcut, run
+    /// once the frame's input is released.
+    pub pending_save: Option<bool>,
+    pub pending_open: bool,
     pub selected_fabric: Option<FabricId>,
     pub view: ViewOptions,
     pub timeline: Timeline,
@@ -383,6 +525,32 @@ pub enum UiCommand {
     /// Put the pieces back around the avatar and reset the drape.
     ArrangePieces,
     ResetCamera3d,
+    /// Turn or mirror the selected piece in the 2D layout.
+    TransformPiece(cad_core::PieceTransform),
+    /// Add a mirrored copy of the selected piece, for the other side of
+    /// the body.
+    MirrorCopy,
+    /// Delete the selected piece and its seams.
+    DeletePiece,
+    /// The Delete key: with the sewing tool, take the seam of the selected
+    /// line out; otherwise delete the selected piece.
+    DeleteSelection,
+    /// Make an anchor a turn point (splits the line there) or a curve
+    /// point (joins the two lines meeting there into one).
+    SetPointKind { piece: PieceId, anchor: u32, kind: cad_core::PointKind },
+    /// Lay all pieces out side by side without overlaps.
+    TidyLayout,
+    DeleteSeam(cad_core::SeamId),
+    /// Save the project to this file.
+    SaveProject(std::path::PathBuf),
+    /// Replace everything with the project in this file.
+    OpenProject(std::path::PathBuf),
+    /// Start a new project from one of the built-in garments.
+    NewProject(Sample),
+    /// Simulate the worn garment through the avatar's current animation.
+    SimulateGarmentMotion,
+    /// Turn a seam around (its start meets the other end).
+    FlipSeam(cad_core::SeamId),
     /// Copy the outermost garment into a new layer worn over it.
     AddOuterLayer,
     /// Replace the avatar with the geometry in this file.

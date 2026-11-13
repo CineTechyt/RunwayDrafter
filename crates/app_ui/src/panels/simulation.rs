@@ -47,6 +47,8 @@ impl Panel for SimulationPanel {
         property_grid(ui, "solver", |ui| {
             ui.label("Backend");
             ui.horizontal(|ui| {
+                ui.selectable_value(&mut sim.settings.backend, SolverBackend::Contact, "Contact")
+                    .on_hover_text("Implicit CPU solver with offset geometric contact: cloth never passes through itself and lies on the body instead of being held to it");
                 ui.selectable_value(&mut sim.settings.backend, SolverBackend::Cpu, "CPU");
                 ui.add_enabled_ui(sim.gpu_available, |ui| {
                     ui.selectable_value(&mut sim.settings.backend, SolverBackend::Gpu, "GPU")

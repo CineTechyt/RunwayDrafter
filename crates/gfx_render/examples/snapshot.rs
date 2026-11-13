@@ -235,7 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sorted.sort_by(f32::total_cmp);
         println!("overlay values: min {:.4}, median {:.4}, max {:.4}", sorted[0], sorted[sorted.len() / 2], sorted[sorted.len() - 1]);
     }
-    scene.sync_garment(&gpu, mesh, &values);
+    scene.sync_garment(&gpu, mesh, &values, |_| 0.001);
     scene.prepare(&gpu, &OrbitCamera { yaw, distance: env("ZOOM", 2.2), target: Vec3::new(0.0, env("LOOK", 1.15), 0.0), ..Default::default() }, |piece| {
         let fabric = document.piece(piece).and_then(|p| document.fabric(p.fabric));
         fabric.map_or_else(SurfaceMaterial::default, |f| SurfaceMaterial {
@@ -243,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             roughness: f.roughness,
             metallic: f.metallic,
             weave_strength: f.weave_strength,
-            emissive: [0.0; 3],
+            ..SurfaceMaterial::default()
         })
     });
 

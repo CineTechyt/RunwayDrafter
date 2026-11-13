@@ -20,6 +20,8 @@ pub const ROW_SEAM: u32 = 2;
 /// Compliance of a closed stitch in m/N; effectively rigid.
 const SEAM_COMPLIANCE: f32 = 1e-7;
 const MM_TO_M: f32 = 1e-3;
+/// Distance a done-up button keeps its buttonhole at, in metres.
+pub const FASTENING_GAP: f32 = 0.004;
 
 /// One constraint `|Σ wᵢ·xᵢ| − rest` with XPBD compliance. Layout matches
 /// `Row` in `xpbd.wgsl`.
@@ -34,6 +36,10 @@ pub struct Row {
     /// For bending rows: the value of `|Σ wᵢ·xᵢ|` at a 60° fold. Beyond
     /// it the row stiffens steeply, so cloth cannot collapse into a sharp
     /// crease and pass through itself. 0 = no limit.
+    ///
+    /// For seam rows: the gap the seam closes to, see [`Row::seam_rest`]
+    /// (zero for sewing; a fabric thickness for a done-up button, which
+    /// holds its hole over itself, not in the same place).
     pub fold_limit: f32,
 }
 
@@ -44,6 +50,22 @@ pub struct Row {
 pub struct Element {
     pub particles: [u32; 4],
     pub rows: [Row; 4],
+}
+
+impl Row {
+    /// The rest length of a seam row `seam_gap` (1 → 0) into the closure:
+    /// from the initial gap down to the gap it closes to.
+    #[inline]
+    pub fn seam_rest(&self, seam_gap: f32) -> f32 {
+        self.fold_limit + (self.rest - self.fold_limit) * seam_gap
+    }
+
+    /// Bending rows stiffen past their fold limit; seams use the field for
+    /// something else.
+    #[inline]
+    pub fn fold_limit(&self) -> f32 {
+        if self.flags & ROW_SEAM != 0 { 0.0 } else { self.fold_limit }
+    }
 }
 
 impl Element {
@@ -178,10 +200,14 @@ impl Model {
                 continue;
             }
             let gap = mesh.positions[stitch.a as usize].distance(mesh.positions[stitch.b as usize]);
-            elements.push(
-                Element::new([stitch.a, stitch.b, INVALID, INVALID])
-                    .with_row(0, [1.0, -1.0, 0.0, 0.0], gap, SEAM_COMPLIANCE, ROW_SEAM),
-            );
+            // A button holds its buttonhole a fabric thickness above it:
+            // pulled onto the button itself, the two layers would be drawn
+            // through each other there.
+            let closed = if stitch.seam == topology_sync::Stitch::FASTENING { FASTENING_GAP } else { 0.0 };
+            let mut element =
+                Element::new([stitch.a, stitch.b, INVALID, INVALID]).with_row(0, [1.0, -1.0, 0.0, 0.0], gap.max(closed), SEAM_COMPLIANCE, ROW_SEAM);
+            element.rows[0].fold_limit = closed;
+            elements.push(element);
             model.stitches += 1;
         }
 

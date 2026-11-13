@@ -411,6 +411,163 @@ pub struct Notch {
     pub depth: f32,
 }
 
+/// The shape of a button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ButtonStyle {
+    /// Flat, slightly dished, sewn on through four holes (shirts, coats).
+    #[default]
+    FourHole,
+    /// Like `FourHole` with two holes.
+    TwoHole,
+    /// A domed head on a loop underneath, no holes on top (blazers).
+    Shank,
+    /// A riveted metal tack button with a rolled rim (jeans).
+    Tack,
+}
+
+impl ButtonStyle {
+    pub const ALL: [ButtonStyle; 4] = [ButtonStyle::FourHole, ButtonStyle::TwoHole, ButtonStyle::Shank, ButtonStyle::Tack];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ButtonStyle::FourHole => "4-hole",
+            ButtonStyle::TwoHole => "2-hole",
+            ButtonStyle::Shank => "Shank",
+            ButtonStyle::Tack => "Jeans tack",
+        }
+    }
+
+    /// Thread holes through the face of the button.
+    pub fn holes(self) -> u32 {
+        match self {
+            ButtonStyle::FourHole => 4,
+            ButtonStyle::TwoHole => 2,
+            ButtonStyle::Shank | ButtonStyle::Tack => 0,
+        }
+    }
+}
+
+/// What a button is made of: how it reflects light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ButtonFinish {
+    #[default]
+    Plastic,
+    Metal,
+    Wood,
+    /// Mother of pearl: glossy, with a soft sheen.
+    Pearl,
+}
+
+impl ButtonFinish {
+    pub const ALL: [ButtonFinish; 4] = [ButtonFinish::Plastic, ButtonFinish::Metal, ButtonFinish::Wood, ButtonFinish::Pearl];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ButtonFinish::Plastic => "Plastic",
+            ButtonFinish::Metal => "Metal",
+            ButtonFinish::Wood => "Wood",
+            ButtonFinish::Pearl => "Mother of pearl",
+        }
+    }
+
+    /// `(roughness, metallic)` of the surface.
+    pub fn shading(self) -> (f32, f32) {
+        match self {
+            ButtonFinish::Plastic => (0.32, 0.0),
+            ButtonFinish::Metal => (0.28, 1.0),
+            ButtonFinish::Wood => (0.7, 0.0),
+            ButtonFinish::Pearl => (0.18, 0.0),
+        }
+    }
+
+    /// A typical colour of the material, linear RGB.
+    pub fn default_color(self) -> [f32; 3] {
+        match self {
+            ButtonFinish::Plastic => [0.02, 0.02, 0.025],
+            ButtonFinish::Metal => [0.80, 0.62, 0.32],
+            ButtonFinish::Wood => [0.30, 0.15, 0.06],
+            ButtonFinish::Pearl => [0.86, 0.84, 0.80],
+        }
+    }
+}
+
+/// A buttonhole, addressed document-wide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ButtonholeRef {
+    pub piece: PieceId,
+    /// Index into the piece's [`PatternPiece::buttonholes`].
+    pub index: u32,
+}
+
+/// A button placed on a pattern piece, in pattern-space millimetres.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Button {
+    pub position: Vec2,
+    pub diameter: f32,
+    #[serde(default)]
+    pub style: ButtonStyle,
+    #[serde(default)]
+    pub finish: ButtonFinish,
+    /// Linear RGB.
+    #[serde(default = "Button::default_color")]
+    pub color: [f32; 3],
+    /// Linear RGB of the thread it is sewn on with.
+    #[serde(default = "Button::default_thread")]
+    pub thread_color: [f32; 3],
+    /// The buttonhole it is done up through. A fastened button pulls its
+    /// hole onto itself in the simulation, like a seam of one stitch.
+    #[serde(default)]
+    pub fastened_to: Option<ButtonholeRef>,
+}
+
+impl Button {
+    pub fn new(position: Vec2, diameter: f32) -> Self {
+        Self {
+            position,
+            diameter,
+            style: ButtonStyle::default(),
+            finish: ButtonFinish::default(),
+            color: Self::default_color(),
+            thread_color: Self::default_thread(),
+            fastened_to: None,
+        }
+    }
+
+    fn default_color() -> [f32; 3] {
+        ButtonFinish::Plastic.default_color()
+    }
+
+    fn default_thread() -> [f32; 3] {
+        [0.03, 0.03, 0.035]
+    }
+
+    /// Height of the button above the fabric in mm.
+    pub fn thickness(&self) -> f32 {
+        match self.style {
+            ButtonStyle::FourHole | ButtonStyle::TwoHole => (self.diameter * 0.16).clamp(1.8, 5.0),
+            ButtonStyle::Shank => (self.diameter * 0.35).clamp(3.0, 9.0),
+            ButtonStyle::Tack => (self.diameter * 0.38).clamp(4.0, 9.0),
+        }
+    }
+}
+
+/// A buttonhole placed on a pattern piece, in pattern-space millimetres.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Buttonhole {
+    pub position: Vec2,
+    pub length: f32,
+    /// Radians from the pattern's +X axis.
+    pub angle: f32,
+}
+
+impl Buttonhole {
+    /// A buttonhole sized for a button: the button's diameter plus its
+    /// thickness, as tailors cut them.
+    pub fn for_button(position: Vec2, button_diameter: f32) -> Self {
+        Self { position, length: button_diameter + 3.0, angle: 0.0 }
+    }
+}
+
 /// The direction of the warp threads, drawn as a double-headed arrow.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Grainline {
@@ -480,6 +637,10 @@ pub struct PatternPiece {
     pub outline: Outline,
     pub seam_allowance: SeamAllowance,
     pub notches: Vec<Notch>,
+    #[serde(default)]
+    pub buttons: Vec<Button>,
+    #[serde(default)]
+    pub buttonholes: Vec<Buttonhole>,
     pub grainline: Grainline,
     pub uv: UvMapping,
     pub fabric: FabricId,
@@ -489,6 +650,20 @@ pub struct PatternPiece {
     /// different layers meet, the higher one is kept outside.
     #[serde(default = "PatternPiece::default_layer")]
     pub layer: u32,
+    /// Where the piece goes around the body before sewing.
+    #[serde(default)]
+    pub placement: Placement,
+}
+
+/// Where a piece is put around the avatar before it is sewn, like the
+/// arrangement points of other garment CAD tools.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Placement {
+    /// Degrees around the body, seen from above: 0 = centre front,
+    /// 90 = the avatar's left side, 180 = centre back, -90 = right side.
+    pub angle: f32,
+    /// Raises (positive) or lowers the piece from where it would go, in mm.
+    pub height: f32,
 }
 
 impl PatternPiece {
@@ -508,11 +683,14 @@ impl PatternPiece {
             outline,
             seam_allowance: SeamAllowance::default(),
             notches: Vec::new(),
+            buttons: Vec::new(),
+            buttonholes: Vec::new(),
             grainline,
             uv: UvMapping::aligned_to_grain(&grainline),
             fabric,
             arrangement: Arrangement { anchor: centre, translation: Vec3::ZERO, rotation: Quat::IDENTITY, curvature: 0.0 },
             layer: Self::default_layer(),
+            placement: Placement::default(),
         }
     }
 

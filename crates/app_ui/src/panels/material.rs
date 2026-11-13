@@ -26,7 +26,7 @@ impl Panel for MaterialPanel {
                 ui.selectable_value(selected, Some(fabric.id), &fabric.name);
             });
         }
-        if ui.button("＋ New fabric").clicked() {
+        if ui.button("➕ New fabric").clicked() {
             let id = cx.document.add_fabric("New fabric", [0.5, 0.5, 0.5]);
             *selected = Some(id);
             cx.output.changes.push(DocumentChange::Fabric(id));

@@ -452,16 +452,16 @@ pub fn show(ctx: &egui::Context, state: &mut FileBrowserState) {
         .show(ctx, |ui| {
             // --- Top Navigation Toolbar ---
             ui.horizontal(|ui| {
-                if ui.add_enabled(state.can_go_back(), egui::Button::new("⮜")).on_hover_text("Back").clicked() {
+                if ui.add_enabled(state.can_go_back(), egui::Button::new("⬅")).on_hover_text("Back").clicked() {
                     state.go_back();
                 }
-                if ui.add_enabled(state.can_go_forward(), egui::Button::new("⮞")).on_hover_text("Forward").clicked() {
+                if ui.add_enabled(state.can_go_forward(), egui::Button::new("➡")).on_hover_text("Forward").clicked() {
                     state.go_forward();
                 }
                 if ui.button("⬆ Up").on_hover_text("Go to parent directory").clicked() {
                     state.go_up();
                 }
-                if ui.button("🔄").on_hover_text("Refresh").clicked() {
+                if ui.button("🔃").on_hover_text("Refresh").clicked() {
                     state.refresh();
                 }
 
@@ -539,7 +539,7 @@ pub fn show(ctx: &egui::Context, state: &mut FileBrowserState) {
                             // Column Headers with Sorting
                             ui.horizontal(|ui| {
                                 let sort_indicator = if state.sort_column == SortColumn::Name {
-                                    if state.sort_direction == SortDirection::Ascending { " ▲" } else { " ▼" }
+                                    if state.sort_direction == SortDirection::Ascending { " ⏶" } else { " ⏷" }
                                 } else { "" };
                                 if ui.selectable_label(state.sort_column == SortColumn::Name, format!("Name{sort_indicator}")).clicked() {
                                     if state.sort_column == SortColumn::Name {
@@ -557,7 +557,7 @@ pub fn show(ctx: &egui::Context, state: &mut FileBrowserState) {
 
                             ui.horizontal(|ui| {
                                 let sort_indicator = if state.sort_column == SortColumn::Size {
-                                    if state.sort_direction == SortDirection::Ascending { " ▲" } else { " ▼" }
+                                    if state.sort_direction == SortDirection::Ascending { " ⏶" } else { " ⏷" }
                                 } else { "" };
                                 if ui.selectable_label(state.sort_column == SortColumn::Size, format!("Size{sort_indicator}")).clicked() {
                                     if state.sort_column == SortColumn::Size {
@@ -714,7 +714,7 @@ fn get_file_icon(name: &str) -> &'static str {
     match ext.as_str() {
         "pdf" => "📕",
         "svg" => "🎨",
-        "obj" | "fbx" | "gltf" | "glb" => "🧊",
+        "obj" | "fbx" | "gltf" | "glb" => "📦",
         "dxf" => "📐",
         "png" | "jpg" | "jpeg" => "🖼",
         "txt" | "md" | "json" => "📝",

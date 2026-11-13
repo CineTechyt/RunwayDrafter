@@ -162,7 +162,7 @@ fn gpu_and_cpu_backends_agree() {
     let colliders = torso();
     let (document, mut on_cpu) = setup();
     let (_, mut on_gpu) = setup();
-    let cpu_settings = SolverSettings::default();
+    let cpu_settings = SolverSettings { backend: SolverBackend::Cpu, ..SolverSettings::default() };
     let gpu_settings = SolverSettings { backend: SolverBackend::Gpu, ..cpu_settings };
     let cpu_ctx = SolverContext { document: &document, settings: &cpu_settings, colliders: &colliders, body: None, body_mesh: None, ground: 0.0, dt: DT };
     let gpu_ctx = SolverContext { document: &document, settings: &gpu_settings, colliders: &colliders, body: None, body_mesh: None, ground: 0.0, dt: DT };

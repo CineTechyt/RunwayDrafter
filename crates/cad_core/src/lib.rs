@@ -12,19 +12,25 @@
 
 pub mod document;
 pub mod edit;
+pub mod fit;
 pub mod geometry;
 pub mod ids;
+pub mod lines;
 pub mod material;
 pub mod pattern;
+pub mod transform;
 pub mod uv;
 
 pub use document::{PatternDocument, Seam};
-pub use edit::{DocumentChange, EditCommand, EditError, History, MoveHandle};
+pub use edit::{DocumentChange, DocumentSnapshot, EditCommand, EditError, History, MoveHandle};
+pub use lines::EdgeSpan;
+pub use transform::PieceTransform;
 pub use geometry::{CubicBezier, Curve, CurveSegment, Line, QuadBezier};
 pub use ids::{EdgeRef, FabricId, HandleKind, HandleRef, PieceId, SeamId};
 pub use material::{Fabric, FabricPhysics};
 pub use pattern::{
-    Arrangement, ControlPoint, FlatOutline, Grainline, Notch, NotchKind, Outline, PatternPiece,
+    Placement,
+    Arrangement, Button, ButtonFinish, ButtonStyle, Buttonhole, ButtonholeRef, ControlPoint, FlatOutline, Grainline, Notch, NotchKind, Outline, PatternPiece,
     PointKind, SeamAllowance, Segment,
 };
 pub use uv::UvMapping;

@@ -462,6 +462,8 @@ dependencies = [
  "physics_collision",
  "physics_xpbd",
  "pollster",
+ "serde",
+ "serde_json",
  "topology_sync",
  "wgpu",
  "winit",

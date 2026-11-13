@@ -21,6 +21,9 @@ struct Object {
     // Technical views of the garment. x: 0 = fabric, 1 = strain heatmap,
     // 2 = fit map; y: the value shown blue; z: the value shown red.
     overlay: vec4<f32>,
+    // x: 0 = standard, 1 = skin, 2 = hair (yzw: the crown, where strands
+    // start), 3 = prop (material per vertex: colour, uv = roughness/metallic).
+    shading: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -32,6 +35,7 @@ struct VertexInput {
     @location(2) uv: vec2<f32>,
     // Strain (relative edge elongation) or clearance to the body (metres).
     @location(3) value: f32,
+    @location(4) color: vec3<f32>,
 };
 
 struct VertexOutput {
@@ -40,6 +44,7 @@ struct VertexOutput {
     @location(1) world_normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) value: f32,
+    @location(4) color: vec3<f32>,
 };
 
 @vertex
@@ -52,6 +57,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.world_normal = (object.model * vec4<f32>(in.normal, 0.0)).xyz;
     out.uv = in.uv;
     out.value = in.value;
+    out.color = in.color;
     out.clip_position = globals.view_proj * world;
     return out;
 }
@@ -101,6 +107,104 @@ fn weave(uv: vec2<f32>, threads: f32) -> f32 {
     let fade = clamp(1.0 - footprint * 1.5, 0.0, 1.0);
     let pattern = sin(p.x * 2.0 * PI) * sin(p.y * 2.0 * PI);
     return 1.0 + (pattern * 0.5 - 0.5) * fade;
+}
+
+// ---------------------------------------------------------------------------
+// Skin and hair
+// ---------------------------------------------------------------------------
+
+// Wrapped diffuse: light reaches a little past the terminator, and what
+// reaches there has travelled through the skin and comes out red.
+fn shade_skin(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, radiance: vec3<f32>, albedo: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let n_dot_l = dot(n, l);
+    let wrap = clamp((n_dot_l + 0.45) / 1.45, 0.0, 1.0);
+    let lit = clamp(n_dot_l, 0.0, 1.0);
+    let scatter = vec3<f32>(0.85, 0.28, 0.18) * (wrap - lit) * 0.7;
+    let diffuse = albedo / PI * (wrap + scatter);
+    // Specular only (no albedo): an oily sheen.
+    let specular = shade_light(n, v, l, radiance, vec3<f32>(0.0), roughness, 0.0);
+    return diffuse * radiance + specular;
+}
+
+fn hash11(x: f32) -> f32 {
+    return fract(sin(x * 127.1) * 43758.5453);
+}
+
+// Smooth 1D value noise.
+fn noise1(x: f32) -> f32 {
+    let i = floor(x);
+    let f = fract(x);
+    return mix(hash11(i), hash11(i + 1.0), f * f * (3.0 - 2.0 * f));
+}
+
+fn hash31(p: vec3<f32>) -> f32 {
+    return fract(sin(dot(p, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453);
+}
+
+// Smooth 3D value noise.
+fn noise3(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let x00 = mix(hash31(i), hash31(i + vec3<f32>(1.0, 0.0, 0.0)), u.x);
+    let x10 = mix(hash31(i + vec3<f32>(0.0, 1.0, 0.0)), hash31(i + vec3<f32>(1.0, 1.0, 0.0)), u.x);
+    let x01 = mix(hash31(i + vec3<f32>(0.0, 0.0, 1.0)), hash31(i + vec3<f32>(1.0, 0.0, 1.0)), u.x);
+    let x11 = mix(hash31(i + vec3<f32>(0.0, 1.0, 1.0)), hash31(i + vec3<f32>(1.0, 1.0, 1.0)), u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
+// A close crop: a fine, even grain of hair ends over the scalp, with no
+// direction to it. `p` in metres; fades to the average before aliasing.
+fn grain(p: vec3<f32>) -> f32 {
+    var s = 0.0;
+    var weight = 0.0;
+    let scales = array<f32, 2>(900.0, 2400.0);
+    let amounts = array<f32, 2>(0.4, 0.6);
+    for (var k = 0; k < 2; k++) {
+        let x = p * scales[k];
+        let fade = clamp(1.5 - length(fwidth(x)) * 1.2, 0.0, 1.0);
+        s += mix(0.5, noise3(x), fade) * amounts[k];
+        weight += amounts[k];
+    }
+    return s / weight;
+}
+
+// Strands and clumps across the hair (U runs across, in metres): fades to
+// the average before it would alias.
+fn strands(u: f32) -> f32 {
+    var s = 0.0;
+    var weight = 0.0;
+    let scales = array<f32, 3>(260.0, 900.0, 2600.0);
+    let amounts = array<f32, 3>(0.45, 0.3, 0.25);
+    for (var k = 0; k < 3; k++) {
+        let x = u * scales[k];
+        let fade = clamp(1.5 - fwidth(x) * 1.5, 0.0, 1.0);
+        s += mix(0.5, noise1(x), fade) * amounts[k];
+        weight += amounts[k];
+    }
+    return s / weight;
+}
+
+// Kajiya-Kay hair: highlights are bands across the strands, two lobes
+// shifted along them (the white one off the cuticle, the coloured one
+// through the fibre).
+fn shade_hair(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, radiance: vec3<f32>, albedo: vec3<f32>, t: vec3<f32>, s: f32, len: f32) -> vec3<f32> {
+    let h = normalize(l + v);
+    let n_dot_l = dot(n, l);
+    let shadow = smoothstep(-0.15, 0.25, n_dot_l);
+    let diffuse = albedo / PI * clamp(n_dot_l * 0.75 + 0.25, 0.0, 1.0);
+    let t1 = normalize(t - n * 0.08);
+    let t2 = normalize(t + n * 0.12);
+    let th1 = dot(t1, h);
+    let th2 = dot(t2, h);
+    // Strands catch the light one by one: the bands break up along them.
+    let glint = s * s * 1.6;
+    let spec1 = pow(sqrt(max(1.0 - th1 * th1, 0.0)), 120.0) * 0.035 * glint;
+    let spec2 = pow(sqrt(max(1.0 - th2 * th2, 0.0)), 30.0) * 0.06 * glint;
+    let tint = sqrt(albedo) * 1.5;
+    // Short hair has no long fibres to line the highlight up along.
+    let specular = (vec3<f32>(spec1) + tint * spec2) * shadow * (0.15 + 0.85 * len);
+    return (diffuse + specular) * radiance;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,21 +263,69 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> @loca
         return vec4<f32>(technical_color(in.value, n, v) + object.emissive.rgb, 1.0);
     }
 
-    let roughness = clamp(object.params.x, 0.045, 1.0);
-    let metallic = clamp(object.params.y, 0.0, 1.0);
-    var albedo = object.base_color.rgb;
+    let kind = u32(object.shading.x + 0.5);
+    var roughness = clamp(object.params.x, 0.045, 1.0);
+    var metallic = clamp(object.params.y, 0.0, 1.0);
+    var albedo = object.base_color.rgb * in.color;
+    if kind == 3u {
+        roughness = clamp(in.uv.x, 0.045, 1.0);
+        metallic = clamp(in.uv.y, 0.0, 1.0);
+    }
     if object.params.z > 0.0 {
         albedo *= mix(1.0, weave(in.uv, object.params.w), object.params.z);
     }
-
-    var color = shade_light(n, v, normalize(globals.key_direction.xyz), globals.key_color.rgb, albedo, roughness, metallic);
-    color += shade_light(n, v, normalize(globals.fill_direction.xyz), globals.fill_color.rgb, albedo, roughness, metallic);
-
+    let key = normalize(globals.key_direction.xyz);
+    let fill = normalize(globals.fill_direction.xyz);
     let ambient = mix(globals.ground.rgb, globals.sky.rgb, n.y * 0.5 + 0.5);
-    color += ambient * albedo * (1.0 - metallic);
+
+    var color = vec3<f32>(0.0);
+    var alpha = 1.0;
+    if kind == 1u {
+        color = shade_skin(n, v, key, globals.key_color.rgb, albedo, roughness);
+        color += shade_skin(n, v, fill, globals.fill_color.rgb, albedo, roughness);
+        color += ambient * albedo;
+        // A faint sheen where the skin turns away.
+        color += globals.sky.rgb * 0.06 * pow(1.0 - max(dot(n, v), 0.0), 4.0);
+    } else if kind == 2u {
+        // Strands run away from the crown along the surface.
+        let away = in.world_position - object.shading.yzw;
+        var t = away - n * dot(away, n);
+        if dot(t, t) < 1e-8 {
+            t = vec3<f32>(0.0, -1.0, 0.0);
+        }
+        t = normalize(t);
+        // V says how long the hair is: a crop is grain, long hair strands.
+        let len = clamp(in.uv.y, 0.0, 1.0);
+        let crop = grain(in.world_position);
+        let s = mix(crop, strands(in.uv.x), len);
+        albedo *= mix(0.75 + 0.5 * crop, 0.6 + 0.8 * s, len);
+        color = shade_hair(n, v, key, globals.key_color.rgb, albedo, t, s, len);
+        color += shade_hair(n, v, fill, globals.fill_color.rgb, albedo, t, s, len);
+        color += ambient * albedo * 0.8;
+        // Where coverage runs out, strands end one by one: each strand
+        // has its own threshold, so the edge breaks up into tips.
+        // Mixed with a per-pixel dither so thinning hair (a hairline, a
+        // close crop) turns into a gradient rather than a comb.
+        let strand_end = noise1(in.uv.x * 1400.0) * 0.6 + noise1(in.uv.x * 380.0 + 17.0) * 0.4;
+        let strand = mix(noise3(in.world_position * 1800.0), strand_end, len);
+        let pixel = fract(52.9829189 * fract(dot(in.clip_position.xy, vec2<f32>(0.06711056, 0.00583715))));
+        let threshold = (0.55 * strand + 0.45 * pixel) * 0.92;
+        alpha = smoothstep(threshold, threshold + 0.06, in.value);
+    } else {
+        color = shade_light(n, v, key, globals.key_color.rgb, albedo, roughness, metallic);
+        color += shade_light(n, v, fill, globals.fill_color.rgb, albedo, roughness, metallic);
+        color += ambient * albedo * (1.0 - metallic);
+        if metallic > 0.0 {
+            // Metals have no diffuse: give them something to reflect.
+            let r = reflect(-v, n);
+            let environment = mix(globals.ground.rgb, globals.sky.rgb * 1.6, smoothstep(-0.2, 0.4, r.y));
+            let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+            color += environment * fresnel_schlick(max(dot(n, v), 0.0), f0) * (1.0 - roughness * 0.7) * metallic;
+        }
+    }
     color += object.emissive.rgb;
 
     // Reinhard tone mapping; the sRGB target applies the transfer function.
     color = color / (color + vec3<f32>(1.0));
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(color, alpha);
 }

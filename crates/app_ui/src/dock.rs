@@ -37,85 +37,87 @@ impl Panel for CanvasPanel {
         "2D Pattern"
     }
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
-        sewing_toolbar(ui, cx);
-        let hint = "Drag points to edit · click a piece to select · middle/right-drag to pan · scroll to zoom";
-        cx.output.canvas = Some(viewport::show(ui, cx.textures.canvas, hint));
+        canvas_toolbar(ui, cx);
+        // What the tool expects next is shown inside the view, not in the
+        // toolbar.
+        let hint = if cx.editor.canvas_hint.is_empty() {
+            "Middle/right-drag to pan · scroll to zoom"
+        } else {
+            cx.editor.canvas_hint.as_str()
+        };
+        let hint = hint.to_owned();
+        cx.output.canvas = Some(viewport::show(ui, cx.textures.canvas, &hint));
     }
     fn fills_tab(&self) -> bool {
         true
     }
 }
 
-fn sewing_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
+/// The 2D view's toolbar: tools on the left, operations on the selected
+/// piece next to them. Icons only; names and shortcuts are in the tooltips.
+fn canvas_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
+    use crate::icons::{self, Icon};
+    use crate::state::CanvasTool;
+    let (undo_label, redo_label) = (cx.editor.undo_label.clone(), cx.editor.redo_label.clone());
     let editor = &mut cx.editor;
-    ui.horizontal(|ui| {
-        if ui.selectable_label(editor.sewing_mode, "⇄ Sew").clicked() {
-            editor.sewing_mode = !editor.sewing_mode;
-            editor.sewing_edges_a.clear();
-            editor.sewing_edges_b.clear();
-            editor.sewing_select_b = false;
-        }
-        if editor.sewing_mode {
-            ui.colored_label(egui::Color32::from_rgb(64, 210, 135), "A");
-            ui.selectable_value(
-                &mut editor.sewing_select_b,
-                false,
-                format!("{} edges", editor.sewing_edges_a.len()),
-            );
-            ui.colored_label(egui::Color32::from_rgb(70, 180, 245), "B");
-            ui.selectable_value(
-                &mut editor.sewing_select_b,
-                true,
-                format!("{} edges", editor.sewing_edges_b.len()),
-            );
-            ui.checkbox(&mut editor.sewing_reversed, "Reverse match");
-            let equal_counts = !editor.sewing_edges_a.is_empty()
-                && editor.sewing_edges_a.len() == editor.sewing_edges_b.len();
-            let valid_edges = editor
-                .sewing_edges_a
-                .iter()
-                .zip(&editor.sewing_edges_b)
-                .all(|(a, b)| {
-                    a != b
-                        && cx.document.seam_of(*a).is_none()
-                        && cx.document.seam_of(*b).is_none()
-                        && cx.document
-                            .piece(a.piece)
-                            .is_some_and(|piece| a.edge < piece.outline.edge_count())
-                        && cx.document
-                            .piece(b.piece)
-                            .is_some_and(|piece| b.edge < piece.outline.edge_count())
-                });
-            ui.label("Click edges in order on A, then B.");
-            if ui
-                .add_enabled(equal_counts && valid_edges, egui::Button::new("Sew selected"))
-                .clicked()
-            {
-                for (a, b) in editor.sewing_edges_a.iter().zip(&editor.sewing_edges_b) {
-                    cx.document.add_seam(*a, *b, editor.sewing_reversed);
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (tool, icon) in [(CanvasTool::Select, Icon::Select), (CanvasTool::Points, Icon::Points), (CanvasTool::Sew, Icon::Sew)] {
+                if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label()).clicked() {
+                    editor.canvas_tool = tool;
+                    editor.sew_a = None;
+                    editor.sew_b = None;
+                    editor.sketch_points.clear();
                 }
-                cx.output.changes.push(cad_core::DocumentChange::Seams);
-                editor.sewing_edges_a.clear();
-                editor.sewing_edges_b.clear();
-                editor.sewing_mode = false;
-            } else if equal_counts && !valid_edges {
-                ui.colored_label(egui::Color32::LIGHT_RED, "A selected edge is invalid or already sewn.");
-            } else if !editor.sewing_edges_a.is_empty()
-                && !editor.sewing_edges_b.is_empty()
-                && !equal_counts
-            {
-                ui.weak("Select the same number of edges on both sides.");
             }
-            if ui.small_button("Clear").clicked() {
-                editor.sewing_edges_a.clear();
-                editor.sewing_edges_b.clear();
+            for (tool, icon) in [
+                (CanvasTool::SketchLine, Icon::SketchLine),
+                (CanvasTool::SketchSpline, Icon::SketchSpline),
+                (CanvasTool::Button, Icon::Button),
+                (CanvasTool::Buttonhole, Icon::Buttonhole),
+                (CanvasTool::Pull, Icon::Pull),
+            ] {
+                if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label()).clicked() {
+                    editor.canvas_tool = tool;
+                    editor.sew_a = None;
+                    editor.sew_b = None;
+                    editor.sketch_points.clear();
+                }
             }
-            if ui.small_button("Done").clicked() {
-                editor.sewing_edges_a.clear();
-                editor.sewing_edges_b.clear();
-                editor.sewing_mode = false;
-            }
-        }
+            icons::separator(ui);
+            let piece = editor.selected_piece.is_some();
+            let mut command = |ui: &mut egui::Ui, icon, tooltip, command: UiCommand| {
+                if icons::button(ui, icon, false, piece, tooltip).clicked() {
+                    cx.output.commands.push(command);
+                }
+            };
+            use cad_core::PieceTransform as T;
+            command(ui, Icon::RotateCcw, "Rotate selected piece 90° counter-clockwise", UiCommand::TransformPiece(T::RotateCcw));
+            command(ui, Icon::RotateCw, "Rotate selected piece 90° clockwise", UiCommand::TransformPiece(T::RotateCw));
+            command(ui, Icon::FlipHorizontal, "Mirror selected piece left ↔ right", UiCommand::TransformPiece(T::FlipHorizontal));
+            command(ui, Icon::FlipVertical, "Mirror selected piece top ↔ bottom", UiCommand::TransformPiece(T::FlipVertical));
+            icons::separator(ui);
+            command(ui, Icon::MirrorCopy, "Add a mirrored copy for the other side of the body", UiCommand::MirrorCopy);
+            command(ui, Icon::Delete, "Delete selected piece (Del)", UiCommand::DeletePiece);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if icons::button(ui, Icon::FitView, false, true, "Fit all pieces in view").clicked() {
+                    cx.output.commands.push(UiCommand::FitCanvas);
+                }
+                if icons::button(ui, Icon::Tidy, false, true, "Tidy layout: pieces side by side, no overlaps").clicked() {
+                    cx.output.commands.push(UiCommand::TidyLayout);
+                }
+                icons::separator(ui);
+                let redo = redo_label.as_deref().map_or("Redo (Ctrl+Shift+Z)".to_owned(), |l| format!("Redo {l} (Ctrl+Shift+Z)"));
+                if icons::button(ui, Icon::Redo, false, redo_label.is_some(), &redo).clicked() {
+                    cx.output.commands.push(UiCommand::Redo);
+                }
+                let undo = undo_label.as_deref().map_or("Undo (Ctrl+Z)".to_owned(), |l| format!("Undo {l} (Ctrl+Z)"));
+                if icons::button(ui, Icon::Undo, false, undo_label.is_some(), &undo).clicked() {
+                    cx.output.commands.push(UiCommand::Undo);
+                }
+            });
+        });
     });
 }
 
@@ -344,16 +346,78 @@ impl AppUi {
             } else if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z)) {
                 output.commands.push(UiCommand::Undo);
             }
+            let save_as = input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S));
+            let save = input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::S));
+            if save_as || save {
+                // The dialog must not open while the input is borrowed.
+                editor.pending_save = Some(save_as);
+            }
+            if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::O)) {
+                editor.pending_open = true;
+            }
             if !typing && input.consume_key(Modifiers::NONE, Key::Space) {
                 editor.timeline.toggle();
+            }
+            if !typing {
+                use crate::state::CanvasTool;
+                for (key, tool) in [
+                    (Key::V, CanvasTool::Select),
+                    (Key::P, CanvasTool::Points),
+                    (Key::S, CanvasTool::Sew),
+                    (Key::L, CanvasTool::SketchLine),
+                    (Key::B, CanvasTool::SketchSpline),
+                    (Key::U, CanvasTool::Button),
+                    (Key::H, CanvasTool::Buttonhole),
+                    (Key::G, CanvasTool::Pull),
+                ] {
+                    if input.consume_key(Modifiers::NONE, key) {
+                        editor.canvas_tool = tool;
+                        editor.sew_a = None;
+                        editor.sew_b = None;
+                        editor.sketch_points.clear();
+                    }
+                }
+                if input.consume_key(Modifiers::NONE, Key::Escape) {
+                    editor.sew_a = None;
+                    editor.sew_b = None;
+                    editor.sketch_points.clear();
+                }
+                if editor.selected_piece.is_some()
+                    && (input.consume_key(Modifiers::NONE, Key::Delete) || input.consume_key(Modifiers::NONE, Key::Backspace))
+                {
+                    output.commands.push(UiCommand::DeleteSelection);
+                }
             }
         });
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) {
+        if let Some(save_as) = editor.pending_save.take() {
+            save_project(editor, output, save_as);
+        }
+        if std::mem::take(&mut editor.pending_open) {
+            open_project(output);
+        }
         egui::Panel::top("menu bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    ui.menu_button("New project", |ui| {
+                        for sample in crate::state::Sample::ALL {
+                            if ui.button(sample.label()).clicked() {
+                                output.commands.push(UiCommand::NewProject(sample));
+                            }
+                        }
+                    });
+                    if ui.add(egui::Button::new("Open project…").shortcut_text("Ctrl+O")).clicked() {
+                        open_project(output);
+                    }
+                    if ui.add(egui::Button::new("Save project").shortcut_text("Ctrl+S")).clicked() {
+                        save_project(editor, output, false);
+                    }
+                    if ui.add(egui::Button::new("Save project as…").shortcut_text("Ctrl+Shift+S")).clicked() {
+                        save_project(editor, output, true);
+                    }
+                    ui.separator();
                     if ui.button("Open Pattern File…").clicked() {
                         editor.pattern_import.window_open = true;
                         crate::pattern_window::browse_for_pattern(
@@ -431,14 +495,51 @@ impl AppUi {
         egui::Panel::bottom("status bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let stats = &editor.stats;
+                if let Some(path) = &editor.project_path {
+                    ui.label(path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned()));
+                    ui.separator();
+                }
                 ui.weak(format!(
                     "{} vertices · {} triangles · {} stitches",
                     stats.vertices, stats.triangles, stats.stitches
                 ));
+                match &editor.project_status {
+                    Some(Ok(message)) => {
+                        ui.separator();
+                        ui.colored_label(egui::Color32::from_rgb(120, 200, 120), message);
+                    }
+                    Some(Err(message)) => {
+                        ui.separator();
+                        ui.colored_label(egui::Color32::from_rgb(240, 110, 100), message);
+                    }
+                    None => {}
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak(format!("{} · {:.1} ms", stats.backend, stats.frame_ms));
                 });
             });
         });
+    }
+}
+
+/// Saves to the current project file, or asks where (`ask` or first save).
+fn save_project(editor: &EditorState, output: &mut UiOutput, ask: bool) {
+    let path = match (&editor.project_path, ask) {
+        (Some(path), false) => Some(path.clone()),
+        _ => rfd::FileDialog::new()
+            .set_title("Save project")
+            .add_filter("clo360 project", &["clo360"])
+            .set_file_name("garment.clo360")
+            .save_file()
+            .map(|path| if path.extension().is_none() { path.with_extension("clo360") } else { path }),
+    };
+    if let Some(path) = path {
+        output.commands.push(UiCommand::SaveProject(path));
+    }
+}
+
+fn open_project(output: &mut UiOutput) {
+    if let Some(path) = rfd::FileDialog::new().set_title("Open project").add_filter("clo360 project", &["clo360"]).pick_file() {
+        output.commands.push(UiCommand::OpenProject(path));
     }
 }

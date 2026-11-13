@@ -79,6 +79,38 @@ impl EditCommand for MoveHandle {
     }
 }
 
+/// Any edit, recorded as the whole document before and after it. Patterns
+/// are small, so this is the simplest correct undo for operations that
+/// touch several things at once (turning a piece re-points its seams).
+#[derive(Debug, Clone)]
+pub struct DocumentSnapshot {
+    label: String,
+    before: PatternDocument,
+    after: PatternDocument,
+}
+
+impl DocumentSnapshot {
+    pub fn new(label: impl Into<String>, before: PatternDocument, after: PatternDocument) -> Self {
+        Self { label: label.into(), before, after }
+    }
+}
+
+impl EditCommand for DocumentSnapshot {
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn apply(&mut self, doc: &mut PatternDocument) -> Result<DocumentChange, EditError> {
+        *doc = self.after.clone();
+        doc.touch();
+        Ok(DocumentChange::Everything)
+    }
+    fn undo(&mut self, doc: &mut PatternDocument) -> Result<DocumentChange, EditError> {
+        *doc = self.before.clone();
+        doc.touch();
+        Ok(DocumentChange::Everything)
+    }
+}
+
 /// Linear undo/redo stack.
 #[derive(Debug, Default)]
 pub struct History {

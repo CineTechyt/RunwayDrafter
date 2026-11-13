@@ -17,6 +17,10 @@ pub struct SurfaceHit {
     pub distance: f32,
 }
 
+/// How far in front of a skin point other skin makes it a crease, in
+/// metres: about where cloth under tension stops following a fold.
+const CREASE: f32 = 0.015;
+
 /// The surface point nearest to a query point.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Clearance {
@@ -28,6 +32,8 @@ pub struct Clearance {
 #[derive(Debug, Clone, Default)]
 pub struct TriangleMesh {
     positions: Vec<Vec3A>,
+    /// Area-weighted outward vertex normals.
+    normals: Vec<Vec3A>,
     triangles: Vec<[u32; 3]>,
     bvh: Bvh,
 }
@@ -37,7 +43,26 @@ impl TriangleMesh {
     pub fn new(positions: Vec<Vec3A>, triangles: Vec<[u32; 3]>) -> Self {
         let boxes: Vec<Aabb> =
             triangles.iter().map(|t| Aabb::from_points(t.map(|i| positions[i as usize]))).collect();
-        Self { bvh: Bvh::build(&boxes), positions, triangles }
+        let mut normals = vec![Vec3A::ZERO; positions.len()];
+        for t in &triangles {
+            let [a, b, c] = t.map(|i| positions[i as usize]);
+            let n = (b - a).cross(c - a);
+            for &i in t {
+                normals[i as usize] += n;
+            }
+        }
+        normals.iter_mut().for_each(|n| *n = n.normalize_or_zero());
+        Self { bvh: Bvh::build(&boxes), positions, normals, triangles }
+    }
+
+    /// Vertex positions.
+    pub fn positions(&self) -> &[Vec3A] {
+        &self.positions
+    }
+
+    /// Area-weighted outward unit normals, one per vertex.
+    pub fn vertex_normals(&self) -> &[Vec3A] {
+        &self.normals
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -129,6 +154,119 @@ impl TriangleMesh {
             .collect()
     }
 
+    /// The reverse of [`TriangleMesh::sweep_all`]: body features smaller
+    /// than a cloth triangle (a collarbone, a nipple, the point of a
+    /// shoulder) poke through the cloth between its vertices, which a test
+    /// of cloth points against the body never sees. Every body vertex is
+    /// tested against the cloth triangles near it; where one is closer
+    /// than half of `margin` in front of it, or up to `depth` behind it, that
+    /// triangle is pushed out along the body normal, the push shared over
+    /// its corners by barycentric weight (Bridson et al. 2002). Returns the
+    /// cloth vertices moved and how far.
+    ///
+    /// `field`, where given, is the body's distance field: distance and
+    /// outward direction at a point. With it, skin in a crease (the top of
+    /// a shoulder with the arm raised, an armpit, under the bust) pushes
+    /// nothing: cloth bridges a fold rather than following it in, and
+    /// cloth lying on one side of a fold is in front of skin points on the
+    /// other, so pushing it along their normal would drive it into the
+    /// body. A push is also only made where the field agrees which way is
+    /// out.
+    pub fn push_out_cloth(
+        &self,
+        cloth: &[[u32; 3]],
+        positions: &mut [Vec3A],
+        margin: f32,
+        depth: f32,
+        field: Option<&(dyn Fn(Vec3A) -> Option<(f32, Vec3A)> + Sync)>,
+    ) -> Vec<(u32, Vec3A)> {
+        if cloth.is_empty() || positions.is_empty() {
+            return Vec::new();
+        }
+        let reach = margin.max(depth);
+        let boxes: Vec<Aabb> =
+            cloth.iter().map(|t| Aabb::from_points(t.map(|i| positions[i as usize])).expanded(reach)).collect();
+        let tree = Bvh::build(&boxes);
+        let bounds = tree.bounds();
+        let x = &*positions;
+        // Per body vertex: the cloth triangle it pushes, the weights and
+        // how far along which normal.
+        let pushes: Vec<([u32; 3], [f32; 3], Vec3A)> = self
+            .positions
+            .par_iter()
+            .zip(&self.normals)
+            .with_min_len(512)
+            .filter(|(p, n)| n.length_squared() > 0.5 && bounds.distance_squared(**p) == 0.0)
+            .filter_map(|(&p, &n)| {
+                // Another stretch of skin close in front: a crease.
+                if let Some(field) = field
+                    && field(p + n * CREASE).is_none_or(|(distance, _)| distance < CREASE * 0.6)
+                {
+                    return None;
+                }
+                let mut best: Option<([u32; 3], [f32; 3], f32)> = None;
+                tree.query(&Aabb::from_points([p]), |triangle| {
+                    let t = cloth[triangle as usize];
+                    let [a, b, c] = t.map(|i| x[i as usize]);
+                    let (q, w) = closest_point_on_triangle(p, a, b, c);
+                    let offset = q - p;
+                    let height = offset.dot(n);
+                    // The body point must lie under the face, not beside
+                    // it: what is off to the side is the vertices' job.
+                    let under = w.iter().all(|&w| w > 0.0) || (offset - n * height).length() < 1e-4;
+                    // Pushed to the margin, tested at half of it: a face
+                    // just lifted does not count again.
+                    if height < margin * 0.5 && height > -depth && under {
+                        let need = margin - height;
+                        if best.is_none_or(|(_, _, most)| need > most) {
+                            best = Some((t, w, need));
+                        }
+                    }
+                });
+                let (t, w, need) = best?;
+                if let Some(field) = field {
+                    let [a, b, c] = t.map(|i| x[i as usize]);
+                    let q = a * w[0] + b * w[1] + c * w[2];
+                    if field(q).is_none_or(|(_, o)| o.dot(n) < 0.7) {
+                        return None;
+                    }
+                }
+                Some((t, w, n * need))
+            })
+            .collect();
+        let mut moved = Vec::new();
+        if pushes.is_empty() {
+            return moved;
+        }
+        let mut sum = vec![Vec3A::ZERO; positions.len()];
+        let mut count = vec![0u32; positions.len()];
+        for (t, w, push) in &pushes {
+            // The smallest corner moves that lift the face's point at `w`
+            // by `push`: corner i moves w_i / Σw² of it.
+            let norm = w.iter().map(|w| w * w).sum::<f32>().max(1e-6);
+            for k in 0..3 {
+                let i = t[k] as usize;
+                if w[k] > 1e-3 {
+                    sum[i] += *push * (w[k] / norm);
+                    count[i] += 1;
+                }
+            }
+        }
+        for (i, (&s, &c)) in sum.iter().zip(&count).enumerate() {
+            if c > 0 {
+                // Averaged, so several body points under one face do not
+                // add up to a launch.
+                // At most `margin` per round: a face found deep under the skin
+                // comes out over a few steps, not in a jolt that tears it
+                // from its neighbours.
+                let delta = (s / c as f32).clamp_length_max(margin);
+                positions[i] += delta;
+                moved.push((i as u32, delta));
+            }
+        }
+        moved
+    }
+
     /// Clearance between a garment point and the body, measured the way a
     /// fit map wants it: along the ray from the point straight towards the
     /// body (against the cloth's normal), falling back to the nearest
@@ -196,5 +334,33 @@ mod tests {
         let tilted = Vec3A::new(0.0, 0.6, 0.8);
         assert!((cube.clearance(p, tilted, 1.0).unwrap() - 0.03 / 0.8).abs() < 1e-5);
         assert!(cube.clearance(Vec3A::new(0.0, 0.0, 5.0), Vec3A::Z, 1.0).is_none());
+    }
+
+    #[test]
+    fn body_corners_poking_through_a_coarse_cloth_lift_it_off() {
+        let cube = cube();
+        // One quad far wider than the cube, just under its top: none of
+        // its vertices is inside, yet the top corners stick through.
+        let mut sheet = vec![
+            Vec3A::new(-2.0, -2.0, 0.49),
+            Vec3A::new(2.0, -2.0, 0.49),
+            Vec3A::new(2.0, 2.0, 0.49),
+            Vec3A::new(-2.0, 2.0, 0.49),
+        ];
+        let faces = [[0, 1, 2], [0, 2, 3]];
+        assert!(sheet.iter().all(|&p| cube.sweep(p + Vec3A::Z, p, 0.0).is_none()));
+        let mut rounds = 0;
+        while !cube.push_out_cloth(&faces, &mut sheet, 0.005, 0.02, None).is_empty() {
+            rounds += 1;
+            assert!(rounds < 20, "settles");
+        }
+        assert!(rounds > 0);
+        // Above every top corner now, by the margin, and not flung away.
+        for corner in cube.positions().iter().filter(|p| p.z > 0.0) {
+            let up = cube.normals[cube.positions.iter().position(|p| p == corner).unwrap()];
+            let hit = TriangleMesh::new(sheet.clone(), faces.to_vec()).raycast(*corner - up * 0.1, up, 1.0);
+            assert!(hit.is_some_and(|h| h.distance > 0.1), "corner {corner} under the cloth");
+        }
+        assert!(sheet.iter().all(|p| p.z < 0.6), "{sheet:?}");
     }
 }

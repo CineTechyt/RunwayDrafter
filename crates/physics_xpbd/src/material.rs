@@ -37,8 +37,11 @@ impl FabricSi {
             warp: log_scale(physics.stretch_warp, 30.0, 10_000.0),
             // Woven fabric shears far more easily than it stretches.
             bias: log_scale(physics.shear, 5.0, 2_000.0),
-            // Silk is around 1e-6 N·m, heavy denim around 3e-4 N·m.
-            bending: log_scale(physics.bending, 1e-6, 3e-4),
+            // Silk is around 1e-6 N·m, heavy denim around 3e-4 N·m. The
+            // slider describes a fabric 0.6 mm thick; thicker cloth is
+            // harder to bend, by the 1.5th power of its thickness (a solid
+            // plate goes by the cube; woven yarns slide on each other).
+            bending: log_scale(physics.bending, 1e-6, 3e-4) * (physics.thickness.max(0.05) / 0.6).powf(1.5),
         }
     }
 }

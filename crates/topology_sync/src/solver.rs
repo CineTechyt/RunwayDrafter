@@ -13,10 +13,14 @@ use crate::mesh::GarmentMesh;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SolverBackend {
     /// Multithreaded CPU solve.
-    #[default]
     Cpu,
     /// Compute shaders. Falls back to the CPU when unavailable.
     Gpu,
+    /// Multithreaded CPU solve built for contact: implicit (vertex block
+    /// descent) with offset geometric contact. Cloth never passes through
+    /// itself, and lies on the body rather than being held to it.
+    #[default]
+    Contact,
 }
 
 /// User-tunable simulation parameters.
@@ -90,9 +94,35 @@ pub struct DistanceField {
     /// Distances in metres, x fastest: `values[x + dims[0] * (y + dims[1] * z)]`.
     /// Exact near the surface, clamped to `±band` further away.
     pub values: Vec<f32>,
+    /// How fast the body's surface moves, in m/s, per sample (same layout
+    /// as `values`): the velocity of the closest point of the skin, near
+    /// it, and zero further away. Empty for a body that stands still. Lets
+    /// friction work relative to a moving body, so it carries cloth along.
+    pub velocity: Vec<Vec3>,
 }
 
 impl DistanceField {
+    /// The body's surface velocity near `p`, trilinearly interpolated; zero
+    /// when unknown.
+    pub fn velocity_at(&self, p: Vec3) -> Vec3 {
+        if self.velocity.len() != self.values.len() {
+            return Vec3::ZERO;
+        }
+        let g = (p - self.origin) / self.voxel;
+        let max = Vec3::new(self.dims[0] as f32 - 1.0, self.dims[1] as f32 - 1.0, self.dims[2] as f32 - 1.0);
+        if g.cmplt(Vec3::ZERO).any() || g.cmpge(max).any() {
+            return Vec3::ZERO;
+        }
+        let cell = g.floor();
+        let f = g - cell;
+        let (x, y, z) = (cell.x as u32, cell.y as u32, cell.z as u32);
+        let at = |dx: u32, dy: u32, dz: u32| self.velocity[(x + dx + self.dims[0] * (y + dy + self.dims[1] * (z + dz))) as usize];
+        let lerp = |a: Vec3, b: Vec3, t: f32| a + (b - a) * t;
+        let y0 = lerp(lerp(at(0, 0, 0), at(1, 0, 0), f.x), lerp(at(0, 1, 0), at(1, 1, 0), f.x), f.y);
+        let y1 = lerp(lerp(at(0, 0, 1), at(1, 0, 1), f.x), lerp(at(0, 1, 1), at(1, 1, 1), f.x), f.y);
+        lerp(y0, y1, f.z)
+    }
+
     #[inline]
     fn at(&self, x: u32, y: u32, z: u32) -> f32 {
         self.values[(x + self.dims[0] * (y + self.dims[1] * z)) as usize]
@@ -180,6 +210,13 @@ pub trait ClothSolver {
     /// The cloth was moved from outside (carried along with the avatar):
     /// continue from `mesh.positions`, at rest, keeping everything else.
     fn set_positions(&mut self, mesh: &GarmentMesh);
+
+    /// Holds one cloth particle at a user-controlled world-space position
+    /// while an interactive 3D grab is active.
+    fn set_grab(&mut self, vertex: u32, position: Vec3, radius: f32, strength: f32);
+
+    /// Releases the interactive grab constraint.
+    fn clear_grab(&mut self);
 
     /// Advances the simulation by `ctx.dt`, writing `mesh.positions`.
     /// Returns `true` if any vertex moved.

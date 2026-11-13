@@ -16,6 +16,9 @@ use crate::model::{BodyMesh, BodyModel};
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Pose {
     rotations: HashMap<String, Quat>,
+    /// Moves the whole body sideways and forwards (y is ignored: the body
+    /// always stands on the floor).
+    pub offset: Vec3,
 }
 
 impl Pose {
@@ -40,7 +43,7 @@ impl Pose {
     }
 
     pub fn is_rest(&self) -> bool {
-        self.rotations.values().all(|q| q.abs_diff_eq(Quat::IDENTITY, 1e-6))
+        self.rotations.values().all(|q| q.abs_diff_eq(Quat::IDENTITY, 1e-6)) && self.offset.x == 0.0 && self.offset.z == 0.0
     }
 }
 
@@ -151,15 +154,10 @@ impl BodyModel {
         self.pose_with_transforms(rest, pose).0
     }
 
-    /// Like [`BodyModel::pose`], and also returns the transform that took
-    /// each vertex from the modelled pose to the posed one. Those are what
-    /// lets something attached to the skin (a garment) follow it.
-    pub fn pose_with_transforms(&self, rest: &BodyMesh, pose: &Pose) -> (BodyMesh, Vec<Affine3A>) {
-        if pose.is_rest() || self.bones.is_empty() {
-            return (rest.clone(), vec![Affine3A::IDENTITY; rest.positions.len()]);
-        }
-        // World transform of every bone: its parent's, then its own
-        // rotation about its head joint.
+    /// The world transform of every bone for `pose` (no floor, no
+    /// offset): its parent's, then its own rotation about its head joint.
+    /// Cheap: no skin is moved.
+    pub fn bone_transforms(&self, rest: &BodyMesh, pose: &Pose) -> Vec<Affine3A> {
         let mut world: Vec<Affine3A> = Vec::with_capacity(self.bones.len());
         for (index, bone) in self.bones.iter().enumerate() {
             let head = rest.joints[index].head;
@@ -169,33 +167,78 @@ impl BodyModel {
                 None => local,
             });
         }
+        world
+    }
 
-        // Linear blend skinning: each vertex moves by the weighted sum of
-        // its bones' transforms.
-        let mut transforms: Vec<Affine3A> = self
+    /// [`BodyModel::pose`] with plain linear blend skinning (a blend of the
+    /// bone matrices), for comparison: the skin collapses where bones turn
+    /// far apart.
+    pub fn pose_linear_blend(&self, rest: &BodyMesh, pose: &Pose) -> BodyMesh {
+        let world = self.bone_transforms(rest, pose);
+        let mut mesh = self.pose(rest, pose);
+        let floor = mesh.positions.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        let shift = Vec3::new(pose.offset.x, 0.0, pose.offset.z);
+        let mut positions: Vec<Vec3> = self
             .weights
             .iter()
-            .map(|(bones, weights)| {
-                let mut matrix = glam::Mat3A::ZERO;
-                let mut translation = glam::Vec3A::ZERO;
-                for k in 0..4 {
-                    if weights[k] > 0.0 {
-                        let bone = world[bones[k] as usize];
-                        matrix += bone.matrix3 * weights[k];
-                        translation += bone.translation * weights[k];
-                    }
-                }
-                Affine3A { matrix3: matrix, translation }
+            .zip(&rest.positions)
+            .map(|((bones, weights), &p)| {
+                (0..4).filter(|&k| weights[k] > 0.0).map(|k| world[bones[k] as usize].transform_point3(p) * weights[k]).sum::<Vec3>() + shift
             })
             .collect();
+        let low = positions.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        for p in &mut positions {
+            p.y += floor - low;
+        }
+        mesh.positions = positions;
+        mesh.recompute_normals();
+        mesh
+    }
+
+    /// Like [`BodyModel::pose`], and also returns the transform that took
+    /// each vertex from the modelled pose to the posed one. Those are what
+    /// lets something attached to the skin (a garment) follow it.
+    pub fn pose_with_transforms(&self, rest: &BodyMesh, pose: &Pose) -> (BodyMesh, Vec<Affine3A>) {
+        if pose.is_rest() || self.bones.is_empty() {
+            return (rest.clone(), vec![Affine3A::IDENTITY; rest.positions.len()]);
+        }
+        let world = self.bone_transforms(rest, pose);
+
+        // Each vertex turns by the blend of its bones' rotations about its
+        // own centre of rotation (see `skinning`): unlike a plain blend of
+        // the matrices, the skin keeps its volume where bones turn far
+        // apart, as the shoulder does under a raised arm.
+        let centres = rest.centres.get_or_init(|| {
+            std::sync::Arc::new(crate::skinning::centres(&self.bins, &self.weights, &rest.positions, rest.skin()))
+        });
+        let mut transforms = if centres.len() == self.weights.len() && rest.positions.len() == self.weights.len() {
+            crate::skinning::transforms(&self.weights, centres, &world)
+        } else {
+            vec![Affine3A::IDENTITY; rest.positions.len()]
+        };
 
         let mut mesh = rest.clone();
+        mesh.centres = Default::default();
         for ((position, &rest_position), transform) in mesh.positions.iter_mut().zip(&rest.positions).zip(&transforms) {
             *position = transform.transform_point3(rest_position);
         }
         for (joint, transform) in mesh.joints.iter_mut().zip(&world) {
             joint.head = transform.transform_point3(joint.head);
             joint.tail = transform.transform_point3(joint.tail);
+        }
+
+        let shift = Vec3::new(pose.offset.x, 0.0, pose.offset.z);
+        if shift != Vec3::ZERO {
+            for p in &mut mesh.positions {
+                *p += shift;
+            }
+            for joint in &mut mesh.joints {
+                joint.head += shift;
+                joint.tail += shift;
+            }
+            for transform in &mut transforms {
+                transform.translation += glam::Vec3A::from(shift);
+            }
         }
 
         // Spreading or bending the legs lifts the feet: stand again.
@@ -224,6 +267,56 @@ pub struct PosedBody<'a> {
     pub transforms: &'a [Affine3A],
 }
 
+/// A point held to the skin: its nearest skin vertex and its offset from
+/// it, in the modelled pose. See [`attach`] and [`follow`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Attachment {
+    vertex: u32,
+    offset: Vec3,
+}
+
+/// Attaches `points` (garment vertices, say) to the nearest skin of `body`.
+pub fn attach(points: &[Vec3], body: PosedBody<'_>) -> Vec<Attachment> {
+    attach_to(points, body, None)
+}
+
+/// Like [`attach`], to the nearest skin vertex for which `allowed` is true
+/// (all of them where it is `None`).
+pub fn attach_to(points: &[Vec3], body: PosedBody<'_>, allowed: Option<&[bool]>) -> Vec<Attachment> {
+    use rayon::prelude::*;
+    let count = body.posed.positions.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let candidates: Vec<usize> = (0..count).filter(|&i| allowed.is_none_or(|a| a.get(i).copied().unwrap_or(true))).collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    points
+        .par_iter()
+        .map(|point| {
+            let nearest = candidates
+                .iter()
+                .copied()
+                .min_by(|&a, &b| body.posed.positions[a].distance_squared(*point).total_cmp(&body.posed.positions[b].distance_squared(*point)))
+                .unwrap_or(0);
+            let offset = body.transforms[nearest].inverse().transform_point3(*point) - body.rest.positions[nearest];
+            Attachment { vertex: nearest as u32, offset }
+        })
+        .collect()
+}
+
+/// Moves attached points to where their skin is in `body`: the same body
+/// in another pose, or reshaped.
+pub fn follow(attachments: &[Attachment], body: PosedBody<'_>, points: &mut [Vec3]) {
+    for (point, attachment) in points.iter_mut().zip(attachments) {
+        let i = (attachment.vertex as usize).min(body.rest.positions.len().saturating_sub(1));
+        if let (Some(transform), Some(rest)) = (body.transforms.get(i), body.rest.positions.get(i)) {
+            *point = transform.transform_point3(*rest + attachment.offset);
+        }
+    }
+}
+
 /// Moves `points` (garment vertices, say) from where they are around the
 /// body `from` to the corresponding place around `to`: the same body in
 /// another pose, or reshaped.
@@ -233,16 +326,10 @@ pub struct PosedBody<'a> {
 /// skin through both the pose change and any change of shape. Run the
 /// cloth simulation afterwards to settle the result.
 pub fn carry(points: &mut [Vec3], from: PosedBody<'_>, to: PosedBody<'_>) {
-    use rayon::prelude::*;
     let count = from.posed.positions.len().min(to.posed.positions.len());
     if count == 0 {
         return;
     }
-    points.par_iter_mut().for_each(|point| {
-        let nearest = (0..count)
-            .min_by(|&a, &b| from.posed.positions[a].distance_squared(*point).total_cmp(&from.posed.positions[b].distance_squared(*point)))
-            .unwrap_or(0);
-        let offset = from.transforms[nearest].inverse().transform_point3(*point) - from.rest.positions[nearest];
-        *point = to.transforms[nearest].transform_point3(to.rest.positions[nearest] + offset);
-    });
+    let attachments = attach(points, from);
+    follow(&attachments, to, points);
 }

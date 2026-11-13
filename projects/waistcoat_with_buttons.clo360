@@ -1,0 +1,751 @@
+{
+  "format": "clo360-project",
+  "version": 1,
+  "document": {
+    "pieces": [
+      {
+        "id": 3,
+        "name": "Right front",
+        "outline": {
+          "points": [
+            {
+              "position": [
+                -930.0,
+                0.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -660.0,
+                0.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -660.0,
+                380.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -770.0,
+                660.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -870.0,
+                630.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -930.0,
+                420.0
+              ],
+              "kind": "Corner"
+            }
+          ],
+          "segments": [
+            "Line",
+            "Line",
+            {
+              "Cubic": {
+                "ctrl1": [
+                  -690.0,
+                  440.0
+                ],
+                "ctrl2": [
+                  -742.0,
+                  570.0
+                ]
+              }
+            },
+            "Line",
+            {
+              "Cubic": {
+                "ctrl1": [
+                  -850.0,
+                  540.0
+                ],
+                "ctrl2": [
+                  -865.0,
+                  440.0
+                ]
+              }
+            },
+            "Line"
+          ]
+        },
+        "seam_allowance": {
+          "enabled": true,
+          "default_width": 10.0,
+          "per_edge": {
+            "0": 25.0
+          }
+        },
+        "notches": [],
+        "buttons": [],
+        "buttonholes": [
+          {
+            "position": [
+              -671.5,
+              345.0
+            ],
+            "length": 21.0,
+            "angle": 0.0
+          },
+          {
+            "position": [
+              -671.5,
+              270.0
+            ],
+            "length": 21.0,
+            "angle": 0.0
+          },
+          {
+            "position": [
+              -671.5,
+              195.0
+            ],
+            "length": 21.0,
+            "angle": 0.0
+          },
+          {
+            "position": [
+              -671.5,
+              120.0
+            ],
+            "length": 21.0,
+            "angle": 0.0
+          },
+          {
+            "position": [
+              -671.5,
+              45.0
+            ],
+            "length": 21.0,
+            "angle": 0.0
+          }
+        ],
+        "grainline": {
+          "origin": [
+            -795.0,
+            330.0
+          ],
+          "angle": 1.5707964,
+          "length": 330.0
+        },
+        "uv": {
+          "origin": [
+            -795.0,
+            330.0
+          ],
+          "tile_size": [
+            100.0,
+            100.0
+          ],
+          "rotation": 0.0
+        },
+        "fabric": 1,
+        "arrangement": {
+          "anchor": [
+            -795.0,
+            330.0
+          ],
+          "translation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "curvature": 0.0
+        },
+        "layer": 2,
+        "placement": {
+          "angle": -36.0,
+          "height": 0.0
+        }
+      },
+      {
+        "id": 4,
+        "name": "Left front",
+        "outline": {
+          "points": [
+            {
+              "position": [
+                -350.0,
+                0.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -80.0,
+                0.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -80.0,
+                420.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -140.0,
+                630.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -240.0,
+                660.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                -350.0,
+                380.0
+              ],
+              "kind": "Corner"
+            }
+          ],
+          "segments": [
+            "Line",
+            "Line",
+            {
+              "Cubic": {
+                "ctrl1": [
+                  -145.0,
+                  440.0
+                ],
+                "ctrl2": [
+                  -160.0,
+                  540.0
+                ]
+              }
+            },
+            "Line",
+            {
+              "Cubic": {
+                "ctrl1": [
+                  -268.0,
+                  570.0
+                ],
+                "ctrl2": [
+                  -320.0,
+                  440.0
+                ]
+              }
+            },
+            "Line"
+          ]
+        },
+        "seam_allowance": {
+          "enabled": true,
+          "default_width": 10.0,
+          "per_edge": {
+            "0": 25.0
+          }
+        },
+        "notches": [],
+        "buttons": [
+          {
+            "position": [
+              -330.0,
+              345.0
+            ],
+            "diameter": 18.0,
+            "style": "FourHole",
+            "finish": "Pearl",
+            "color": [
+              0.62,
+              0.58,
+              0.5
+            ],
+            "thread_color": [
+              0.02,
+              0.025,
+              0.04
+            ],
+            "fastened_to": {
+              "piece": 3,
+              "index": 0
+            }
+          },
+          {
+            "position": [
+              -330.0,
+              270.0
+            ],
+            "diameter": 18.0,
+            "style": "FourHole",
+            "finish": "Pearl",
+            "color": [
+              0.62,
+              0.58,
+              0.5
+            ],
+            "thread_color": [
+              0.02,
+              0.025,
+              0.04
+            ],
+            "fastened_to": {
+              "piece": 3,
+              "index": 1
+            }
+          },
+          {
+            "position": [
+              -330.0,
+              195.0
+            ],
+            "diameter": 18.0,
+            "style": "FourHole",
+            "finish": "Pearl",
+            "color": [
+              0.62,
+              0.58,
+              0.5
+            ],
+            "thread_color": [
+              0.02,
+              0.025,
+              0.04
+            ],
+            "fastened_to": {
+              "piece": 3,
+              "index": 2
+            }
+          },
+          {
+            "position": [
+              -330.0,
+              120.0
+            ],
+            "diameter": 18.0,
+            "style": "FourHole",
+            "finish": "Pearl",
+            "color": [
+              0.62,
+              0.58,
+              0.5
+            ],
+            "thread_color": [
+              0.02,
+              0.025,
+              0.04
+            ],
+            "fastened_to": {
+              "piece": 3,
+              "index": 3
+            }
+          },
+          {
+            "position": [
+              -330.0,
+              45.0
+            ],
+            "diameter": 18.0,
+            "style": "FourHole",
+            "finish": "Pearl",
+            "color": [
+              0.62,
+              0.58,
+              0.5
+            ],
+            "thread_color": [
+              0.02,
+              0.025,
+              0.04
+            ],
+            "fastened_to": {
+              "piece": 3,
+              "index": 4
+            }
+          }
+        ],
+        "buttonholes": [],
+        "grainline": {
+          "origin": [
+            -215.0,
+            330.0
+          ],
+          "angle": 1.5707964,
+          "length": 330.0
+        },
+        "uv": {
+          "origin": [
+            -215.0,
+            330.0
+          ],
+          "tile_size": [
+            100.0,
+            100.0
+          ],
+          "rotation": 0.0
+        },
+        "fabric": 1,
+        "arrangement": {
+          "anchor": [
+            -215.0,
+            330.0
+          ],
+          "translation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "curvature": 0.0
+        },
+        "layer": 1,
+        "placement": {
+          "angle": 36.0,
+          "height": 0.0
+        }
+      },
+      {
+        "id": 5,
+        "name": "Back",
+        "outline": {
+          "points": [
+            {
+              "position": [
+                170.0,
+                0.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                670.0,
+                0.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                670.0,
+                420.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                610.0,
+                630.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                510.0,
+                660.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                330.0,
+                660.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                230.0,
+                630.0
+              ],
+              "kind": "Corner"
+            },
+            {
+              "position": [
+                170.0,
+                420.0
+              ],
+              "kind": "Corner"
+            }
+          ],
+          "segments": [
+            "Line",
+            "Line",
+            {
+              "Cubic": {
+                "ctrl1": [
+                  605.0,
+                  440.0
+                ],
+                "ctrl2": [
+                  590.0,
+                  540.0
+                ]
+              }
+            },
+            "Line",
+            {
+              "Cubic": {
+                "ctrl1": [
+                  490.0,
+                  620.0
+                ],
+                "ctrl2": [
+                  350.0,
+                  620.0
+                ]
+              }
+            },
+            "Line",
+            {
+              "Cubic": {
+                "ctrl1": [
+                  250.0,
+                  540.0
+                ],
+                "ctrl2": [
+                  235.0,
+                  440.0
+                ]
+              }
+            },
+            "Line"
+          ]
+        },
+        "seam_allowance": {
+          "enabled": true,
+          "default_width": 10.0,
+          "per_edge": {
+            "0": 25.0
+          }
+        },
+        "notches": [],
+        "buttons": [],
+        "buttonholes": [],
+        "grainline": {
+          "origin": [
+            420.0,
+            330.0
+          ],
+          "angle": 1.5707964,
+          "length": 330.0
+        },
+        "uv": {
+          "origin": [
+            420.0,
+            330.0
+          ],
+          "tile_size": [
+            100.0,
+            100.0
+          ],
+          "rotation": 0.0
+        },
+        "fabric": 2,
+        "arrangement": {
+          "anchor": [
+            420.0,
+            330.0
+          ],
+          "translation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            1.0,
+            0.0,
+            -4.371139e-8
+          ],
+          "curvature": 0.0
+        },
+        "layer": 1,
+        "placement": {
+          "angle": 180.0,
+          "height": 0.0
+        }
+      }
+    ],
+    "fabrics": [
+      {
+        "id": 1,
+        "name": "Wool suiting",
+        "base_color": [
+          0.035,
+          0.045,
+          0.075
+        ],
+        "roughness": 0.85,
+        "metallic": 0.0,
+        "weave_strength": 0.35,
+        "physics": {
+          "density": 290.0,
+          "stretch_weft": 0.72,
+          "stretch_warp": 0.78,
+          "shear": 0.45,
+          "bending": 0.42,
+          "thickness": 1.3
+        }
+      },
+      {
+        "id": 2,
+        "name": "Satin lining",
+        "base_color": [
+          0.3,
+          0.05,
+          0.06
+        ],
+        "roughness": 0.3,
+        "metallic": 0.0,
+        "weave_strength": 0.35,
+        "physics": {
+          "density": 85.0,
+          "stretch_weft": 0.7,
+          "stretch_warp": 0.75,
+          "shear": 0.35,
+          "bending": 0.1,
+          "thickness": 0.25
+        }
+      }
+    ],
+    "seams": [
+      {
+        "id": 6,
+        "a": {
+          "piece": 4,
+          "edge": 1
+        },
+        "b": {
+          "piece": 5,
+          "edge": 7
+        },
+        "reversed": true,
+        "a_count": 1,
+        "b_count": 1
+      },
+      {
+        "id": 7,
+        "a": {
+          "piece": 4,
+          "edge": 3
+        },
+        "b": {
+          "piece": 5,
+          "edge": 5
+        },
+        "reversed": true,
+        "a_count": 1,
+        "b_count": 1
+      },
+      {
+        "id": 8,
+        "a": {
+          "piece": 3,
+          "edge": 5
+        },
+        "b": {
+          "piece": 5,
+          "edge": 1
+        },
+        "reversed": true,
+        "a_count": 1,
+        "b_count": 1
+      },
+      {
+        "id": 9,
+        "a": {
+          "piece": 3,
+          "edge": 3
+        },
+        "b": {
+          "piece": 5,
+          "edge": 3
+        },
+        "reversed": true,
+        "a_count": 1,
+        "b_count": 1
+      }
+    ],
+    "next_id": 9,
+    "revision": 9
+  },
+  "avatar": {
+    "gender": 0.0,
+    "weight": 0.5,
+    "muscle": 0.5,
+    "stature": 0.0,
+    "cup": 0.0,
+    "scale": 1.0,
+    "morphs": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "targets": [],
+    "arm_angle": 45.0,
+    "arm_forward": 0.0,
+    "elbow_bend": 0.0,
+    "leg_angle": null,
+    "knee_bend": 0.0,
+    "looks": {
+      "skin": [
+        0.62,
+        0.42,
+        0.31
+      ],
+      "eyes": [
+        0.1,
+        0.17,
+        0.25
+      ],
+      "hair_style": "Long",
+      "hair_color": [
+        0.06,
+        0.035,
+        0.02
+      ],
+      "hair_length": 0.45,
+      "hair_volume": 0.5,
+      "fringe": false
+    }
+  },
+  "particle_distance": 20.0
+}

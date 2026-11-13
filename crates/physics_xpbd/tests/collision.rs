@@ -202,3 +202,51 @@ fn an_outer_layer_stays_outside_the_garment_under_it() {
     let (_, over_strained, gap) = solver.diagnostics();
     assert!(gap < 0.003 && over_strained < 0.05, "both garments are sewn and unstretched: gap {gap}, {over_strained}");
 }
+
+/// Skin points that stick through the cloth: a ray from just under the
+/// skin out along the body normal meets a cloth face before it is 2 mm
+/// outside.
+fn skin_through_cloth(body: &TriangleMesh, body_normals: &[Vec3A], cloth: &TriangleMesh) -> usize {
+    body.positions()
+        .iter()
+        .zip(body_normals)
+        .filter(|(p, n)| {
+            let start = **p - **n * 0.008;
+            cloth.raycast(start, **n, 0.008).is_some()
+        })
+        .count()
+}
+
+#[test]
+fn collarbones_shoulders_and_bust_do_not_poke_through_a_draped_top() {
+    let Ok(model) = BodyModel::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/avatar/body.bin")) else {
+        eprintln!("skipped: assets/avatar/body.bin not found");
+        return;
+    };
+    let rest = model.build(&BodyParams::female());
+    let measurements = avatar::measure(&model, &rest);
+    let body = model.pose(&rest, &PoseParams::default().to_pose(&model, &rest));
+    let field = Arc::new(avatar::distance_field(&body, 0.01, 0.01));
+    let collider = Arc::new(body.collider());
+    let mut document = PatternDocument::demo_top();
+    avatar::arrange_around(&mut document, &body, &measurements);
+    let mut topology = GarmentTopology::default();
+    topology.rebuild(&document);
+
+    let settings = SolverSettings::default();
+    let ctx = SolverContext { document: &document, settings: &settings, colliders: &[], body: Some(&field), body_mesh: Some(&collider), ground: 0.0, dt: DT };
+    let mut solver = XpbdSolver::new();
+    solver.rebind(topology.mesh(), &ctx);
+    for _ in 0..150 {
+        solver.step(topology.mesh_mut(), &ctx);
+    }
+    let mesh = topology.mesh();
+    let cloth = TriangleMesh::new(
+        mesh.positions.iter().map(|&p| p.into()).collect(),
+        mesh.indices.as_chunks::<3>().0.to_vec(),
+    );
+    let normals = collider.vertex_normals();
+    let through = skin_through_cloth(&collider, normals, &cloth);
+    eprintln!("skin points through the cloth: {through}");
+    assert!(through < 5, "{through} skin points stick out through the top");
+}

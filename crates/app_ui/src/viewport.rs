@@ -31,6 +31,8 @@ pub struct ViewportInput {
     pub double_clicked: bool,
     /// Multiplicative zoom from the wheel or a pinch; 1.0 means none.
     pub zoom: f32,
+    /// Shift is held (extends selections).
+    pub shift: bool,
 }
 
 /// Fills the available space with `texture` and collects the input on it.
@@ -55,9 +57,9 @@ pub fn show(ui: &mut egui::Ui, texture: egui::TextureId, hint: &str) -> Viewport
     };
     let hovered = response.contains_pointer();
     let any_drag = response.dragged() || response.drag_stopped();
-    let (zoom, press_origin) = ui.input(|input| {
+    let (zoom, press_origin, shift) = ui.input(|input| {
         let zoom = if hovered { input.zoom_delta() * (input.smooth_scroll_delta.y * 0.0025).exp() } else { 1.0 };
-        (zoom, input.pointer.press_origin())
+        (zoom, input.pointer.press_origin(), input.modifiers.shift)
     });
 
     ViewportInput {
@@ -72,5 +74,6 @@ pub fn show(ui: &mut egui::Ui, texture: egui::TextureId, hint: &str) -> Viewport
         clicked: response.clicked(),
         double_clicked: response.double_clicked(),
         zoom,
+        shift,
     }
 }

@@ -38,9 +38,16 @@ pub struct PieceSpan {
 /// Two vertices that a seam sews together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stitch {
+    /// The seam, or [`Stitch::FASTENING`] for a button done up through
+    /// its buttonhole.
     pub seam: SeamId,
     pub a: u32,
     pub b: u32,
+}
+
+impl Stitch {
+    /// The `seam` of the stitches that hold buttons in their buttonholes.
+    pub const FASTENING: SeamId = SeamId(u32::MAX);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,6 +93,15 @@ impl GarmentMesh {
 
     pub fn span(&self, piece: PieceId) -> Option<&PieceSpan> {
         self.pieces.iter().find(|s| s.piece == piece)
+    }
+
+    /// The vertex of `piece` closest to a pattern-space point (mm).
+    pub fn nearest_vertex(&self, piece: PieceId, pattern_position: Vec2) -> Option<u32> {
+        let span = self.span(piece)?;
+        span.vertices.clone().min_by(|&a, &b| {
+            let distance = |v: u32| self.pattern_positions[v as usize].distance_squared(pattern_position);
+            distance(a).total_cmp(&distance(b))
+        })
     }
 
     /// The piece a triangle belongs to.

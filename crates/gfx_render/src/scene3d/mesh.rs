@@ -12,17 +12,24 @@ pub struct MeshVertex {
     /// A measured quantity for the technical views (strain, clearance);
     /// unused by the fabric view.
     pub value: f32,
+    /// Linear RGB multiplied into the material's base colour.
+    pub color: [f32; 3],
 }
 
 impl MeshVertex {
     pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
         array_stride: size_of::<Self>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32],
+        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32, 4 => Float32x3],
     };
 
     pub fn new(position: Vec3, normal: Vec3, uv: Vec2) -> Self {
-        Self { position: position.to_array(), normal: normal.to_array(), uv: uv.to_array(), value: 0.0 }
+        Self { position: position.to_array(), normal: normal.to_array(), uv: uv.to_array(), value: 0.0, color: [1.0; 3] }
+    }
+
+    pub fn with_color(mut self, color: [f32; 3]) -> Self {
+        self.color = color;
+        self
     }
 
     pub fn with_value(mut self, value: f32) -> Self {
@@ -76,6 +83,36 @@ impl MeshData {
     }
 }
 
+/// How a surface reflects light, beyond the metallic-roughness basics.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Shading {
+    #[default]
+    Standard,
+    /// Light bleeds a little past the terminator and reddens there, as it
+    /// does through real skin; a faint sheen at grazing angles.
+    Skin,
+    /// Strand-shaped highlights (Kajiya-Kay) along strands that run away
+    /// from `root`, the crown, in world space; streaks follow the UV U.
+    /// The vertex `value` is coverage: 1 solid, towards 0 the strands
+    /// thin out (hairline, cut ends).
+    Hair { root: [f32; 3] },
+    /// Material per vertex, for small props such as buttons: the vertex
+    /// colour is the base colour and the UV holds `(roughness, metallic)`.
+    Prop,
+}
+
+impl Shading {
+    /// `[kind, x, y, z]` as the shader reads it.
+    pub(crate) fn uniform(&self) -> [f32; 4] {
+        match *self {
+            Self::Standard => [0.0; 4],
+            Self::Skin => [1.0, 0.0, 0.0, 0.0],
+            Self::Hair { root: [x, y, z] } => [2.0, x, y, z],
+            Self::Prop => [3.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
 /// Shading parameters of one draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceMaterial {
@@ -87,11 +124,19 @@ pub struct SurfaceMaterial {
     pub weave_strength: f32,
     /// Linear RGB added after lighting (selection highlight).
     pub emissive: [f32; 3],
+    pub shading: Shading,
 }
 
 impl Default for SurfaceMaterial {
     fn default() -> Self {
-        Self { base_color: [0.6; 3], roughness: 0.6, metallic: 0.0, weave_strength: 0.0, emissive: [0.0; 3] }
+        Self {
+            base_color: [0.6; 3],
+            roughness: 0.6,
+            metallic: 0.0,
+            weave_strength: 0.0,
+            emissive: [0.0; 3],
+            shading: Shading::Standard,
+        }
     }
 }
 

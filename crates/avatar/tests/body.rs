@@ -1,5 +1,5 @@
 use avatar::{BodyModel, BodyParams, Measure, distance_field, fit, fit_all, measure};
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 fn model() -> BodyModel {
     BodyModel::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/avatar/body.bin")).expect("run tools/bake_avatar.py")
@@ -183,4 +183,132 @@ fn closing_covers_small_details_without_moving_the_body() {
     let probe = *thigh + Vec3::Z * 0.006;
     let (before, after) = (exact.sample(probe).unwrap().0, closed.sample(probe).unwrap().0);
     assert!((before - after).abs() < 0.002, "{before} vs {after}");
+}
+
+#[test]
+fn hair_never_covers_the_face_or_ears() {
+    use avatar::look::{Appearance, Hair, HairStyle, Head, hair};
+    let model = model();
+    for params in [BodyParams::female(), BodyParams::male(), BodyParams { weight: 1.0, ..BodyParams::male() }] {
+        let body = model.build(&params);
+        let head = Head::find(&body).expect("the body has eyes");
+        // The head's axis runs through the skull, well behind the eyes.
+        assert!(head.axis_z < head.eye_line.z - 0.04, "axis at {} with eyes at {}", head.axis_z, head.eye_line.z);
+        for style in HairStyle::ALL {
+            let looks = Appearance { hair: Hair { style, length: style.default_length(), fringe: true, ..Hair::default() }, ..Appearance::default() };
+            let mesh = hair(&body, &head, &looks);
+            // Nothing of the hair that shows is in front of the eyes or
+            // over the cheeks and mouth.
+            for (p, coverage) in mesh.positions.iter().zip(&mesh.coverage) {
+                let in_face = p.z > head.eye_line.z - 0.01 && p.x.abs() < 0.06 && p.y < head.eye_line.y + 0.02 && p.y > head.eye_line.y - 0.14;
+                assert!(!(in_face && *coverage > 0.2), "{style:?} covers the face at {p}");
+            }
+        }
+    }
+}
+
+#[test]
+fn animations_keep_feet_planted_balance_and_move_smoothly() {
+    use avatar::motion::Joint;
+    use avatar::{Motion, Performance, Side};
+    let model = model();
+    let rest = model.build(&BodyParams::female());
+    let foot = [model.bone("foot.L").unwrap(), model.bone("foot.R").unwrap()];
+    let step = 1.0 / 60.0;
+    for motion in Motion::ALL {
+        let performance = Performance::bake(motion, &model, &rest);
+        let frames = (motion.duration() / step) as usize;
+        let mut previous: Option<Vec<Vec3>> = None;
+        let mut velocity: Option<Vec<Vec3>> = None;
+        let mut planted_at: [Option<Vec3>; 2] = [None, None];
+        let (mut worst_slide, mut worst_speed, mut worst_accel) = (0.0f32, 0.0f32, 0.0f32);
+        let mut worst_at = (0.0, String::new());
+        for frame in 0..frames {
+            let t = frame as f32 * step;
+            let pose = performance.pose(t, &model, &rest);
+            let bones = model.bone_transforms(&rest, &pose);
+            let points: Vec<Vec3> = bones.iter().zip(&rest.joints).map(|(b, j)| b.transform_point3(j.head) + pose.offset).collect();
+            let angles = motion.angles(t);
+            for (side, s) in [Side::Left, Side::Right].into_iter().enumerate() {
+                let ankle = points[foot[side]];
+                if angles.get(Joint::Plant(s)) >= 0.99 {
+                    let start = *planted_at[side].get_or_insert(ankle);
+                    worst_slide = worst_slide.max(Vec2::new(ankle.x - start.x, ankle.z - start.z).length());
+                } else {
+                    planted_at[side] = None;
+                }
+            }
+            if let Some(prev) = &previous {
+                let v: Vec<Vec3> = points.iter().zip(prev).map(|(a, b)| (*a - *b) / step).collect();
+                worst_speed = worst_speed.max(v.iter().map(|v| v.length()).fold(0.0, f32::max));
+                if let Some(pv) = &velocity {
+                    for (bone, (a, b)) in v.iter().zip(pv).enumerate() {
+                        let accel = ((*a - *b) / step).length();
+                        if accel > worst_accel {
+                            worst_accel = accel;
+                            worst_at = (t, model.bones()[bone].name.clone());
+                        }
+                    }
+                }
+                velocity = Some(v);
+            }
+            previous = Some(points);
+        }
+        println!("{motion:?}: slide {:.1} mm, speed {worst_speed:.2} m/s, accel {worst_accel:.1} m/s² at {:.2} s ({})", worst_slide * 1000.0, worst_at.0, worst_at.1);
+        assert!(worst_slide < 0.005, "{motion:?}: a planted foot slid {:.1} mm", worst_slide * 1000.0);
+        let walking = matches!(motion, Motion::Walk | Motion::StiffWalk | Motion::HipSwayWalk);
+        // The tip of a swinging foot is the fastest thing in a walk.
+        assert!(worst_speed < if walking { 7.0 } else { 4.0 }, "{motion:?}: something moved at {worst_speed} m/s");
+        // A swinging foot whips through and strikes the ground; elsewhere the
+        // most is a foot set down from a step, which real feet do at a few g.
+        let limit = if walking { 80.0 } else { 50.0 };
+        assert!(worst_accel < limit, "{motion:?}: a jolt of {worst_accel} m/s²");
+    }
+}
+
+
+/// The posed body for arms raised overhead, with both skinnings.
+fn arms_overhead(model: &BodyModel) -> (avatar::BodyMesh, avatar::BodyMesh, avatar::BodyMesh) {
+    let rest = model.build(&BodyParams::female());
+    let overhead = avatar::PoseParams { arm_angle: Some(170.0), ..avatar::PoseParams::modelled() }.to_pose(model, &rest);
+    let posed = model.pose(&rest, &overhead);
+    let linear = model.pose_linear_blend(&rest, &overhead);
+    (rest, posed, linear)
+}
+
+#[test]
+fn raised_arms_keep_the_shoulders_full() {
+    let model = model();
+    let (rest, posed, linear) = arms_overhead(&model);
+    // Skin over the top of each shoulder, against the shoulder joint: a
+    // collapsing shoulder brings it down towards the joint.
+    let clearance = |body: &avatar::BodyMesh| -> f32 {
+        let joints: Vec<Vec3> = ["upperarm01.L", "upperarm01.R"].iter().map(|n| body.joints[model.bone(n).unwrap()].head).collect();
+        let top: Vec<usize> = (0..body.positions.len())
+            .filter(|&i| {
+                let p = rest.positions[i];
+                p.x.abs() > 0.08 && p.x.abs() < 0.16 && p.y > 1.3 && p.y < 1.42 && p.z.abs() < 0.05
+            })
+            .collect();
+        top.iter().map(|&i| joints.iter().map(|j| body.positions[i].distance(*j)).fold(f32::MAX, f32::min)).sum::<f32>() / top.len() as f32
+    };
+    let (c0, c1, c2) = (clearance(&rest), clearance(&posed), clearance(&linear));
+    eprintln!("skin over the shoulder to the joint: rest {:.1} cm, centres of rotation {:.1} cm, linear blend {:.1} cm", c0 * 100.0, c1 * 100.0, c2 * 100.0);
+    assert!(c1 > c2, "the shoulder keeps more of its volume");
+}
+
+#[test]
+fn centres_of_rotation_do_not_tear_the_skin() {
+    let model = model();
+    let (rest, posed, linear) = arms_overhead(&model);
+    let mut worst = 0.0f32;
+    for t in rest.skin() {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let r = rest.positions[a as usize].distance(rest.positions[b as usize]);
+            let c = posed.positions[a as usize].distance(posed.positions[b as usize]) / r;
+            let l = linear.positions[a as usize].distance(linear.positions[b as usize]) / r;
+            worst = worst.max(c / l);
+        }
+    }
+    assert!(worst < 2.0, "an edge is stretched {worst:.1} times as far as linear blending stretches it");
 }

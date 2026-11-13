@@ -36,7 +36,7 @@ use rayon::prelude::*;
 use crate::bvh::{Aabb, Bvh};
 use crate::ccd::{closest_point_on_triangle, vertex_triangle_impact};
 
-pub const PLANES_PER_VERTEX: usize = 2;
+pub const PLANES_PER_VERTEX: usize = 4;
 
 /// Steps between full rebuilds of the hierarchy; in between it is refit.
 const REBUILD_INTERVAL: u32 = 24;

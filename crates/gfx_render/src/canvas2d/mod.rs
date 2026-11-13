@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
 
 pub use batch::{CanvasBatch, CanvasVertex};
-pub use scene::CanvasOverlay;
+pub use scene::{CanvasOverlay, LineHighlight};
 
 use crate::camera::Camera2D;
 use crate::context::GpuContext;

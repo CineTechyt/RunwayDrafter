@@ -8,7 +8,7 @@ use anyhow::Context as _;
 use app_ui::{AppUi, ViewportInput, ViewportTextures};
 use gfx_render::scene3d::avatar;
 use gfx_render::{
-    CanvasBatch, CanvasRenderer, GpuContext, MeshData, MeshVertex, SceneRenderer, SurfaceMaterial, ViewportRenderer,
+    CanvasBatch, CanvasRenderer, GpuContext, MeshData, MeshVertex, SceneRenderer, Shading, SurfaceMaterial, ViewportRenderer,
     canvas2d,
     preferred_backends,
 };
@@ -129,7 +129,7 @@ const SKIN_INSET: f32 = 0.0025;
 
 /// Looks for the baked body model: an explicit override, next to the
 /// working directory, next to the executable, then in the source tree.
-fn find_body_model() -> Option<std::path::PathBuf> {
+pub(crate) fn find_body_model() -> Option<std::path::PathBuf> {
     const RELATIVE: &str = "assets/avatar/body.bin";
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("CLO360_BODY") {
@@ -143,7 +143,7 @@ fn find_body_model() -> Option<std::path::PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
-struct Running {
+pub(crate) struct Running {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
@@ -256,9 +256,12 @@ impl Running {
         };
         let mut session = Session::new(Some(solver), body, colliders);
         session.editor.simulation.gpu_available = gpu.supports_compute;
-        if gpu.supports_compute {
-            session.editor.simulation.settings.backend = SolverBackend::Gpu;
-        }
+    // As in the app: a real-time solver for the live view.
+    session.editor.simulation.settings.backend = if gpu.supports_compute { SolverBackend::Gpu } else { SolverBackend::Cpu };
+        // The live view must keep up with the frame rate: the explicit
+        // solver on the GPU, or on the CPU without compute shaders. (The
+        // contact solver bakes animations, and can be picked here too.)
+        session.editor.simulation.settings.backend = if gpu.supports_compute { SolverBackend::Gpu } else { SolverBackend::Cpu };
         let info = adapter.get_info();
         session.editor.stats.backend = format!("{} · {:?}", info.name, info.backend);
 
@@ -323,47 +326,18 @@ impl Running {
         let mut encoder =
             self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
 
-        if self.session.take_avatar_dirty()
-            && let Some((body, _)) = self.session.avatar()
-        {
-            let mesh = MeshData {
-                // Drawn slightly smaller than it is (CLO calls this the skin
-                // offset): the cloth rests a few millimetres off the true
-                // skin, and this keeps the last of it from shimmering through.
-                vertices: body
-                    .positions
-                    .iter()
-                    .zip(&body.normals)
-                    .map(|(p, n)| MeshVertex::new(*p - *n * SKIN_INSET, *n, Vec2::ZERO))
-                    .collect(),
-                indices: body.triangles.iter().flatten().copied().collect(),
-            };
-            self.scene.set_avatar(&self.gpu, &mesh, SurfaceMaterial { base_color: [0.62, 0.45, 0.36], roughness: 0.65, ..Default::default() });
-        }
-        self.scene.overlay = self.session.surface_overlay().0;
-        if self.session.take_garment_dirty() {
-            let (_, values) = self.session.surface_overlay();
-            self.scene.sync_garment(&self.gpu, self.session.topology.mesh(), values);
-        }
-        if let Some(input) = canvas_input {
-            Self::fit_target(&self.gpu, &mut self.egui_renderer, &mut self.canvas, self.textures.canvas, &input, self.max_texture_side);
-            canvas2d::scene::build(
-                &mut self.canvas_batch,
-                &self.session.document,
-                Some(self.session.topology.mesh()),
-                &self.session.canvas_camera,
-                self.canvas.viewport(),
-                &self.session.canvas_overlay(),
-            );
-            self.canvas.prepare(&self.gpu, &self.canvas_batch, &self.session.canvas_camera);
-            self.canvas.render(&self.gpu, &mut encoder);
-        }
-        if let Some(input) = scene_input {
-            Self::fit_target(&self.gpu, &mut self.egui_renderer, &mut self.scene, self.textures.scene, &input, self.max_texture_side);
-            let session = &self.session;
-            self.scene.prepare(&self.gpu, &session.scene_camera, |piece| session.material_of(piece));
-            self.scene.render(&self.gpu, &mut encoder);
-        }
+        draw_viewports(
+            &self.gpu,
+            &mut self.session,
+            &mut self.scene,
+            &mut self.canvas,
+            &mut self.canvas_batch,
+            &mut self.egui_renderer,
+            self.textures,
+            self.max_texture_side,
+            (canvas_input, scene_input),
+            &mut encoder,
+        );
 
         // 4. Composite the UI (which samples those targets) onto the window.
         let frame = match self.surface.get_current_texture() {
@@ -429,7 +403,7 @@ impl Running {
 
     /// Matches a viewport's render target to the size its tab has on screen
     /// and re-points the `egui` texture at the new image if it was recreated.
-    fn fit_target(
+    pub(crate) fn fit_target(
         gpu: &GpuContext,
         egui_renderer: &mut egui_wgpu::Renderer,
         renderer: &mut impl ViewportRenderer,
@@ -447,4 +421,112 @@ impl Running {
             );
         }
     }
+}
+
+/// Draws the body with its looks: skin (with brows and lips painted on),
+/// eyes and hair.
+fn upload_avatar(gpu: &GpuContext, scene: &mut SceneRenderer, session: &mut Session) {
+    let appearance = session.editor.avatar.appearance;
+    let white = [1.0; 3];
+    let skin_material = SurfaceMaterial { base_color: white, roughness: 0.5, shading: Shading::Skin, ..Default::default() };
+    // Drawn slightly smaller than it is (CLO calls this the skin offset):
+    // the cloth rests a few millimetres off the true skin, and this keeps
+    // the last of it from shimmering through.
+    let skin_mesh = |body: &::avatar::BodyMesh, colors: &dyn Fn(usize) -> [f32; 3]| MeshData {
+        vertices: (0..body.positions.len())
+            .map(|i| MeshVertex::new(body.positions[i] - body.normals[i] * SKIN_INSET, body.normals[i], Vec2::ZERO).with_color(colors(i)))
+            .collect(),
+        // The body's own eyes are replaced by coloured eyeballs.
+        indices: body.skin().iter().flatten().copied().collect(),
+    };
+
+    // The parametric body: looks built once, carried along with the head.
+    if session.imported.is_none()
+        && let Some(body) = &mut session.body
+        && body.looks(&appearance).is_some()
+        && let Some(looks) = body.cached_looks()
+    {
+        let head = body.head_transform(looks);
+        let moved = |mesh: &::avatar::LookMesh, offset: Vec3| MeshData {
+            vertices: (0..mesh.positions.len())
+                .map(|i| {
+                    let position = head.transform_point3(mesh.positions[i] + offset);
+                    let normal = head.transform_vector3(mesh.normals[i]).normalize_or(Vec3::Y);
+                    MeshVertex::new(position, normal, mesh.uvs[i]).with_color(mesh.colors[i]).with_value(mesh.coverage[i])
+                })
+                .collect(),
+            indices: mesh.triangles.iter().flatten().copied().collect(),
+        };
+        let skin = skin_mesh(&body.mesh, &|i| looks.skin_colors.get(i).copied().unwrap_or(appearance.skin));
+        // Set back with the eyelids around them.
+        let eyes = moved(&looks.eyes, Vec3::NEG_Z * SKIN_INSET);
+        let hair = moved(&looks.hair, Vec3::ZERO);
+        let root = head.transform_point3(looks.hair_root).to_array();
+        scene.set_avatar_parts(
+            gpu,
+            &[
+                (&skin, skin_material),
+                (&eyes, SurfaceMaterial { base_color: white, roughness: 0.08, ..Default::default() }),
+                (&hair, SurfaceMaterial { base_color: white, roughness: 0.5, shading: Shading::Hair { root }, ..Default::default() }),
+            ],
+        );
+        return;
+    }
+    // An imported avatar (or a body without eyes): skin colour only.
+    if let Some((body, _)) = session.avatar() {
+        let skin = skin_mesh(body, &|_| appearance.skin);
+        scene.set_avatar(gpu, &skin, skin_material);
+    }
+}
+
+/// Brings the avatar and garment buffers up to date and draws the
+/// viewports that are on screen into their targets.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_viewports(
+    gpu: &GpuContext,
+    session: &mut Session,
+    scene: &mut SceneRenderer,
+    canvas: &mut CanvasRenderer,
+    canvas_batch: &mut CanvasBatch,
+    egui_renderer: &mut egui_wgpu::Renderer,
+    textures: ViewportTextures,
+    max_side: u32,
+    (canvas_input, scene_input): (Option<ViewportInput>, Option<ViewportInput>),
+    encoder: &mut wgpu::CommandEncoder,
+) {
+        if session.take_avatar_dirty() {
+            upload_avatar(gpu, scene, session);
+        }
+        scene.overlay = session.surface_overlay().0;
+        if session.take_garment_dirty() {
+            let (_, values) = session.surface_overlay();
+            scene.sync_garment(gpu, session.topology.mesh(), values, |piece| session.fabric_thickness(piece));
+        }
+        if let Some(input) = canvas_input {
+            Running::fit_target(gpu, egui_renderer, canvas, textures.canvas, &input, max_side);
+            canvas2d::scene::build(
+                canvas_batch,
+                &session.document,
+                Some(session.topology.mesh()),
+                &session.canvas_camera,
+                canvas.viewport(),
+                &session.canvas_overlay(),
+            );
+            canvas.prepare(gpu, &canvas_batch, &session.canvas_camera);
+            canvas.render(gpu, encoder);
+        }
+        if let Some(input) = scene_input {
+            Running::fit_target(gpu, egui_renderer, scene, textures.scene, &input, max_side);
+            // Buttons ride on the cloth, so they follow it every frame; the
+            // chair of the sitting animation rises out of the floor.
+            let mut props = gfx_render::garment_props(&session.document, &session.topology);
+            if let Some((min, max)) = session.chair() {
+                gfx_render::scene3d::props::chair(&mut props, min, max);
+            }
+            scene.set_props(gpu, &props);
+            let session = &*session;
+            scene.prepare(gpu, &session.scene_camera, |piece| session.material_of(piece));
+            scene.render(gpu, encoder);
+        }
+
 }

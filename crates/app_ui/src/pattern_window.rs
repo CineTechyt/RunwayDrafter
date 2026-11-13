@@ -128,7 +128,7 @@ pub fn show(ctx: &egui::Context, editor: &mut EditorState, output: &mut UiOutput
                 ui.horizontal(|ui| {
                     ui.strong(format!("Detected pieces: {}", pattern.pieces.len()));
                     if ui
-                        .button("⇄ Swap all Cut & Sew lines")
+                        .button("↔ Swap all Cut & Sew lines")
                         .on_hover_text("Swaps the cutting line and sewing line on all pieces")
                         .clicked()
                     {
@@ -156,7 +156,7 @@ pub fn show(ctx: &egui::Context, editor: &mut EditorState, output: &mut UiOutput
                                 .suffix(" mm"),
                         );
                         if ui
-                            .small_button("⇄ Swap roles")
+                            .small_button("↔ Swap roles")
                             .on_hover_text("Swap cutting line and sew line for this piece")
                             .clicked()
                         {

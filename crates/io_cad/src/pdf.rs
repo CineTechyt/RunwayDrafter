@@ -198,8 +198,227 @@ fn decode_pdf_text(token: &str) -> String {
     }
 }
 
-/// Extracts all decompressed content streams from a PDF file.
+/// The decompressed content streams the file's pages actually draw.
+///
+/// Only what the pages reference counts: an edited PDF often still holds
+/// the previous drawing as an unreferenced object (pypdf keeps it), or as an
+/// older version of the same object number (incremental saves append the
+/// new version). Reading every stream in the file would import both the old
+/// and the new pieces on top of each other.
+///
+/// Falls back to every stream in the file when the page tree cannot be
+/// followed (object streams, damaged files).
 fn extract_content_streams(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let objects = index_objects(bytes);
+    let referenced = page_content_objects(&objects);
+    if !referenced.is_empty() {
+        let streams: Vec<Vec<u8>> = referenced
+            .iter()
+            .filter_map(|number| objects.get(number))
+            .filter_map(|object| decode_stream(bytes, object))
+            .collect();
+        if !streams.is_empty() {
+            return streams;
+        }
+    }
+    extract_all_streams(bytes)
+}
+
+/// One `N G obj … endobj` of the file: its dictionary text and, for a
+/// stream object, where the raw stream data lies.
+#[derive(Debug, Clone)]
+struct PdfObject {
+    dictionary: String,
+    stream: Option<std::ops::Range<usize>>,
+}
+
+/// Every top-level object by number. A number defined twice keeps its last
+/// definition, as an incremental update intends.
+fn index_objects(bytes: &[u8]) -> std::collections::HashMap<u32, PdfObject> {
+    let mut objects = std::collections::HashMap::new();
+    let mut cursor = 0;
+    while let Some(relative) = find_subsequence(&bytes[cursor..], b" obj") {
+        let keyword = cursor + relative;
+        cursor = keyword + 4;
+        // "<number> <generation> obj", at the start of a line or after whitespace.
+        let Some((number, header_start)) = object_number_before(bytes, keyword) else { continue };
+        if header_start > 0 && !bytes[header_start - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let body_start = keyword + 4;
+        let Some(end_relative) = find_subsequence(&bytes[body_start..], b"endobj") else { break };
+        let body_end = body_start + end_relative;
+        let body = &bytes[body_start..body_end];
+        let (dictionary, stream) = match find_subsequence(body, b"stream") {
+            Some(at) if !body[..at].ends_with(b"end") => {
+                let mut data_start = body_start + at + 6;
+                if bytes.get(data_start) == Some(&b'\r') {
+                    data_start += 1;
+                }
+                if bytes.get(data_start) == Some(&b'\n') {
+                    data_start += 1;
+                }
+                let data_end = find_subsequence(&bytes[data_start..body_end], b"endstream")
+                    .map_or(body_end, |end| data_start + end);
+                (String::from_utf8_lossy(&body[..at]).into_owned(), Some(data_start..data_end))
+            }
+            _ => (String::from_utf8_lossy(body).into_owned(), None),
+        };
+        objects.insert(number, PdfObject { dictionary, stream });
+        cursor = body_end + 6;
+    }
+    objects
+}
+
+/// Parses "N G" right before byte `keyword`. Returns N and where "N" starts.
+fn object_number_before(bytes: &[u8], keyword: usize) -> Option<(u32, usize)> {
+    let digits_back = |end: usize| {
+        let mut start = end;
+        while start > 0 && bytes[start - 1].is_ascii_digit() {
+            start -= 1;
+        }
+        (start < end).then_some(start)
+    };
+    let generation_start = digits_back(keyword)?;
+    let mut number_end = generation_start;
+    if number_end == 0 || !bytes[number_end - 1].is_ascii_whitespace() {
+        return None;
+    }
+    while number_end > 0 && bytes[number_end - 1].is_ascii_whitespace() {
+        number_end -= 1;
+    }
+    let number_start = digits_back(number_end)?;
+    let number = std::str::from_utf8(&bytes[number_start..number_end]).ok()?.parse().ok()?;
+    Some((number, number_start))
+}
+
+/// Object numbers referenced as `N G R` in `text`.
+fn references(text: &str) -> Vec<u32> {
+    let words: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || "[]<>/()".contains(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    words
+        .windows(3)
+        .filter(|w| w[2] == "R" && w[1].bytes().all(|b| b.is_ascii_digit()))
+        .filter_map(|w| w[0].parse().ok())
+        .collect()
+}
+
+/// The text following `/Key` in a dictionary, up to the next key at the
+/// same nesting depth: a value such as `12 0 R`, `[ 4 0 R 5 0 R ]` or
+/// `<< /Fm0 9 0 R >>`.
+fn dictionary_value<'a>(dictionary: &'a str, key: &str) -> Option<&'a str> {
+    let mut search = 0;
+    let at = loop {
+        let found = search + dictionary[search..].find(key)?;
+        let after = dictionary[found + key.len()..].chars().next();
+        // "/Contents" must not match "/ContentsX".
+        if after.is_none_or(|c| !c.is_ascii_alphanumeric()) {
+            break found + key.len();
+        }
+        search = found + key.len();
+    };
+    let rest = &dictionary[at..];
+    let (mut depth, mut end) = (0i32, rest.len());
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' if bytes.get(i + 1) == Some(&b'<') => {
+                depth += 1;
+                i += 1;
+            }
+            b'>' if bytes.get(i + 1) == Some(&b'>') => {
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+                depth -= 1;
+                i += 1;
+            }
+            b'[' => depth += 1,
+            b']' => depth -= 1,
+            b'/' if depth == 0 && i > 0 => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Some(&rest[..end])
+}
+
+/// The content streams of every page, and of the form XObjects their
+/// resources name, in drawing order.
+fn page_content_objects(objects: &std::collections::HashMap<u32, PdfObject>) -> Vec<u32> {
+    let is_page = |object: &PdfObject| {
+        let d = &object.dictionary;
+        d.contains("/Type /Page") && !d.contains("/Type /Pages") || d.contains("/Type/Page") && !d.contains("/Type/Pages")
+    };
+    let mut pages: Vec<(&u32, &PdfObject)> = objects.iter().filter(|(_, object)| is_page(object)).collect();
+    pages.sort_by_key(|(number, _)| **number);
+
+    let mut out = Vec::new();
+    let push = |number: u32, out: &mut Vec<u32>| {
+        if !out.contains(&number) {
+            out.push(number);
+        }
+    };
+    for (_, page) in pages {
+        if let Some(contents) = dictionary_value(&page.dictionary, "/Contents") {
+            for number in references(contents) {
+                // `/Contents 7 0 R` may point at an array object of streams.
+                match objects.get(&number) {
+                    Some(object) if object.stream.is_none() => references(&object.dictionary).into_iter().for_each(|n| push(n, &mut out)),
+                    _ => push(number, &mut out),
+                }
+            }
+        }
+        // Drawings placed as form XObjects (`/Fm0 Do`).
+        let resources = dictionary_value(&page.dictionary, "/Resources").map(|value| {
+            match references(value).first().and_then(|n| objects.get(n)) {
+                Some(object) if !value.contains("<<") => object.dictionary.clone(),
+                _ => value.to_owned(),
+            }
+        });
+        if let Some(resources) = resources
+            && let Some(xobjects) = dictionary_value(&resources, "/XObject")
+        {
+            let xobjects = match references(xobjects).first().and_then(|n| objects.get(n)) {
+                Some(object) if !xobjects.contains("<<") => object.dictionary.clone(),
+                _ => xobjects.to_owned(),
+            };
+            for number in references(&xobjects) {
+                if objects.get(&number).is_some_and(|o| o.stream.is_some() && o.dictionary.contains("/Form")) {
+                    push(number, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The decoded data of a stream object (Flate or uncompressed).
+fn decode_stream(bytes: &[u8], object: &PdfObject) -> Option<Vec<u8>> {
+    let raw = &bytes[object.stream.clone()?];
+    let mut end = raw.len();
+    while end > 0 && (raw[end - 1] == b'\r' || raw[end - 1] == b'\n') {
+        end -= 1;
+    }
+    let raw = &raw[..end];
+    if object.dictionary.contains("/FlateDecode") || object.dictionary.contains("/Fl ") || object.dictionary.contains("/Fl/") {
+        miniz_oxide::inflate::decompress_to_vec_zlib(raw).ok().or_else(|| miniz_oxide::inflate::decompress_to_vec(raw).ok())
+    } else if object.dictionary.contains("/Filter") {
+        None // other encodings are not supported
+    } else {
+        Some(raw.to_vec())
+    }
+}
+
+/// Every decompressed stream in the file that looks like drawing commands.
+fn extract_all_streams(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut streams = Vec::new();
     let mut cursor = 0;
 
@@ -587,6 +806,58 @@ mod tests {
         assert!(matches!(sub.segments[0], RawSegment::Line { .. }));
         assert!(matches!(sub.segments[1], RawSegment::Cubic { .. }));
         assert!(matches!(sub.segments[2], RawSegment::Cubic { .. }));
+    }
+
+    #[test]
+    fn only_the_drawing_the_page_references_is_imported() {
+        // Object 5 is the original drawing, left behind unreferenced by an
+        // editor; the page draws object 11 (a different square).
+        let pdf = b"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [ 4 0 R ] /Count 1 >> endobj
+4 0 obj << /Type /Page /Parent 2 0 R /Contents 11 0 R /MediaBox [0 0 500 500] >> endobj
+5 0 obj << /Length 40 >>
+stream
+0 0 m 100 0 l 100 100 l 0 100 l h S
+endstream
+endobj
+11 0 obj << /Length 44 >>
+stream
+200 0 m 300 0 l 300 100 l 200 100 l h S
+endstream
+endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+        let options = PdfOptions { scale: 1.0, default_allowance_mm: 10.0 };
+        let pattern = import_pattern_pdf(pdf, &options).unwrap();
+        assert_eq!(pattern.pieces.len(), 1);
+        assert!(pattern.pieces[0].loops[0].bounds.0.x > 150.0, "the referenced drawing, not the orphan");
+    }
+
+    #[test]
+    fn an_incremental_update_replaces_the_earlier_version_of_an_object() {
+        let pdf = b"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [ 4 0 R ] /Count 1 >> endobj
+4 0 obj << /Type /Page /Parent 2 0 R /Contents [ 5 0 R ] >> endobj
+5 0 obj << /Length 40 >>
+stream
+0 0 m 100 0 l 100 100 l 0 100 l h S
+endstream
+endobj
+trailer << /Root 1 0 R >>
+%%EOF
+5 0 obj << /Length 44 >>
+stream
+200 0 m 300 0 l 300 100 l 200 100 l h S
+endstream
+endobj
+trailer << /Root 1 0 R /Prev 0 >>
+%%EOF";
+        let options = PdfOptions { scale: 1.0, default_allowance_mm: 10.0 };
+        let pattern = import_pattern_pdf(pdf, &options).unwrap();
+        assert_eq!(pattern.pieces.len(), 1);
+        assert!(pattern.pieces[0].loops[0].bounds.0.x > 150.0);
     }
 
     #[test]
