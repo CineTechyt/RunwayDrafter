@@ -18,6 +18,7 @@ physics_collision.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 rayon.workspace = true
+faer.workspace = true
 log.workspace = true
 wgpu = { workspace = true, optional = true }
 

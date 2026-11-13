@@ -23,8 +23,9 @@
 //!   of an animation; add `--play-animation` to play it from there over
 //!   the frames; `--simulate-garment` drapes first (over `--frames`), then
 //!   simulates the garment through the animation and shows that.
-//! * `--solver contact|cpu|gpu` — the live cloth solver (default: gpu where
-//!   available, else cpu). Garment animation is always baked with contact.
+//! * `--solver contact|global|cpu|gpu` — the live cloth solver (default: gpu
+//!   where available, else cpu). Garment animation is baked with global if
+//!   that is the live solver, otherwise with contact.
 //! * `--bake-seconds N` — limit a garment bake to the first N seconds; useful
 //!   for inspecting a particular early animation pose.
 //! * `--fabric denim|corduroy` — apply a close-up material preset for visual
@@ -175,7 +176,10 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
             Some("contact") => Some(SolverBackend::Contact),
             Some("cpu") => Some(SolverBackend::Cpu),
             Some("gpu") => Some(SolverBackend::Gpu),
-            Some(other) => anyhow::bail!("unknown solver {other:?} (contact, cpu or gpu)"),
+            Some("global") => Some(SolverBackend::Global),
+            Some(other) => {
+                anyhow::bail!("unknown solver {other:?} (contact, global, cpu or gpu)")
+            }
         },
         fabric: match value("--fabric").as_deref() {
             None => None,

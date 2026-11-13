@@ -876,12 +876,16 @@ impl Session {
             model: body.model().clone(),
             rest: body.rest().clone(),
             start_pose: body.pose.to_pose(body.model(), body.rest()),
-            // Animation is baked offline, so it always gets the contact
-            // solver: cloth that lifts off the body, follows it through
-            // friction and never passes through itself. The live view
-            // keeps whichever solver runs in real time.
+            // Animation is baked offline, so it need not keep up with the
+            // frame rate: with the global solver if that is the one picked
+            // (fabric that keeps its length, but no cloth-on-cloth
+            // collision yet), otherwise with the contact solver, whichever
+            // of the real-time solvers the live view runs.
             settings: SolverSettings {
-                backend: SolverBackend::Contact,
+                backend: match self.editor.simulation.settings.backend {
+                    SolverBackend::Global => SolverBackend::Global,
+                    _ => SolverBackend::Contact,
+                },
                 ..self.editor.simulation.settings
             },
             closing: closing_radius(self.editor.simulation.particle_distance),

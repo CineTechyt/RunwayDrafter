@@ -24,4 +24,6 @@ pub use look::{Appearance, Hair, HairStyle, Head, LookMesh};
 pub use measure::{Measure, Measurements, measure};
 pub use model::{BodyMesh, BodyModel, BodyParams, Bone, Joint, LoadError, Morph};
 pub use motion::{Angles, Motion, Performance, Side};
-pub use pose::{Attachment, Pose, PoseParams, PosedBody, attach, attach_to, carry, follow};
+pub use pose::{
+    Attachment, Pose, PoseParams, PosedBody, attach, attach_to, carry, follow, travelled,
+};

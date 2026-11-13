@@ -31,6 +31,7 @@
 //! ([`cpu`]) or as one compute dispatch ([`gpu`]).
 
 pub mod cpu;
+pub mod global;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod material;

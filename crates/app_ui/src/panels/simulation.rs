@@ -60,6 +60,8 @@ impl Panel for SimulationPanel {
         property_grid(ui, "solver", |ui| {
             ui.label("Backend");
             ui.horizontal(|ui| {
+                ui.selectable_value(&mut sim.settings.backend, SolverBackend::Global, "Global")
+                    .on_hover_text("Solves the whole garment at once, one step per frame: the fabric keeps its length however stiff it is. No cloth-on-cloth collision yet");
                 ui.selectable_value(&mut sim.settings.backend, SolverBackend::Contact, "Contact")
                     .on_hover_text("Implicit CPU solver with offset geometric contact: cloth never passes through itself and lies on the body instead of being held to it");
                 ui.selectable_value(&mut sim.settings.backend, SolverBackend::Cpu, "CPU");

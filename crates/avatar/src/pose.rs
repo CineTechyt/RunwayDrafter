@@ -349,6 +349,29 @@ pub struct Attachment {
 }
 
 /// Attaches `points` (garment vertices, say) to the nearest skin of `body`.
+/// How far the body as a whole moved from `from` to `to`: the median
+/// displacement of its vertices within `region` (min, max corners), so a
+/// swinging arm does not count. Worn cloth is simulated in a frame that
+/// travels by this much.
+pub fn travelled(from: &BodyMesh, to: &BodyMesh, region: (Vec3, Vec3)) -> Vec3 {
+    let moves: Vec<Vec3> = from
+        .positions
+        .iter()
+        .zip(&to.positions)
+        .filter(|(a, _)| a.cmpge(region.0).all() && a.cmple(region.1).all())
+        .map(|(a, b)| *b - *a)
+        .collect();
+    if moves.is_empty() {
+        return Vec3::ZERO;
+    }
+    let median = |axis: usize| {
+        let mut values: Vec<f32> = moves.iter().map(|m| m[axis]).collect();
+        let middle = values.len() / 2;
+        *values.select_nth_unstable_by(middle, f32::total_cmp).1
+    };
+    Vec3::new(median(0), median(1), median(2))
+}
+
 pub fn attach(points: &[Vec3], body: PosedBody<'_>) -> Vec<Attachment> {
     attach_to(points, body, None)
 }

@@ -21,6 +21,10 @@ pub enum SolverBackend {
     /// itself, and lies on the body rather than being held to it.
     #[default]
     Contact,
+    /// Multithreaded CPU solve that couples the whole garment at once
+    /// (projective dynamics on a matrix factorised once per mesh): the
+    /// fabric holds its length in a few passes, at one step per frame.
+    Global,
 }
 
 /// User-tunable simulation parameters.

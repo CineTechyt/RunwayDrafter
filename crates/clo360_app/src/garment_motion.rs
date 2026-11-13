@@ -269,11 +269,15 @@ fn run(job: Job, sender: &Sender<Message>) {
                 let clock = std::time::Instant::now();
                 // The skin's velocity, for friction with the moving body.
                 let step = dt / pieces as f32;
+                // The garment travels with its wearer: only the body's
+                // motion against itself is left to the collision.
+                let travelled = avatar::travelled(&body, &then, region(&mesh));
+                solver.travel(&mut mesh, travelled, step);
                 let velocities: Vec<Vec3> = body
                     .positions
                     .iter()
                     .zip(&then.positions)
-                    .map(|(a, b)| (*b - *a) / step)
+                    .map(|(a, b)| (*b - *a - travelled) / step)
                     .collect();
                 body = then;
                 field = Arc::new(avatar::distance_field_within(

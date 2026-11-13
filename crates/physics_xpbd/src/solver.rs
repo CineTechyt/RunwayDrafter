@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use glam::{Vec3, Vec3A};
+use rayon::prelude::*;
 use physics_collision::{ClothContacts, ContactParams};
 use topology_sync::{
     ClothSolver, DistanceField, GarmentMesh, SolverBackend, SolverContext, SolverStats,
@@ -12,6 +13,7 @@ use topology_sync::{
 
 use crate::cpu::{self, Ellipsoid, State, SubstepParams};
 use crate::model::Model;
+use crate::global::Global;
 use crate::ogc::{Ogc, StepInput};
 
 /// Speed limit in m/s; far above anything cloth does under gravity.
@@ -19,6 +21,17 @@ const MAX_SPEED: f32 = 20.0;
 const MAX_SUBSTEPS: u32 = 64;
 /// Iterations per sub-step of the contact solver.
 const CONTACT_ITERATIONS: usize = 2;
+/// Newton steps per part of a step of the global solver, at most.
+const GLOBAL_ITERATIONS: usize = 2;
+/// The global solver splits a step so that the body moves no further
+/// than this in a part, metres...
+const GLOBAL_STRIDE: f32 = 0.004;
+/// ...into this many parts at most.
+const GLOBAL_MAX_SUBSTEPS: usize = 4;
+/// The most of the body's acceleration the cloth is left to feel, m/s².
+/// Beyond it (a body that starts walking from one frame to the next) the
+/// cloth is simply taken along.
+const MAX_FELT_ACCELERATION: f32 = 6.0;
 /// Rounds of body points against cloth faces per step.
 const PUSH_ROUNDS: usize = 3;
 /// How far behind a cloth face a body point may be and still lift it,
@@ -44,6 +57,11 @@ pub struct XpbdSolver {
     triangles: Vec<[u32; 3]>,
     /// The contact solver's topology and contacts.
     ogc: Ogc,
+    /// The global solver's matrix.
+    global: Global,
+    /// How fast the frame the cloth is simulated in moves, see
+    /// [`XpbdSolver::travel`].
+    frame_velocity: Vec3A,
     /// The GPU holds contact planes that are not all empty.
     planes_on_gpu: bool,
     /// Positions at the start of the step, for the continuous tests.
@@ -98,6 +116,37 @@ impl XpbdSolver {
         self.gpu_current = false;
     }
 
+    /// The body as a whole moved by `delta` over the next step of `dt`
+    /// seconds (walking, a shift of weight): the cloth is simulated in a
+    /// frame that travels with it. Otherwise a body walking at 1.3 m/s
+    /// moves 4 cm a frame, and the garment has to be shoved along by its
+    /// collision with the back; it is worn, and travels with the wearer.
+    ///
+    /// The cloth still feels the frame speeding up and slowing down (it
+    /// swings back when the wearer sets off), up to a limit.
+    ///
+    /// The body's surface velocities given to the following step must be
+    /// relative to this frame too, i.e. with `delta / dt` taken off.
+    pub fn travel(&mut self, mesh: &mut GarmentMesh, delta: Vec3, dt: f32) {
+        if mesh.vertex_count() != self.state.positions.len() || dt <= 0.0 {
+            return;
+        }
+        self.pull_motion_from_gpu();
+        let velocity = Vec3A::from(delta) / dt;
+        let felt = (velocity - self.frame_velocity).clamp_length_max(MAX_FELT_ACCELERATION * dt);
+        self.frame_velocity = velocity;
+        let delta = Vec3A::from(delta);
+        for i in 0..self.state.positions.len() {
+            self.state.positions[i] += delta;
+            self.state.previous[i] += delta;
+            self.state.velocities[i] -= felt;
+        }
+        for (out, p) in mesh.positions.iter_mut().zip(&self.state.positions) {
+            *out = (*p).into();
+        }
+        self.gpu_current = false;
+    }
+
     pub fn has_gpu(&self) -> bool {
         #[cfg(feature = "gpu")]
         return self.gpu.is_some();
@@ -111,6 +160,11 @@ impl XpbdSolver {
 
     pub fn state(&self) -> &State {
         &self.state
+    }
+
+    /// Where the global solver's last step spent its time.
+    pub fn global_stats(&self) -> crate::global::GlobalStats {
+        self.global.stats
     }
 
     /// Diagnostics of the current shape: `(largest stretch or compression
@@ -212,6 +266,7 @@ impl XpbdSolver {
             .map(|s| (s.a, s.b))
             .collect();
         self.ogc = Ogc::new(&self.model, triangles.clone(), &sewn, &rest);
+        self.global = Global::new(&self.model);
         self.contacts = ClothContacts::new(triangles, layers, &stitches, &rest);
         self.clear_planes();
     }
@@ -408,6 +463,7 @@ impl ClothSolver for XpbdSolver {
         self.state = State::at_rest(mesh.positions.iter().map(|&p| Vec3A::from(p)));
         // Found for where the cloth was; they would hold it back there.
         self.clear_planes();
+        self.global.reset();
         #[cfg(feature = "gpu")]
         if let Some(gpu) = &mut self.gpu {
             gpu.upload_state(&self.model, &self.state);
@@ -480,6 +536,10 @@ impl ClothSolver for XpbdSolver {
             })
             .collect();
 
+        if settings.backend == SolverBackend::Global {
+            self.step_global(ctx, &substeps);
+            return self.finish_step(mesh, &substeps, started, "CPU · global");
+        }
         if settings.backend == SolverBackend::Contact {
             self.step_contact(ctx, &substeps);
             return self.finish_step(mesh, &substeps, started, "CPU · contact (VBD + OGC)");
@@ -535,6 +595,88 @@ impl ClothSolver for XpbdSolver {
 }
 
 impl XpbdSolver {
+    /// One step with the global solver: a single implicit step for the
+    /// whole frame.
+    fn step_global(&mut self, ctx: &SolverContext<'_>, substeps: &[SubstepParams]) {
+        self.pull_motion_from_gpu();
+        self.gpu_current = false;
+        let settings = ctx.settings;
+        let Some(p) = substeps.last() else { return };
+        let setting = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<usize>().ok());
+        // A step is one linear solve, which holds while the cloth only
+        // turns a little: where the body pushes it far, the step is split
+        // and the body swept through the parts.
+        let moved = self.body.as_deref().map_or(0.0, |field| {
+            self.state
+                .positions
+                .par_iter()
+                .map(|&x| {
+                    let near = field
+                        .sample(x.into())
+                        .is_some_and(|(distance, _)| distance < 4.0 * p.margin);
+                    if near {
+                        field.velocity_at(x.into()).length() * ctx.dt
+                    } else {
+                        0.0
+                    }
+                })
+                .reduce(|| 0.0f32, f32::max)
+        });
+        let count = setting("GLOBAL_SUBSTEPS")
+            .unwrap_or((moved / GLOBAL_STRIDE).ceil() as usize)
+            .clamp(1, GLOBAL_MAX_SUBSTEPS);
+        let h = ctx.dt / count as f32;
+        let mut s = crate::global::GlobalStats::default();
+        for index in 0..count {
+            let input = crate::global::StepInput {
+                h,
+                gravity: p.gravity,
+                damping: (-settings.damping.max(0.0) * h).exp(),
+                seam_gap: p.seam_gap,
+                friction: p.friction,
+                margin: p.margin,
+                ground: p.ground,
+                max_speed: p.max_speed,
+                iterations: setting("GLOBAL_ITERATIONS").unwrap_or(GLOBAL_ITERATIONS),
+                body: self.body.as_deref(),
+                body_lag: h * (count - 1 - index) as f32,
+            };
+            self.global.step(&mut self.state, &input);
+            let step = self.global.stats;
+            s.contacts = step.contacts;
+            s.last_step = step.last_step;
+            s.factorisations += step.factorisations;
+            s.halvings += step.halvings;
+            s.factor_us += step.factor_us;
+            s.solve_us += step.solve_us;
+            s.assemble_us += step.assemble_us;
+        }
+        self.global.stats = s;
+        log::trace!(
+            "global step: {count} parts, {} factorisations {} us, solves {} us, assembly {} us, last step {:.5}",
+            s.factorisations,
+            s.factor_us,
+            s.solve_us,
+            s.assemble_us,
+            s.last_step
+        );
+        let mut stopped = 0;
+        if settings.continuous_body_collision
+            && let Some(body) = ctx.body_mesh
+        {
+            let margin = settings.collision_margin.max(0.0);
+            for (i, normal) in body.sweep_all(&self.step_start, &mut self.state.positions, margin) {
+                let v = &mut self.state.velocities[i as usize];
+                *v -= normal * v.dot(normal).min(0.0);
+                stopped += 1;
+            }
+        }
+        self.stats.cloth_contacts = 0;
+        self.stats.cloth_crossings = 0;
+        self.stats.body_stops = s.contacts + stopped;
+        self.stats.batches = s.factorisations;
+    }
+
     /// One step with the contact solver: fewer, implicit sub-steps, each
     /// iterated, with contact found inside them.
     fn step_contact(&mut self, ctx: &SolverContext<'_>, substeps: &[SubstepParams]) {
