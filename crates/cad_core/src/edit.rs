@@ -58,8 +58,13 @@ pub struct MoveHandle {
 
 impl MoveHandle {
     fn set(&self, doc: &mut PatternDocument, position: Vec2) -> Result<DocumentChange, EditError> {
-        let piece = doc.piece_mut(self.handle.piece).ok_or(EditError::MissingPiece(self.handle.piece))?;
-        if !piece.outline.set_handle_position(self.handle.kind, position) {
+        let piece = doc
+            .piece_mut(self.handle.piece)
+            .ok_or(EditError::MissingPiece(self.handle.piece))?;
+        if !piece
+            .outline
+            .set_handle_position(self.handle.kind, position)
+        {
             return Err(EditError::MissingHandle(self.handle));
         }
         doc.touch();
@@ -91,7 +96,11 @@ pub struct DocumentSnapshot {
 
 impl DocumentSnapshot {
     pub fn new(label: impl Into<String>, before: PatternDocument, after: PatternDocument) -> Self {
-        Self { label: label.into(), before, after }
+        Self {
+            label: label.into(),
+            before,
+            after,
+        }
     }
 }
 
@@ -169,12 +178,17 @@ mod tests {
     fn move_handle_round_trips_through_history() {
         let mut doc = PatternDocument::demo_top();
         let piece = doc.pieces()[0].id;
-        let handle = HandleRef { piece, kind: HandleKind::Anchor(0) };
+        let handle = HandleRef {
+            piece,
+            kind: HandleKind::Anchor(0),
+        };
         let from = doc.handle_position(handle).unwrap();
         let to = from + Vec2::new(12.0, 7.0);
 
         let mut history = History::default();
-        let change = history.execute(&mut doc, Box::new(MoveHandle { handle, from, to })).unwrap();
+        let change = history
+            .execute(&mut doc, Box::new(MoveHandle { handle, from, to }))
+            .unwrap();
         assert_eq!(change, DocumentChange::PieceGeometry(piece));
         assert_eq!(doc.handle_position(handle), Some(to));
 

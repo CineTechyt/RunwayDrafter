@@ -99,7 +99,8 @@ impl GarmentMesh {
     pub fn nearest_vertex(&self, piece: PieceId, pattern_position: Vec2) -> Option<u32> {
         let span = self.span(piece)?;
         span.vertices.clone().min_by(|&a, &b| {
-            let distance = |v: u32| self.pattern_positions[v as usize].distance_squared(pattern_position);
+            let distance =
+                |v: u32| self.pattern_positions[v as usize].distance_squared(pattern_position);
             distance(a).total_cmp(&distance(b))
         })
     }
@@ -107,7 +108,10 @@ impl GarmentMesh {
     /// The piece a triangle belongs to.
     pub fn piece_of_triangle(&self, triangle: u32) -> Option<PieceId> {
         let first_index = triangle * 3;
-        self.pieces.iter().find(|s| s.indices.contains(&first_index)).map(|s| s.piece)
+        self.pieces
+            .iter()
+            .find(|s| s.indices.contains(&first_index))
+            .map(|s| s.piece)
     }
 
     /// Area-weighted vertex normals from the current positions.
@@ -116,7 +120,8 @@ impl GarmentMesh {
         self.normals.resize(self.positions.len(), Vec3::ZERO);
         for tri in self.indices.chunks_exact(3) {
             let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
-            let n = (self.positions[b] - self.positions[a]).cross(self.positions[c] - self.positions[a]);
+            let n = (self.positions[b] - self.positions[a])
+                .cross(self.positions[c] - self.positions[a]);
             self.normals[a] += n;
             self.normals[b] += n;
             self.normals[c] += n;
@@ -161,7 +166,11 @@ impl GarmentMesh {
             }
             let distance = e2.dot(q) * inv;
             if distance > 1e-5 && best.is_none_or(|b| distance < b.distance) {
-                best = Some(RayHit { triangle: t as u32, barycentric: Vec3::new(1.0 - u - v, u, v), distance });
+                best = Some(RayHit {
+                    triangle: t as u32,
+                    barycentric: Vec3::new(1.0 - u - v, u, v),
+                    distance,
+                });
             }
         }
         best

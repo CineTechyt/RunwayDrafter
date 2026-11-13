@@ -26,7 +26,12 @@ pub enum PieceTransform {
 }
 
 impl PieceTransform {
-    pub const ALL: [Self; 4] = [Self::RotateCcw, Self::RotateCw, Self::FlipHorizontal, Self::FlipVertical];
+    pub const ALL: [Self; 4] = [
+        Self::RotateCcw,
+        Self::RotateCw,
+        Self::FlipHorizontal,
+        Self::FlipVertical,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -79,8 +84,10 @@ impl PatternPiece {
         if reversed {
             let n = self.outline.edge_count();
             self.outline = self.outline.reverse();
-            self.seam_allowance.per_edge =
-                std::mem::take(&mut self.seam_allowance.per_edge).into_iter().map(|(edge, width)| (n - 1 - edge, width)).collect();
+            self.seam_allowance.per_edge = std::mem::take(&mut self.seam_allowance.per_edge)
+                .into_iter()
+                .map(|(edge, width)| (n - 1 - edge, width))
+                .collect();
             for notch in &mut self.notches {
                 notch.edge = n - 1 - notch.edge;
                 notch.t = 1.0 - notch.t;
@@ -99,7 +106,9 @@ impl PatternDocument {
     /// Turns or mirrors a piece in place; seams stay attached to the same
     /// lines. Returns `false` if there is no such piece.
     pub fn transform_piece(&mut self, id: PieceId, transform: PieceTransform) -> bool {
-        let Some(piece) = self.piece_mut(id) else { return false };
+        let Some(piece) = self.piece_mut(id) else {
+            return false;
+        };
         let n = piece.outline.edge_count();
         let reversed = piece.apply_transform(transform);
         if reversed {
@@ -131,7 +140,11 @@ mod tests {
     use crate::ids::EdgeRef;
 
     fn edge_midpoints(doc: &PatternDocument, edge: EdgeRef) -> Vec2 {
-        doc.piece(edge.piece).unwrap().outline.curve(edge.edge).eval(0.5)
+        doc.piece(edge.piece)
+            .unwrap()
+            .outline
+            .curve(edge.edge)
+            .eval(0.5)
     }
 
     #[test]
@@ -158,7 +171,10 @@ mod tests {
         // Vertical before, horizontal after.
         assert!(piece.grainline.direction().y.abs() < 1e-5);
         let (lo, hi) = piece.outline.bounds();
-        assert!(hi.x - lo.x > hi.y - lo.y, "the tall piece now lies on its side");
+        assert!(
+            hi.x - lo.x > hi.y - lo.y,
+            "the tall piece now lies on its side"
+        );
     }
 
     #[test]

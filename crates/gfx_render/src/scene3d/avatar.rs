@@ -22,7 +22,11 @@ pub struct BodyPart {
 pub fn mannequin_parts() -> Vec<BodyPart> {
     let mut parts = Vec::new();
     let mut part = |center: [f32; 3], radii: [f32; 3], roll: f32| {
-        parts.push(BodyPart { center: center.into(), radii: radii.into(), rotation: Quat::from_rotation_z(roll) });
+        parts.push(BodyPart {
+            center: center.into(),
+            radii: radii.into(),
+            rotation: Quat::from_rotation_z(roll),
+        });
     };
 
     part([0.0, 1.60, 0.0], [0.095, 0.118, 0.105], 0.0); // head
@@ -40,7 +44,8 @@ pub fn mannequin_parts() -> Vec<BodyPart> {
         let joint = Vec3::new(side * 0.205, 1.335, 0.0);
         let down = Vec3::new(side * abduction.sin(), -abduction.cos(), 0.0);
         let roll = side * abduction;
-        let mut limb = |distance: f32, radii: [f32; 3]| part((joint + down * distance).into(), radii, roll);
+        let mut limb =
+            |distance: f32, radii: [f32; 3]| part((joint + down * distance).into(), radii, roll);
         limb(0.170, [0.046, 0.175, 0.048]); // upper arm
         limb(0.480, [0.038, 0.160, 0.040]); // forearm
         limb(0.680, [0.028, 0.062, 0.020]); // hand

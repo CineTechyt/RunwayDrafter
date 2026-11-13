@@ -34,7 +34,10 @@ impl CanvasBatch {
     }
 
     fn push(&mut self, position: Vec2, color: [f32; 4]) -> u32 {
-        self.vertices.push(CanvasVertex { position: position.to_array(), color });
+        self.vertices.push(CanvasVertex {
+            position: position.to_array(),
+            color,
+        });
         self.vertices.len() as u32 - 1
     }
 
@@ -58,10 +61,22 @@ impl CanvasBatch {
     }
 
     /// A dashed line; `dash` and `gap` are world-space lengths.
-    pub fn dashed_polyline(&mut self, points: &[Vec2], closed: bool, width: f32, dash: f32, gap: f32, color: [f32; 4]) {
+    pub fn dashed_polyline(
+        &mut self,
+        points: &[Vec2],
+        closed: bool,
+        width: f32,
+        dash: f32,
+        gap: f32,
+        color: [f32; 4],
+    ) {
         let period = (dash + gap).max(1e-3);
         let mut phase = 0.0;
-        let count = if closed { points.len() } else { points.len().saturating_sub(1) };
+        let count = if closed {
+            points.len()
+        } else {
+            points.len().saturating_sub(1)
+        };
         for i in 0..count {
             let (a, b) = (points[i], points[(i + 1) % points.len()]);
             let length = a.distance(b);
@@ -69,7 +84,12 @@ impl CanvasBatch {
             while at < length {
                 let (start, end) = (at.max(0.0), (at + dash).min(length));
                 if end > start {
-                    self.segment(a.lerp(b, start / length), a.lerp(b, end / length), width, color);
+                    self.segment(
+                        a.lerp(b, start / length),
+                        a.lerp(b, end / length),
+                        width,
+                        color,
+                    );
                 }
                 at += period;
             }
@@ -95,14 +115,23 @@ impl CanvasBatch {
             self.push(center + Vec2::from_angle(angle) * radius, color);
         }
         for i in 0..SIDES {
-            self.indices.extend([base, base + 1 + i, base + 1 + (i + 1) % SIDES]);
+            self.indices
+                .extend([base, base + 1 + i, base + 1 + (i + 1) % SIDES]);
         }
     }
 
     /// Indexed triangles with one colour (piece fills).
-    pub fn triangles(&mut self, positions: &[Vec2], indices: impl IntoIterator<Item = u32>, color: [f32; 4]) {
+    pub fn triangles(
+        &mut self,
+        positions: &[Vec2],
+        indices: impl IntoIterator<Item = u32>,
+        color: [f32; 4],
+    ) {
         let base = self.vertices.len() as u32;
-        self.vertices.extend(positions.iter().map(|p| CanvasVertex { position: p.to_array(), color }));
+        self.vertices.extend(positions.iter().map(|p| CanvasVertex {
+            position: p.to_array(),
+            color,
+        }));
         self.indices.extend(indices.into_iter().map(|i| base + i));
     }
 }

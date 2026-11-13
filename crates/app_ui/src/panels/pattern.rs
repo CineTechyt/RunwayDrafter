@@ -48,7 +48,9 @@ impl Panel for PatternPropertiesPanel {
                 *selected = Some(new_id);
                 cx.editor.timeline.stop();
                 cx.output.changes.push(DocumentChange::Everything);
-                cx.output.commands.push(crate::state::UiCommand::ArrangePieces);
+                cx.output
+                    .commands
+                    .push(crate::state::UiCommand::ArrangePieces);
                 cx.output.commands.push(crate::state::UiCommand::FitCanvas);
             }
             return;
@@ -70,27 +72,44 @@ impl Panel for PatternPropertiesPanel {
             .iter()
             .filter(|s| s.a.piece == id || s.b.piece == id)
             .filter_map(|s| {
-                let (mine, theirs) = if s.a.piece == id { ((s.a.piece, s.a_span()), (s.b.piece, s.b_span())) } else { ((s.b.piece, s.b_span()), (s.a.piece, s.a_span())) };
+                let (mine, theirs) = if s.a.piece == id {
+                    ((s.a.piece, s.a_span()), (s.b.piece, s.b_span()))
+                } else {
+                    ((s.b.piece, s.b_span()), (s.a.piece, s.a_span()))
+                };
                 let here = cx.document.piece(mine.0)?.outline.span_length(mine.1);
                 let other = cx.document.piece(theirs.0)?;
-                let name = if theirs.0 == id { "itself".to_owned() } else { other.name.clone() };
+                let name = if theirs.0 == id {
+                    "itself".to_owned()
+                } else {
+                    other.name.clone()
+                };
                 Some((s.id, name, here, other.outline.span_length(theirs.1)))
             })
             .collect();
         // The piece's lines in order: (span, length, sewn?).
-        let lines: Vec<(cad_core::EdgeSpan, f32, bool)> = cx.document.piece(id).map_or_else(Vec::new, |piece| {
-            piece
-                .outline
-                .lines()
-                .into_iter()
-                .map(|span| {
-                    let sewn = span.edges(edge_count).any(|edge| cx.document.seam_of(EdgeRef::new(id, edge)).is_some());
-                    (span, piece.outline.span_length(span), sewn)
-                })
-                .collect()
-        });
+        let lines: Vec<(cad_core::EdgeSpan, f32, bool)> =
+            cx.document.piece(id).map_or_else(Vec::new, |piece| {
+                piece
+                    .outline
+                    .lines()
+                    .into_iter()
+                    .map(|span| {
+                        let sewn = span
+                            .edges(edge_count)
+                            .any(|edge| cx.document.seam_of(EdgeRef::new(id, edge)).is_some());
+                        (span, piece.outline.span_length(span), sewn)
+                    })
+                    .collect()
+            });
         // Where the other pieces sit around the body, for the placement dial.
-        let others: Vec<f32> = cx.document.pieces().iter().filter(|p| p.id != id).map(|p| p.placement.angle).collect();
+        let others: Vec<f32> = cx
+            .document
+            .pieces()
+            .iter()
+            .filter(|p| p.id != id)
+            .map(|p| p.placement.angle)
+            .collect();
         let seam_partner: Vec<Option<String>> = (0..edge_count)
             .map(|edge| {
                 let this = EdgeRef::new(id, edge);
@@ -112,12 +131,23 @@ impl Panel for PatternPropertiesPanel {
             .iter()
             .flat_map(|p| {
                 (0..p.buttonholes.len()).map(move |index| {
-                    (cad_core::ButtonholeRef { piece: p.id, index: index as u32 }, format!("{} · hole {}", p.name, index + 1))
+                    (
+                        cad_core::ButtonholeRef {
+                            piece: p.id,
+                            index: index as u32,
+                        },
+                        format!("{} · hole {}", p.name, index + 1),
+                    )
                 })
             })
             .collect();
-        let taken: Vec<cad_core::ButtonholeRef> =
-            cx.document.pieces().iter().flat_map(|p| &p.buttons).filter_map(|b| b.fastened_to).collect();
+        let taken: Vec<cad_core::ButtonholeRef> = cx
+            .document
+            .pieces()
+            .iter()
+            .flat_map(|p| &p.buttons)
+            .filter_map(|b| b.fastened_to)
+            .collect();
         let mut button_action = None;
 
         let Some(piece) = cx.document.piece_mut(id) else {
@@ -667,7 +697,9 @@ impl Panel for PatternPropertiesPanel {
 
         // Edits that reach beyond this piece, now that it is no longer borrowed.
         let structural = match button_action {
-            Some(ButtonAction::RemoveHole(index)) => cx.document.remove_buttonhole(id, index).is_some(),
+            Some(ButtonAction::RemoveHole(index)) => {
+                cx.document.remove_buttonhole(id, index).is_some()
+            }
             Some(ButtonAction::FastenAll) => cx.document.fasten_buttons(0.25) > 0,
             Some(ButtonAction::UnfastenAll) => cx.document.unfasten_buttons() > 0,
             None => false,
@@ -695,7 +727,8 @@ enum ButtonAction {
 /// Returns `true` if the angle changed.
 fn placement_dial(ui: &mut egui::Ui, angle: &mut f32, others: &[f32]) -> bool {
     let size = 104.0;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     let centre = rect.center();
     let radius = size * 0.38;
@@ -706,20 +739,59 @@ fn placement_dial(ui: &mut egui::Ui, angle: &mut f32, others: &[f32]) -> bool {
         let a = degrees.to_radians();
         centre + egui::vec2(a.sin(), a.cos()) * radius
     };
-    painter.circle_stroke(centre, radius, egui::Stroke::new(1.0, visuals.weak_text_color()));
+    painter.circle_stroke(
+        centre,
+        radius,
+        egui::Stroke::new(1.0, visuals.weak_text_color()),
+    );
     // The body's cross-section and the direction it faces.
-    painter.add(egui::Shape::ellipse_filled(centre, egui::vec2(radius * 0.62, radius * 0.4), visuals.faint_bg_color.gamma_multiply(2.0)));
-    painter.add(egui::Shape::ellipse_stroke(centre, egui::vec2(radius * 0.62, radius * 0.4), egui::Stroke::new(1.0, visuals.weak_text_color())));
+    painter.add(egui::Shape::ellipse_filled(
+        centre,
+        egui::vec2(radius * 0.62, radius * 0.4),
+        visuals.faint_bg_color.gamma_multiply(2.0),
+    ));
+    painter.add(egui::Shape::ellipse_stroke(
+        centre,
+        egui::vec2(radius * 0.62, radius * 0.4),
+        egui::Stroke::new(1.0, visuals.weak_text_color()),
+    ));
     let small = egui::FontId::proportional(9.0);
-    painter.text(rect.center_bottom() + egui::vec2(0.0, -1.0), egui::Align2::CENTER_BOTTOM, "front", small.clone(), visuals.weak_text_color());
-    painter.text(rect.center_top() + egui::vec2(0.0, 1.0), egui::Align2::CENTER_TOP, "back", small.clone(), visuals.weak_text_color());
-    painter.text(rect.right_center(), egui::Align2::RIGHT_CENTER, "L", small.clone(), visuals.weak_text_color());
-    painter.text(rect.left_center(), egui::Align2::LEFT_CENTER, "R", small, visuals.weak_text_color());
+    painter.text(
+        rect.center_bottom() + egui::vec2(0.0, -1.0),
+        egui::Align2::CENTER_BOTTOM,
+        "front",
+        small.clone(),
+        visuals.weak_text_color(),
+    );
+    painter.text(
+        rect.center_top() + egui::vec2(0.0, 1.0),
+        egui::Align2::CENTER_TOP,
+        "back",
+        small.clone(),
+        visuals.weak_text_color(),
+    );
+    painter.text(
+        rect.right_center(),
+        egui::Align2::RIGHT_CENTER,
+        "L",
+        small.clone(),
+        visuals.weak_text_color(),
+    );
+    painter.text(
+        rect.left_center(),
+        egui::Align2::LEFT_CENTER,
+        "R",
+        small,
+        visuals.weak_text_color(),
+    );
     for &other in others {
         painter.circle_filled(at(other), 3.0, visuals.weak_text_color());
     }
     let mut changed = false;
-    if let Some(pointer) = response.interact_pointer_pos().filter(|_| response.clicked() || response.dragged()) {
+    if let Some(pointer) = response
+        .interact_pointer_pos()
+        .filter(|_| response.clicked() || response.dragged())
+    {
         let d = pointer - centre;
         if d.length() > 4.0 {
             let new = d.x.atan2(d.y).to_degrees().round();
@@ -728,6 +800,10 @@ fn placement_dial(ui: &mut egui::Ui, angle: &mut f32, others: &[f32]) -> bool {
         }
     }
     painter.circle_filled(at(*angle), 5.5, visuals.selection.bg_fill);
-    painter.circle_stroke(at(*angle), 5.5, egui::Stroke::new(1.5, visuals.strong_text_color()));
+    painter.circle_stroke(
+        at(*angle),
+        5.5,
+        egui::Stroke::new(1.5, visuals.strong_text_color()),
+    );
     changed
 }

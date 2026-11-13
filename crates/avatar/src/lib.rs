@@ -22,6 +22,6 @@ pub use field::{FieldOptions, distance_field, distance_field_within};
 pub use fit::{FitReport, fit, fit_all};
 pub use look::{Appearance, Hair, HairStyle, Head, LookMesh};
 pub use measure::{Measure, Measurements, measure};
-pub use motion::{Angles, Motion, Performance, Side};
 pub use model::{BodyMesh, BodyModel, BodyParams, Bone, Joint, LoadError, Morph};
+pub use motion::{Angles, Motion, Performance, Side};
 pub use pose::{Attachment, Pose, PoseParams, PosedBody, attach, attach_to, carry, follow};

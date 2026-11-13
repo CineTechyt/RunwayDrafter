@@ -34,5 +34,8 @@ pub trait Panel {
 
 /// A two-column "label: widget" grid used by the property panels.
 pub(crate) fn property_grid(ui: &mut egui::Ui, id: &str, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Grid::new(id).num_columns(2).spacing([12.0, 6.0]).show(ui, contents);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, contents);
 }

@@ -21,7 +21,6 @@ use crate::target::{GrowableBuffer, RenderTarget};
 use crate::{ViewportRenderer, srgba};
 
 /// Weave repeats per UV unit (one UV unit is one texture tile of the fabric).
-const WEAVE_THREADS: f32 = 30.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -45,6 +44,7 @@ struct ObjectUniform {
     emissive: [f32; 4],
     overlay: [f32; 4],
     shading: [f32; 4],
+    fabric: [f32; 4],
 }
 
 impl ObjectUniform {
@@ -54,7 +54,13 @@ impl ObjectUniform {
         Self {
             model: model.to_cols_array_2d(),
             base_color: [r, g, b, 1.0],
-            params: [m.roughness, m.metallic, m.weave_strength, WEAVE_THREADS],
+            params: [
+                m.roughness,
+                m.metallic,
+                m.weave_strength,
+                m.pattern + m.wash.clamp(0.0, 1.0) * 0.1,
+            ],
+            fabric: [m.pattern_scale.max(0.1), m.relief.clamp(0.0, 2.0), 0.0, 0.0],
             emissive: [er, eg, eb, 0.0],
             overlay: [0.0; 4],
             shading: m.shading.uniform(),
@@ -70,15 +76,20 @@ struct ObjectBinding {
 
 impl ObjectBinding {
     fn new(gpu: &GpuContext, layout: &wgpu::BindGroupLayout, uniform: &ObjectUniform) -> Self {
-        let buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("scene3d object"),
-            contents: bytemuck::bytes_of(uniform),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("scene3d object"),
+                contents: bytemuck::bytes_of(uniform),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene3d object"),
             layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
         });
         Self { buffer, bind_group }
     }
@@ -164,7 +175,10 @@ impl SceneRenderer {
         let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene3d globals"),
             layout: &globals_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            }],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -182,7 +196,10 @@ impl SceneRenderer {
                     compilation_options: Default::default(),
                     buffers: &[Some(MeshVertex::LAYOUT)],
                 },
-                primitive: wgpu::PrimitiveState { cull_mode, ..Default::default() },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode,
+                    ..Default::default()
+                },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: RenderTarget::DEPTH_FORMAT,
                     depth_write_enabled: Some(true),
@@ -203,7 +220,11 @@ impl SceneRenderer {
                         format: RenderTarget::COLOR_FORMAT,
                         blend: None,
                         // Alpha only steers coverage; the image stays opaque.
-                        write_mask: if alpha_to_coverage { wgpu::ColorWrites::COLOR } else { wgpu::ColorWrites::ALL },
+                        write_mask: if alpha_to_coverage {
+                            wgpu::ColorWrites::COLOR
+                        } else {
+                            wgpu::ColorWrites::ALL
+                        },
                     })],
                 }),
                 multiview_mask: None,
@@ -214,7 +235,13 @@ impl SceneRenderer {
         let props_binding = ObjectBinding::new(
             gpu,
             &object_layout,
-            &ObjectUniform::new(Mat4::IDENTITY, &SurfaceMaterial { shading: Shading::Prop, ..SurfaceMaterial::default() }),
+            &ObjectUniform::new(
+                Mat4::IDENTITY,
+                &SurfaceMaterial {
+                    shading: Shading::Prop,
+                    ..SurfaceMaterial::default()
+                },
+            ),
         );
         Self {
             target: RenderTarget::new(gpu, "scene3d target", size, true),
@@ -233,7 +260,11 @@ impl SceneRenderer {
             props_indices: GrowableBuffer::new(gpu, "prop indices", wgpu::BufferUsages::INDEX),
             props_index_count: 0,
             props_binding,
-            garment_vertices: GrowableBuffer::new(gpu, "garment vertices", wgpu::BufferUsages::VERTEX),
+            garment_vertices: GrowableBuffer::new(
+                gpu,
+                "garment vertices",
+                wgpu::BufferUsages::VERTEX,
+            ),
             garment_indices: GrowableBuffer::new(gpu, "garment indices", wgpu::BufferUsages::INDEX),
             garment_generation: None,
             shell: Shell::default(),
@@ -244,15 +275,37 @@ impl SceneRenderer {
         }
     }
 
-    fn static_draw(&self, gpu: &GpuContext, mesh: &MeshData, material: SurfaceMaterial) -> StaticDraw {
+    fn static_draw(
+        &self,
+        gpu: &GpuContext,
+        mesh: &MeshData,
+        material: SurfaceMaterial,
+    ) -> StaticDraw {
         let buffer = |label, contents, usage| {
-            gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
+            gpu.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(label),
+                    contents,
+                    usage,
+                })
         };
         StaticDraw {
-            vertices: buffer("static vertices", bytemuck::cast_slice(&mesh.vertices), wgpu::BufferUsages::VERTEX),
-            indices: buffer("static indices", bytemuck::cast_slice(&mesh.indices), wgpu::BufferUsages::INDEX),
+            vertices: buffer(
+                "static vertices",
+                bytemuck::cast_slice(&mesh.vertices),
+                wgpu::BufferUsages::VERTEX,
+            ),
+            indices: buffer(
+                "static indices",
+                bytemuck::cast_slice(&mesh.indices),
+                wgpu::BufferUsages::INDEX,
+            ),
             index_count: mesh.indices.len() as u32,
-            binding: ObjectBinding::new(gpu, &self.object_layout, &ObjectUniform::new(Mat4::IDENTITY, &material)),
+            binding: ObjectBinding::new(
+                gpu,
+                &self.object_layout,
+                &ObjectUniform::new(Mat4::IDENTITY, &material),
+            ),
             double_sided: matches!(material.shading, Shading::Hair { .. }),
         }
     }
@@ -283,8 +336,10 @@ impl SceneRenderer {
     pub fn set_props(&mut self, gpu: &GpuContext, mesh: &MeshData) {
         self.props_index_count = mesh.indices.len() as u32;
         if !mesh.indices.is_empty() {
-            self.props_vertices.write(gpu, bytemuck::cast_slice(&mesh.vertices));
-            self.props_indices.write(gpu, bytemuck::cast_slice(&mesh.indices));
+            self.props_vertices
+                .write(gpu, bytemuck::cast_slice(&mesh.vertices));
+            self.props_indices
+                .write(gpu, bytemuck::cast_slice(&mesh.indices));
         }
     }
 
@@ -293,11 +348,18 @@ impl SceneRenderer {
     /// are always rewritten (draping moves them every step); indices and
     /// per-piece draws only when the mesh was reassembled. `values` are the per-vertex measurements of the
     /// technical views (see [`SurfaceOverlay`]); missing ones read as zero.
-    pub fn sync_garment(&mut self, gpu: &GpuContext, mesh: &GarmentMesh, values: &[f32], thickness: impl Fn(PieceId) -> f32) {
+    pub fn sync_garment(
+        &mut self,
+        gpu: &GpuContext,
+        mesh: &GarmentMesh,
+        values: &[f32],
+        thickness: impl Fn(PieceId) -> f32,
+    ) {
         if self.garment_generation != Some(mesh.generation) {
             self.garment_generation = Some(mesh.generation);
             self.shell = Shell::new(mesh);
-            self.garment_indices.write(gpu, bytemuck::cast_slice(&self.shell.indices));
+            self.garment_indices
+                .write(gpu, bytemuck::cast_slice(&self.shell.indices));
             let placeholder = ObjectUniform::new(Mat4::IDENTITY, &SurfaceMaterial::default());
             self.pieces = self
                 .shell
@@ -311,12 +373,19 @@ impl SceneRenderer {
                 })
                 .collect();
         }
-        self.shell.vertices(mesh, values, &thickness, &mut self.scratch);
-        self.garment_vertices.write(gpu, bytemuck::cast_slice(&self.scratch));
+        self.shell
+            .vertices(mesh, values, &thickness, &mut self.scratch);
+        self.garment_vertices
+            .write(gpu, bytemuck::cast_slice(&self.scratch));
     }
 
     /// Uploads this frame's camera, lights and fabric materials.
-    pub fn prepare(&mut self, gpu: &GpuContext, camera: &OrbitCamera, material_of: impl Fn(PieceId) -> SurfaceMaterial) {
+    pub fn prepare(
+        &mut self,
+        gpu: &GpuContext,
+        camera: &OrbitCamera,
+        material_of: impl Fn(PieceId) -> SurfaceMaterial,
+    ) {
         let eye = camera.eye();
         let direction = |v: Vec3| v.normalize().extend(0.0).to_array();
         let globals = Globals {
@@ -329,11 +398,13 @@ impl SceneRenderer {
             sky: [0.34, 0.37, 0.43, 0.0],
             ground: [0.12, 0.11, 0.10, 0.0],
         };
-        gpu.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+        gpu.queue
+            .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
         for draw in &self.pieces {
             let mut uniform = ObjectUniform::new(Mat4::IDENTITY, &material_of(draw.piece));
             uniform.overlay = self.overlay.uniform();
-            gpu.queue.write_buffer(&draw.binding.buffer, 0, bytemuck::bytes_of(&uniform));
+            gpu.queue
+                .write_buffer(&draw.binding.buffer, 0, bytemuck::bytes_of(&uniform));
         }
     }
 }
@@ -353,7 +424,11 @@ impl ViewportRenderer for SceneRenderer {
         pass.set_bind_group(0, &self.globals_bind_group, &[]);
 
         for draw in self.statics.iter().chain(&self.avatar) {
-            pass.set_pipeline(if draw.double_sided { &self.hair_pipeline } else { &self.opaque_pipeline });
+            pass.set_pipeline(if draw.double_sided {
+                &self.hair_pipeline
+            } else {
+                &self.opaque_pipeline
+            });
             pass.set_bind_group(1, &draw.binding.bind_group, &[]);
             pass.set_vertex_buffer(0, draw.vertices.slice(..));
             pass.set_index_buffer(draw.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -364,14 +439,20 @@ impl ViewportRenderer for SceneRenderer {
             pass.set_pipeline(&self.cloth_pipeline);
             pass.set_bind_group(1, &self.props_binding.bind_group, &[]);
             pass.set_vertex_buffer(0, self.props_vertices.buffer().slice(..));
-            pass.set_index_buffer(self.props_indices.buffer().slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_index_buffer(
+                self.props_indices.buffer().slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
             pass.draw_indexed(0..self.props_index_count, 0, 0..1);
         }
 
         if !self.pieces.is_empty() {
             pass.set_pipeline(&self.cloth_pipeline);
             pass.set_vertex_buffer(0, self.garment_vertices.buffer().slice(..));
-            pass.set_index_buffer(self.garment_indices.buffer().slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_index_buffer(
+                self.garment_indices.buffer().slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
             for draw in &self.pieces {
                 pass.set_bind_group(1, &draw.binding.bind_group, &[]);
                 pass.draw_indexed(draw.indices.clone(), 0, 0..1);
@@ -400,12 +481,14 @@ impl Shell {
         let mut shell = Shell::default();
         let mut base = 0u32;
         for span in &mesh.pieces {
-            let triangles: Vec<[u32; 3]> = mesh.indices[span.indices.start as usize..span.indices.end as usize]
+            let triangles: Vec<[u32; 3]> = mesh.indices
+                [span.indices.start as usize..span.indices.end as usize]
                 .chunks_exact(3)
                 .map(|t| [t[0], t[1], t[2]])
                 .collect();
             // Free edges: used by one triangle only.
-            let mut uses: std::collections::HashMap<(u32, u32), (u32, u32, u32, u32)> = std::collections::HashMap::new();
+            let mut uses: std::collections::HashMap<(u32, u32), (u32, u32, u32, u32)> =
+                std::collections::HashMap::new();
             for t in &triangles {
                 for k in 0..3 {
                     let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
@@ -413,7 +496,11 @@ impl Shell {
                     entry.3 += 1;
                 }
             }
-            let mut edges: Vec<[u32; 3]> = uses.values().filter(|e| e.3 == 1).map(|e| [e.0, e.1, e.2]).collect();
+            let mut edges: Vec<[u32; 3]> = uses
+                .values()
+                .filter(|e| e.3 == 1)
+                .map(|e| [e.0, e.1, e.2])
+                .collect();
             edges.sort_unstable();
 
             let count = span.vertices.len() as u32;
@@ -424,7 +511,9 @@ impl Shell {
                 shell.indices.extend(t.map(|v| base + local(v)));
             }
             for t in &triangles {
-                shell.indices.extend([t[0], t[2], t[1]].map(|v| base + count + local(v)));
+                shell
+                    .indices
+                    .extend([t[0], t[2], t[1]].map(|v| base + count + local(v)));
             }
             // Rim: a quad of its own four vertices per free edge.
             let rim = base + 2 * count;
@@ -432,17 +521,32 @@ impl Shell {
                 let q = rim + 4 * k as u32;
                 shell.indices.extend([q, q + 1, q + 2, q + 1, q + 3, q + 2]);
             }
-            shell.pieces.push((span.piece, first..shell.indices.len() as u32));
-            shell.layout.push((span.piece, span.vertices.clone(), edges, base));
+            shell
+                .pieces
+                .push((span.piece, first..shell.indices.len() as u32));
+            shell
+                .layout
+                .push((span.piece, span.vertices.clone(), edges, base));
             base = rim + 4 * shell.layout.last().map_or(0, |l| l.2.len() as u32);
         }
         shell
     }
 
-    fn vertices(&self, mesh: &GarmentMesh, values: &[f32], thickness: &impl Fn(PieceId) -> f32, out: &mut Vec<MeshVertex>) {
+    fn vertices(
+        &self,
+        mesh: &GarmentMesh,
+        values: &[f32],
+        thickness: &impl Fn(PieceId) -> f32,
+        out: &mut Vec<MeshVertex>,
+    ) {
         out.clear();
         let vertex = |i: usize, offset: f32, normal: Vec3| {
-            MeshVertex::new(mesh.positions[i] + mesh.normals[i] * offset, normal, mesh.uvs[i]).with_value(values.get(i).copied().unwrap_or(0.0))
+            MeshVertex::new(
+                mesh.positions[i] + mesh.normals[i] * offset,
+                normal,
+                mesh.uvs[i],
+            )
+            .with_value(values.get(i).copied().unwrap_or(0.0))
         };
         for (piece, range, edges, _) in &self.layout {
             let half = 0.5 * thickness(*piece);
@@ -459,9 +563,16 @@ impl Shell {
                     out_of = -out_of;
                 }
                 // Wound so the rim faces out whichever way the edge runs.
-                let quad = [vertex(a, half, out_of), vertex(b, half, out_of), vertex(a, -half, out_of), vertex(b, -half, out_of)];
+                let quad = [
+                    vertex(a, half, out_of),
+                    vertex(b, half, out_of),
+                    vertex(a, -half, out_of),
+                    vertex(b, -half, out_of),
+                ];
                 let p = |v: &MeshVertex| Vec3::from(v.position);
-                let facing = (p(&quad[1]) - p(&quad[0])).cross(p(&quad[2]) - p(&quad[0])).dot(out_of);
+                let facing = (p(&quad[1]) - p(&quad[0]))
+                    .cross(p(&quad[2]) - p(&quad[0]))
+                    .dot(out_of);
                 if facing >= 0.0 {
                     out.extend(quad);
                 } else {

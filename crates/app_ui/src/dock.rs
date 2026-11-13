@@ -24,8 +24,14 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] =
-        [Tab::Canvas2d, Tab::Viewport3d, Tab::PatternProperties, Tab::Materials, Tab::Simulation, Tab::Timeline];
+    pub const ALL: [Tab; 6] = [
+        Tab::Canvas2d,
+        Tab::Viewport3d,
+        Tab::PatternProperties,
+        Tab::Materials,
+        Tab::Simulation,
+        Tab::Timeline,
+    ];
 }
 
 /// Viewport A as a panel.
@@ -60,65 +66,121 @@ fn canvas_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
     use crate::state::CanvasTool;
     let (undo_label, redo_label) = (cx.editor.undo_label.clone(), cx.editor.redo_label.clone());
     let editor = &mut cx.editor;
-    egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for (tool, icon) in [(CanvasTool::Select, Icon::Select), (CanvasTool::Points, Icon::Points), (CanvasTool::Sew, Icon::Sew)] {
-                if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label()).clicked() {
-                    editor.canvas_tool = tool;
-                    editor.sew_a = None;
-                    editor.sew_b = None;
-                    editor.sketch_points.clear();
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (tool, icon) in [
+                    (CanvasTool::Select, Icon::Select),
+                    (CanvasTool::Points, Icon::Points),
+                    (CanvasTool::Sew, Icon::Sew),
+                ] {
+                    if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label())
+                        .clicked()
+                    {
+                        editor.canvas_tool = tool;
+                        editor.sew_a = None;
+                        editor.sew_b = None;
+                        editor.sketch_points.clear();
+                    }
                 }
-            }
-            for (tool, icon) in [
-                (CanvasTool::SketchLine, Icon::SketchLine),
-                (CanvasTool::SketchSpline, Icon::SketchSpline),
-                (CanvasTool::Button, Icon::Button),
-                (CanvasTool::Buttonhole, Icon::Buttonhole),
-                (CanvasTool::Pull, Icon::Pull),
-            ] {
-                if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label()).clicked() {
-                    editor.canvas_tool = tool;
-                    editor.sew_a = None;
-                    editor.sew_b = None;
-                    editor.sketch_points.clear();
-                }
-            }
-            icons::separator(ui);
-            let piece = editor.selected_piece.is_some();
-            let mut command = |ui: &mut egui::Ui, icon, tooltip, command: UiCommand| {
-                if icons::button(ui, icon, false, piece, tooltip).clicked() {
-                    cx.output.commands.push(command);
-                }
-            };
-            use cad_core::PieceTransform as T;
-            command(ui, Icon::RotateCcw, "Rotate selected piece 90° counter-clockwise", UiCommand::TransformPiece(T::RotateCcw));
-            command(ui, Icon::RotateCw, "Rotate selected piece 90° clockwise", UiCommand::TransformPiece(T::RotateCw));
-            command(ui, Icon::FlipHorizontal, "Mirror selected piece left ↔ right", UiCommand::TransformPiece(T::FlipHorizontal));
-            command(ui, Icon::FlipVertical, "Mirror selected piece top ↔ bottom", UiCommand::TransformPiece(T::FlipVertical));
-            icons::separator(ui);
-            command(ui, Icon::MirrorCopy, "Add a mirrored copy for the other side of the body", UiCommand::MirrorCopy);
-            command(ui, Icon::Delete, "Delete selected piece (Del)", UiCommand::DeletePiece);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(ui, Icon::FitView, false, true, "Fit all pieces in view").clicked() {
-                    cx.output.commands.push(UiCommand::FitCanvas);
-                }
-                if icons::button(ui, Icon::Tidy, false, true, "Tidy layout: pieces side by side, no overlaps").clicked() {
-                    cx.output.commands.push(UiCommand::TidyLayout);
+                for (tool, icon) in [
+                    (CanvasTool::SketchLine, Icon::SketchLine),
+                    (CanvasTool::SketchSpline, Icon::SketchSpline),
+                    (CanvasTool::Button, Icon::Button),
+                    (CanvasTool::Buttonhole, Icon::Buttonhole),
+                    (CanvasTool::Pull, Icon::Pull),
+                ] {
+                    if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label())
+                        .clicked()
+                    {
+                        editor.canvas_tool = tool;
+                        editor.sew_a = None;
+                        editor.sew_b = None;
+                        editor.sketch_points.clear();
+                    }
                 }
                 icons::separator(ui);
-                let redo = redo_label.as_deref().map_or("Redo (Ctrl+Shift+Z)".to_owned(), |l| format!("Redo {l} (Ctrl+Shift+Z)"));
-                if icons::button(ui, Icon::Redo, false, redo_label.is_some(), &redo).clicked() {
-                    cx.output.commands.push(UiCommand::Redo);
-                }
-                let undo = undo_label.as_deref().map_or("Undo (Ctrl+Z)".to_owned(), |l| format!("Undo {l} (Ctrl+Z)"));
-                if icons::button(ui, Icon::Undo, false, undo_label.is_some(), &undo).clicked() {
-                    cx.output.commands.push(UiCommand::Undo);
-                }
+                let piece = editor.selected_piece.is_some();
+                let mut command = |ui: &mut egui::Ui, icon, tooltip, command: UiCommand| {
+                    if icons::button(ui, icon, false, piece, tooltip).clicked() {
+                        cx.output.commands.push(command);
+                    }
+                };
+                use cad_core::PieceTransform as T;
+                command(
+                    ui,
+                    Icon::RotateCcw,
+                    "Rotate selected piece 90° counter-clockwise",
+                    UiCommand::TransformPiece(T::RotateCcw),
+                );
+                command(
+                    ui,
+                    Icon::RotateCw,
+                    "Rotate selected piece 90° clockwise",
+                    UiCommand::TransformPiece(T::RotateCw),
+                );
+                command(
+                    ui,
+                    Icon::FlipHorizontal,
+                    "Mirror selected piece left ↔ right",
+                    UiCommand::TransformPiece(T::FlipHorizontal),
+                );
+                command(
+                    ui,
+                    Icon::FlipVertical,
+                    "Mirror selected piece top ↔ bottom",
+                    UiCommand::TransformPiece(T::FlipVertical),
+                );
+                icons::separator(ui);
+                command(
+                    ui,
+                    Icon::MirrorCopy,
+                    "Add a mirrored copy for the other side of the body",
+                    UiCommand::MirrorCopy,
+                );
+                command(
+                    ui,
+                    Icon::Delete,
+                    "Delete selected piece (Del)",
+                    UiCommand::DeletePiece,
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icons::button(ui, Icon::FitView, false, true, "Fit all pieces in view")
+                        .clicked()
+                    {
+                        cx.output.commands.push(UiCommand::FitCanvas);
+                    }
+                    if icons::button(
+                        ui,
+                        Icon::Tidy,
+                        false,
+                        true,
+                        "Tidy layout: pieces side by side, no overlaps",
+                    )
+                    .clicked()
+                    {
+                        cx.output.commands.push(UiCommand::TidyLayout);
+                    }
+                    icons::separator(ui);
+                    let redo = redo_label
+                        .as_deref()
+                        .map_or("Redo (Ctrl+Shift+Z)".to_owned(), |l| {
+                            format!("Redo {l} (Ctrl+Shift+Z)")
+                        });
+                    if icons::button(ui, Icon::Redo, false, redo_label.is_some(), &redo).clicked() {
+                        cx.output.commands.push(UiCommand::Redo);
+                    }
+                    let undo = undo_label
+                        .as_deref()
+                        .map_or("Undo (Ctrl+Z)".to_owned(), |l| format!("Undo {l} (Ctrl+Z)"));
+                    if icons::button(ui, Icon::Undo, false, undo_label.is_some(), &undo).clicked() {
+                        cx.output.commands.push(UiCommand::Undo);
+                    }
+                });
             });
         });
-    });
 }
 
 /// Viewport B as a panel.
@@ -131,7 +193,8 @@ impl Panel for ScenePanel {
     }
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
         surface_toolbar(ui, &mut cx.editor.view);
-        let hint = "Drag to orbit · middle/right-drag to pan · scroll to zoom · click a piece to select";
+        let hint =
+            "Drag to orbit · middle/right-drag to pan · scroll to zoom · click a piece to select";
         cx.output.scene = Some(viewport::show(ui, cx.textures.scene, hint));
     }
     fn fills_tab(&self) -> bool {
@@ -142,7 +205,13 @@ impl Panel for ScenePanel {
 /// The colour of the heatmaps at `t` in `0..=1` (blue to red). The same
 /// five stops as `heat` in the 3D shader, in sRGB.
 fn heat_color(t: f32) -> egui::Color32 {
-    const STOPS: [[f32; 3]; 5] = [[39.0, 97.0, 237.0], [0.0, 206.0, 228.0], [63.0, 217.0, 97.0], [249.0, 231.0, 47.0], [243.0, 56.0, 39.0]];
+    const STOPS: [[f32; 3]; 5] = [
+        [39.0, 97.0, 237.0],
+        [0.0, 206.0, 228.0],
+        [63.0, 217.0, 97.0],
+        [249.0, 231.0, 47.0],
+        [243.0, 56.0, 39.0],
+    ];
     let x = t.clamp(0.0, 1.0) * 4.0;
     let i = (x as usize).min(3);
     let f = x - i as f32;
@@ -153,41 +222,71 @@ fn heat_color(t: f32) -> egui::Color32 {
 /// The row above the 3D view: what the garment's surface shows, the range
 /// of the heatmap and its legend.
 fn surface_toolbar(ui: &mut egui::Ui, view: &mut crate::state::ViewOptions) {
-    egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut view.surface, SurfaceView::Fabric, "Fabric");
-            ui.selectable_value(&mut view.surface, SurfaceView::Strain, "Strain map")
-                .on_hover_text("How far the fabric is stretched: blue is relaxed, red is over-stretched");
-            ui.selectable_value(&mut view.surface, SurfaceView::Fit, "Fit map")
-                .on_hover_text("Distance between fabric and body: red lies on the skin, blue hangs free");
-            let (low, high) = match view.surface {
-                SurfaceView::Fabric => return,
-                SurfaceView::Strain => {
-                    ui.separator();
-                    ui.label("Red at");
-                    ui.add(egui::DragValue::new(&mut view.strain_limit_percent).range(1.0..=100.0).speed(0.2).suffix(" %"));
-                    ("0 %".to_owned(), format!("≥ {:.0} % stretch", view.strain_limit_percent))
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut view.surface, SurfaceView::Fabric, "Fabric");
+                ui.selectable_value(&mut view.surface, SurfaceView::Strain, "Strain map")
+                    .on_hover_text(
+                        "How far the fabric is stretched: blue is relaxed, red is over-stretched",
+                    );
+                ui.selectable_value(&mut view.surface, SurfaceView::Fit, "Fit map")
+                    .on_hover_text(
+                        "Distance between fabric and body: red lies on the skin, blue hangs free",
+                    );
+                let (low, high) = match view.surface {
+                    SurfaceView::Fabric => return,
+                    SurfaceView::Strain => {
+                        ui.separator();
+                        ui.label("Red at");
+                        ui.add(
+                            egui::DragValue::new(&mut view.strain_limit_percent)
+                                .range(1.0..=100.0)
+                                .speed(0.2)
+                                .suffix(" %"),
+                        );
+                        (
+                            "0 %".to_owned(),
+                            format!("≥ {:.0} % stretch", view.strain_limit_percent),
+                        )
+                    }
+                    SurfaceView::Fit => {
+                        ui.separator();
+                        ui.label("Blue at");
+                        ui.add(
+                            egui::DragValue::new(&mut view.fit_range_mm)
+                                .range(5.0..=200.0)
+                                .speed(0.5)
+                                .suffix(" mm"),
+                        );
+                        (
+                            format!("≥ {:.0} mm loose", view.fit_range_mm),
+                            "on the body".to_owned(),
+                        )
+                    }
+                };
+                // Legend: both maps run from blue (left) to red (right).
+                ui.separator();
+                ui.weak(low);
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
+                const STEPS: usize = 40;
+                for k in 0..STEPS {
+                    let x = |i: usize| rect.left() + rect.width() * i as f32 / STEPS as f32;
+                    let cell = egui::Rect::from_min_max(
+                        egui::pos2(x(k), rect.top()),
+                        egui::pos2(x(k + 1) + 0.5, rect.bottom()),
+                    );
+                    ui.painter().rect_filled(
+                        cell,
+                        0.0,
+                        heat_color((k as f32 + 0.5) / STEPS as f32),
+                    );
                 }
-                SurfaceView::Fit => {
-                    ui.separator();
-                    ui.label("Blue at");
-                    ui.add(egui::DragValue::new(&mut view.fit_range_mm).range(5.0..=200.0).speed(0.5).suffix(" mm"));
-                    (format!("≥ {:.0} mm loose", view.fit_range_mm), "on the body".to_owned())
-                }
-            };
-            // Legend: both maps run from blue (left) to red (right).
-            ui.separator();
-            ui.weak(low);
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
-            const STEPS: usize = 40;
-            for k in 0..STEPS {
-                let x = |i: usize| rect.left() + rect.width() * i as f32 / STEPS as f32;
-                let cell = egui::Rect::from_min_max(egui::pos2(x(k), rect.top()), egui::pos2(x(k + 1) + 0.5, rect.bottom()));
-                ui.painter().rect_filled(cell, 0.0, heat_color((k as f32 + 0.5) / STEPS as f32));
-            }
-            ui.weak(high);
+                ui.weak(high);
+            });
         });
-    });
 }
 
 #[derive(Default)]
@@ -235,7 +334,9 @@ impl TabViewer for Viewer<'_, '_> {
         if panel.fills_tab() {
             panel.ui(ui, &mut self.cx);
         } else {
-            egui::Frame::new().inner_margin(10.0).show(ui, |ui| panel.ui(ui, &mut self.cx));
+            egui::Frame::new()
+                .inner_margin(10.0)
+                .show(ui, |ui| panel.ui(ui, &mut self.cx));
         }
     }
 
@@ -261,7 +362,10 @@ impl Default for AppUi {
 
 impl AppUi {
     pub fn new() -> Self {
-        Self { dock: Self::default_layout(), panels: Panels::default() }
+        Self {
+            dock: Self::default_layout(),
+            panels: Panels::default(),
+        }
     }
 
     /// ```text
@@ -276,8 +380,11 @@ impl AppUi {
     fn default_layout() -> DockState<Tab> {
         let mut dock = DockState::new(vec![Tab::Canvas2d]);
         let surface = dock.main_surface_mut();
-        let [work, _properties] =
-            surface.split_right(NodeIndex::root(), 0.76, vec![Tab::PatternProperties, Tab::Materials, Tab::Simulation]);
+        let [work, _properties] = surface.split_right(
+            NodeIndex::root(),
+            0.76,
+            vec![Tab::PatternProperties, Tab::Materials, Tab::Simulation],
+        );
         let [views, _timeline] = surface.split_below(work, 0.86, vec![Tab::Timeline]);
         surface.split_right(views, 0.5, vec![Tab::Viewport3d]);
         dock
@@ -299,8 +406,15 @@ impl AppUi {
         let mut style = Style::from_egui(ui.style().as_ref());
         // Viewports go edge to edge; other panels add their own padding.
         style.tab.tab_body.inner_margin = egui::Margin::ZERO;
-        let mut viewer =
-            Viewer { panels: &mut self.panels, cx: PanelContext { document, editor, textures, output: &mut output } };
+        let mut viewer = Viewer {
+            panels: &mut self.panels,
+            cx: PanelContext {
+                document,
+                editor,
+                textures,
+                output: &mut output,
+            },
+        };
         DockArea::new(&mut self.dock)
             .style(style)
             .show_leaf_close_all_buttons(false)
@@ -339,14 +453,19 @@ impl AppUi {
         ui.input_mut(|input| {
             // Test the more specific shortcut first: Ctrl+Z also matches
             // Ctrl+Shift+Z.
-            if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z))
-                || input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y))
+            if input.consume_shortcut(&KeyboardShortcut::new(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::Z,
+            )) || input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y))
             {
                 output.commands.push(UiCommand::Redo);
             } else if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z)) {
                 output.commands.push(UiCommand::Undo);
             }
-            let save_as = input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S));
+            let save_as = input.consume_shortcut(&KeyboardShortcut::new(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::S,
+            ));
             let save = input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::S));
             if save_as || save {
                 // The dialog must not open while the input is borrowed.
@@ -383,7 +502,8 @@ impl AppUi {
                     editor.sketch_points.clear();
                 }
                 if editor.selected_piece.is_some()
-                    && (input.consume_key(Modifiers::NONE, Key::Delete) || input.consume_key(Modifiers::NONE, Key::Backspace))
+                    && (input.consume_key(Modifiers::NONE, Key::Delete)
+                        || input.consume_key(Modifiers::NONE, Key::Backspace))
                 {
                     output.commands.push(UiCommand::DeleteSelection);
                 }
@@ -408,13 +528,22 @@ impl AppUi {
                             }
                         }
                     });
-                    if ui.add(egui::Button::new("Open project…").shortcut_text("Ctrl+O")).clicked() {
+                    if ui
+                        .add(egui::Button::new("Open project…").shortcut_text("Ctrl+O"))
+                        .clicked()
+                    {
                         open_project(output);
                     }
-                    if ui.add(egui::Button::new("Save project").shortcut_text("Ctrl+S")).clicked() {
+                    if ui
+                        .add(egui::Button::new("Save project").shortcut_text("Ctrl+S"))
+                        .clicked()
+                    {
                         save_project(editor, output, false);
                     }
-                    if ui.add(egui::Button::new("Save project as…").shortcut_text("Ctrl+Shift+S")).clicked() {
+                    if ui
+                        .add(egui::Button::new("Save project as…").shortcut_text("Ctrl+Shift+S"))
+                        .clicked()
+                    {
                         save_project(editor, output, true);
                     }
                     ui.separator();
@@ -441,11 +570,13 @@ impl AppUi {
                         Some(what) => format!("{verb} {what}"),
                         None => verb.to_owned(),
                     };
-                    let undo = egui::Button::new(label("Undo", &editor.undo_label)).shortcut_text("Ctrl+Z");
+                    let undo = egui::Button::new(label("Undo", &editor.undo_label))
+                        .shortcut_text("Ctrl+Z");
                     if ui.add_enabled(editor.undo_label.is_some(), undo).clicked() {
                         output.commands.push(UiCommand::Undo);
                     }
-                    let redo = egui::Button::new(label("Redo", &editor.redo_label)).shortcut_text("Ctrl+Shift+Z");
+                    let redo = egui::Button::new(label("Redo", &editor.redo_label))
+                        .shortcut_text("Ctrl+Shift+Z");
                     if ui.add_enabled(editor.redo_label.is_some(), redo).clicked() {
                         output.commands.push(UiCommand::Redo);
                     }
@@ -496,7 +627,10 @@ impl AppUi {
             ui.horizontal(|ui| {
                 let stats = &editor.stats;
                 if let Some(path) = &editor.project_path {
-                    ui.label(path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned()));
+                    ui.label(path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    ));
                     ui.separator();
                 }
                 ui.weak(format!(
@@ -531,7 +665,13 @@ fn save_project(editor: &EditorState, output: &mut UiOutput, ask: bool) {
             .add_filter("clo360 project", &["clo360"])
             .set_file_name("garment.clo360")
             .save_file()
-            .map(|path| if path.extension().is_none() { path.with_extension("clo360") } else { path }),
+            .map(|path| {
+                if path.extension().is_none() {
+                    path.with_extension("clo360")
+                } else {
+                    path
+                }
+            }),
     };
     if let Some(path) = path {
         output.commands.push(UiCommand::SaveProject(path));
@@ -539,7 +679,11 @@ fn save_project(editor: &EditorState, output: &mut UiOutput, ask: bool) {
 }
 
 fn open_project(output: &mut UiOutput) {
-    if let Some(path) = rfd::FileDialog::new().set_title("Open project").add_filter("clo360 project", &["clo360"]).pick_file() {
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title("Open project")
+        .add_filter("clo360 project", &["clo360"])
+        .pick_file()
+    {
         output.commands.push(UiCommand::OpenProject(path));
     }
 }

@@ -7,7 +7,13 @@ use glam::{DVec3, Vec3A};
 /// along the segment, with the triangle's unit normal (right-handed for
 /// `a, b, c`). Both faces count.
 #[inline]
-pub fn segment_triangle(from: Vec3A, to: Vec3A, a: Vec3A, b: Vec3A, c: Vec3A) -> Option<(f32, Vec3A)> {
+pub fn segment_triangle(
+    from: Vec3A,
+    to: Vec3A,
+    a: Vec3A,
+    b: Vec3A,
+    c: Vec3A,
+) -> Option<(f32, Vec3A)> {
     // Möller–Trumbore.
     let direction = to - from;
     let (e1, e2) = (b - a, c - a);
@@ -25,7 +31,9 @@ pub fn segment_triangle(from: Vec3A, to: Vec3A, a: Vec3A, b: Vec3A, c: Vec3A) ->
         return None;
     }
     let t = e2.dot(q) * inv;
-    (0.0..=1.0).contains(&t).then(|| (t, e1.cross(e2).normalize_or_zero()))
+    (0.0..=1.0)
+        .contains(&t)
+        .then(|| (t, e1.cross(e2).normalize_or_zero()))
 }
 
 /// The point of triangle `abc` closest to `p`, with its barycentric
@@ -124,7 +132,11 @@ pub fn cubic_roots_in_unit_interval(c: [f64; 4]) -> ([f64; 3], usize) {
         }
         for _ in 0..60 {
             let middle = 0.5 * (low + high);
-            if f(middle) * f_low > 0.0 { low = middle } else { high = middle }
+            if f(middle) * f_low > 0.0 {
+                low = middle
+            } else {
+                high = middle
+            }
         }
         if count < 3 {
             roots[count] = 0.5 * (low + high);
@@ -143,15 +155,30 @@ pub fn cubic_roots_in_unit_interval(c: [f64; 4]) -> ([f64; 3], usize) {
 /// a cubic in time (Provot 1997); each root is then checked for the point
 /// actually being inside the triangle. `tolerance` widens the triangle a
 /// little (in units of length) so nothing slips between two neighbours.
-pub fn vertex_triangle_impact(p: [Vec3A; 2], a: [Vec3A; 2], b: [Vec3A; 2], c: [Vec3A; 2], tolerance: f32) -> Option<f32> {
+pub fn vertex_triangle_impact(
+    p: [Vec3A; 2],
+    a: [Vec3A; 2],
+    b: [Vec3A; 2],
+    c: [Vec3A; 2],
+    tolerance: f32,
+) -> Option<f32> {
     let d = |v: Vec3A| DVec3::new(v.x as f64, v.y as f64, v.z as f64);
     // Everything relative to `a`.
     let (x0, e10, e20) = (d(p[0] - a[0]), d(b[0] - a[0]), d(c[0] - a[0]));
-    let (dx, de1, de2) = (d(p[1] - a[1]) - x0, d(b[1] - a[1]) - e10, d(c[1] - a[1]) - e20);
+    let (dx, de1, de2) = (
+        d(p[1] - a[1]) - x0,
+        d(b[1] - a[1]) - e10,
+        d(c[1] - a[1]) - e20,
+    );
     let n0 = e10.cross(e20);
     let n1 = de1.cross(e20) + e10.cross(de2);
     let n2 = de1.cross(de2);
-    let coefficients = [x0.dot(n0), dx.dot(n0) + x0.dot(n1), dx.dot(n1) + x0.dot(n2), dx.dot(n2)];
+    let coefficients = [
+        x0.dot(n0),
+        dx.dot(n0) + x0.dot(n1),
+        dx.dot(n1) + x0.dot(n2),
+        dx.dot(n2),
+    ];
 
     let (roots, count) = cubic_roots_in_unit_interval(coefficients);
     for &t in &roots[..count] {
@@ -176,12 +203,36 @@ mod tests {
 
     #[test]
     fn segment_hits_and_misses() {
-        let (t, normal) =
-            segment_triangle(Vec3A::new(0.2, 0.2, 1.0), Vec3A::new(0.2, 0.2, -1.0), A, B, C).expect("crosses");
+        let (t, normal) = segment_triangle(
+            Vec3A::new(0.2, 0.2, 1.0),
+            Vec3A::new(0.2, 0.2, -1.0),
+            A,
+            B,
+            C,
+        )
+        .expect("crosses");
         assert!((t - 0.5).abs() < 1e-6);
         assert!((normal - Vec3A::Z).length() < 1e-6);
-        assert!(segment_triangle(Vec3A::new(0.9, 0.9, 1.0), Vec3A::new(0.9, 0.9, -1.0), A, B, C).is_none());
-        assert!(segment_triangle(Vec3A::new(0.2, 0.2, 1.0), Vec3A::new(0.2, 0.2, 0.5), A, B, C).is_none());
+        assert!(
+            segment_triangle(
+                Vec3A::new(0.9, 0.9, 1.0),
+                Vec3A::new(0.9, 0.9, -1.0),
+                A,
+                B,
+                C
+            )
+            .is_none()
+        );
+        assert!(
+            segment_triangle(
+                Vec3A::new(0.2, 0.2, 1.0),
+                Vec3A::new(0.2, 0.2, 0.5),
+                A,
+                B,
+                C
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -215,14 +266,19 @@ mod tests {
         // half way, even though start and end are 1 apart on either side.
         let up = Vec3A::Z;
         let p = [Vec3A::new(0.2, 0.2, 1.0), Vec3A::new(0.2, 0.2, 0.0)];
-        let t = vertex_triangle_impact(p, [A, A + up], [B, B + up], [C, C + up], 1e-4).expect("passes through");
+        let t = vertex_triangle_impact(p, [A, A + up], [B, B + up], [C, C + up], 1e-4)
+            .expect("passes through");
         assert!((t - 0.5).abs() < 1e-5);
         // Past the triangle's edge: coplanar at the same time, but outside.
         let beside = [Vec3A::new(0.9, 0.9, 1.0), Vec3A::new(0.9, 0.9, 0.0)];
-        assert!(vertex_triangle_impact(beside, [A, A + up], [B, B + up], [C, C + up], 1e-4).is_none());
+        assert!(
+            vertex_triangle_impact(beside, [A, A + up], [B, B + up], [C, C + up], 1e-4).is_none()
+        );
         // Moving along with the triangle: never meets it.
         let along = [Vec3A::new(0.2, 0.2, 0.5), Vec3A::new(0.2, 0.2, 1.5)];
-        assert!(vertex_triangle_impact(along, [A, A + up], [B, B + up], [C, C + up], 1e-4).is_none());
+        assert!(
+            vertex_triangle_impact(along, [A, A + up], [B, B + up], [C, C + up], 1e-4).is_none()
+        );
     }
 
     #[test]

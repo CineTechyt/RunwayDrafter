@@ -62,8 +62,11 @@ impl Bins {
             sum.sort_by(|a, b| b.1.total_cmp(&a.1));
             sum.truncate(4);
             let total: f32 = sum.iter().map(|(_, w)| w).sum::<f32>().max(1e-9);
-            let mut key: Vec<(u16, u16)> =
-                sum.iter().map(|&(b, w)| (b, ((w / total) / QUANTUM).round() as u16)).filter(|&(_, q)| q > 0).collect();
+            let mut key: Vec<(u16, u16)> = sum
+                .iter()
+                .map(|&(b, w)| (b, ((w / total) / QUANTUM).round() as u16))
+                .filter(|&(_, q)| q > 0)
+                .collect();
             key.sort_unstable();
             let next = index.len() as u32;
             let bin = *index.entry(key.clone()).or_insert_with(|| {
@@ -82,7 +85,10 @@ impl Bins {
             for j in 0..4 {
                 for k in j + 1..4 {
                     if w[j] > 0.0 && w[k] > 0.0 {
-                        bins.by_pair.entry((bones[j].min(bones[k]), bones[j].max(bones[k]))).or_default().push(bin as u32);
+                        bins.by_pair
+                            .entry((bones[j].min(bones[k]), bones[j].max(bones[k])))
+                            .or_default()
+                            .push(bin as u32);
                     }
                 }
             }
@@ -94,7 +100,9 @@ impl Bins {
 /// Weight of bone `b` in sparse weights, zero if absent.
 #[inline]
 fn weight_of((bones, w): &Weights, b: u16) -> f32 {
-    (0..4).find(|&k| bones[k] == b && w[k] > 0.0).map_or(0.0, |k| w[k])
+    (0..4)
+        .find(|&k| bones[k] == b && w[k] > 0.0)
+        .map_or(0.0, |k| w[k])
 }
 
 /// The paper's similarity of two weight vectors: large when they blend the
@@ -121,7 +129,12 @@ fn similarity(p: &Weights, v: &Weights) -> f32 {
 
 /// The centre of rotation of every vertex of a body in the modelled pose.
 /// Vertices on a single bone keep their own position (any centre does).
-pub(crate) fn centres(bins: &Bins, weights: &[Weights], positions: &[Vec3], triangles: &[[u32; 3]]) -> Vec<Vec3> {
+pub(crate) fn centres(
+    bins: &Bins,
+    weights: &[Weights],
+    positions: &[Vec3],
+    triangles: &[[u32; 3]],
+) -> Vec<Vec3> {
     // Area and area-weighted centroid per bin, for this body shape.
     let mut area = vec![0.0f32; bins.weights.len()];
     let mut moment = vec![Vec3::ZERO; bins.weights.len()];
@@ -144,7 +157,12 @@ pub(crate) fn centres(bins: &Bins, weights: &[Weights], positions: &[Vec3], tria
                     if w[j] <= 0.0 || w[k] <= 0.0 {
                         continue;
                     }
-                    let Some(list) = bins.by_pair.get(&(bones[j].min(bones[k]), bones[j].max(bones[k]))) else { continue };
+                    let Some(list) = bins
+                        .by_pair
+                        .get(&(bones[j].min(bones[k]), bones[j].max(bones[k])))
+                    else {
+                        continue;
+                    };
                     for &bin in list {
                         if seen.contains(&bin) {
                             continue;
@@ -167,7 +185,10 @@ pub(crate) fn centres(bins: &Bins, weights: &[Weights], positions: &[Vec3], tria
 /// and then; the centres, which depend on which bones blend, would jump
 /// there and tear the skin.
 fn smooth(mut centres: Vec<Vec3>, weights: &[Weights], triangles: &[[u32; 3]]) -> Vec<Vec3> {
-    let blended: Vec<bool> = weights.iter().map(|(_, w)| w.iter().filter(|&&w| w > 0.0).count() > 1).collect();
+    let blended: Vec<bool> = weights
+        .iter()
+        .map(|(_, w)| w.iter().filter(|&&w| w > 0.0).count() > 1)
+        .collect();
     let mut neighbours: Vec<Vec<u32>> = vec![Vec::new(); weights.len()];
     for t in triangles {
         for k in 0..3 {
@@ -180,13 +201,18 @@ fn smooth(mut centres: Vec<Vec3>, weights: &[Weights], triangles: &[[u32; 3]]) -
     }
     for _ in 0..SMOOTHING {
         let previous = centres.clone();
-        centres.par_iter_mut().enumerate().with_min_len(512).for_each(|(v, centre)| {
-            let around = &neighbours[v];
-            if !around.is_empty() {
-                let mean = around.iter().map(|&u| previous[u as usize]).sum::<Vec3>() / around.len() as f32;
-                *centre = previous[v] * 0.5 + mean * 0.5;
-            }
-        });
+        centres
+            .par_iter_mut()
+            .enumerate()
+            .with_min_len(512)
+            .for_each(|(v, centre)| {
+                let around = &neighbours[v];
+                if !around.is_empty() {
+                    let mean = around.iter().map(|&u| previous[u as usize]).sum::<Vec3>()
+                        / around.len() as f32;
+                    *centre = previous[v] * 0.5 + mean * 0.5;
+                }
+            });
     }
     centres
 }
@@ -201,8 +227,15 @@ impl<T> Pipe for T {}
 /// Per-vertex transforms for the bone transforms `world`: rotation by the
 /// blended quaternion about the vertex's centre, which is itself moved by
 /// linear blend skinning.
-pub(crate) fn transforms(weights: &[Weights], centres: &[Vec3], world: &[Affine3A]) -> Vec<Affine3A> {
-    let rotations: Vec<Quat> = world.iter().map(|m| Quat::from_mat3a(&m.matrix3).normalize()).collect();
+pub(crate) fn transforms(
+    weights: &[Weights],
+    centres: &[Vec3],
+    world: &[Affine3A],
+) -> Vec<Affine3A> {
+    let rotations: Vec<Quat> = world
+        .iter()
+        .map(|m| Quat::from_mat3a(&m.matrix3).normalize())
+        .collect();
     weights
         .par_iter()
         .zip(centres)
@@ -219,12 +252,19 @@ pub(crate) fn transforms(weights: &[Weights], centres: &[Vec3], world: &[Affine3
                     continue;
                 }
                 let rotation = rotations[bones[k] as usize];
-                let sign = if rotation.dot(reference) < 0.0 { -1.0 } else { 1.0 };
+                let sign = if rotation.dot(reference) < 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                };
                 q += glam::Vec4::from(rotation) * (w[k] * sign);
                 moved += world[bones[k] as usize].transform_point3a(centre) * w[k];
             }
             let rotation = Mat3A::from_quat(Quat::from_vec4(q).normalize());
-            Affine3A { matrix3: rotation, translation: moved - rotation * centre }
+            Affine3A {
+                matrix3: rotation,
+                translation: moved - rotation * centre,
+            }
         })
         .collect()
 }
@@ -246,7 +286,13 @@ mod tests {
 
     #[test]
     fn a_single_bone_moves_its_skin_rigidly() {
-        let world = [Affine3A::IDENTITY, Affine3A::from_rotation_translation(Quat::from_rotation_z(1.0), Vec3::new(0.1, 0.2, 0.3))];
+        let world = [
+            Affine3A::IDENTITY,
+            Affine3A::from_rotation_translation(
+                Quat::from_rotation_z(1.0),
+                Vec3::new(0.1, 0.2, 0.3),
+            ),
+        ];
         let weights = [([1u16, 0, 0, 0], [1.0, 0.0, 0.0, 0.0])];
         let p = Vec3::new(0.3, -0.2, 0.5);
         let t = transforms(&weights, &[Vec3::new(9.0, 9.0, 9.0)], &world);

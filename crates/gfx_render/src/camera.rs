@@ -15,7 +15,10 @@ pub struct Camera2D {
 
 impl Default for Camera2D {
     fn default() -> Self {
-        Self { center: Vec2::ZERO, zoom: 1.0 }
+        Self {
+            center: Vec2::ZERO,
+            zoom: 1.0,
+        }
     }
 }
 
@@ -81,7 +84,13 @@ pub struct OrbitCamera {
 
 impl Default for OrbitCamera {
     fn default() -> Self {
-        Self { target: Vec3::new(0.0, 1.0, 0.0), yaw: 0.5, pitch: 0.12, distance: 3.2, fov_y: 40f32.to_radians() }
+        Self {
+            target: Vec3::new(0.0, 1.0, 0.0),
+            yaw: 0.5,
+            pitch: 0.12,
+            distance: 3.2,
+            fov_y: 40f32.to_radians(),
+        }
     }
 }
 
@@ -112,7 +121,8 @@ impl OrbitCamera {
 
     /// Slides the target in the view plane so the scene follows the cursor.
     pub fn pan(&mut self, delta_px: Vec2, viewport_height: f32) {
-        let world_per_px = 2.0 * self.distance * (self.fov_y * 0.5).tan() / viewport_height.max(1.0);
+        let world_per_px =
+            2.0 * self.distance * (self.fov_y * 0.5).tan() / viewport_height.max(1.0);
         let forward = (self.target - self.eye()).normalize();
         let right = forward.cross(Vec3::Y).normalize();
         let up = right.cross(forward);
@@ -125,7 +135,10 @@ impl OrbitCamera {
 
     /// World-space ray `(origin, direction)` through a screen position.
     pub fn ray(&self, screen: Vec2, viewport: Vec2) -> (Vec3, Vec3) {
-        let ndc = Vec2::new(2.0 * screen.x / viewport.x - 1.0, 1.0 - 2.0 * screen.y / viewport.y);
+        let ndc = Vec2::new(
+            2.0 * screen.x / viewport.x - 1.0,
+            1.0 - 2.0 * screen.y / viewport.y,
+        );
         let inverse = self.view_proj(viewport.x / viewport.y).inverse();
         let near = inverse.project_point3(ndc.extend(0.0));
         let far = inverse.project_point3(ndc.extend(1.0));
@@ -140,7 +153,10 @@ mod tests {
     #[test]
     fn camera2d_round_trips_and_zooms_about_the_cursor() {
         let viewport = Vec2::new(800.0, 600.0);
-        let mut cam = Camera2D { center: Vec2::new(40.0, -10.0), zoom: 2.5 };
+        let mut cam = Camera2D {
+            center: Vec2::new(40.0, -10.0),
+            zoom: 2.5,
+        };
         let screen = Vec2::new(123.0, 456.0);
         let world = cam.screen_to_world(screen, viewport);
         assert!(cam.world_to_screen(world, viewport).distance(screen) < 1e-3);
@@ -148,7 +164,10 @@ mod tests {
         assert!(cam.screen_to_world(screen, viewport).distance(world) < 1e-3);
         // The projection agrees with the screen mapping.
         let ndc = cam.view_proj(viewport).project_point3(world.extend(0.0));
-        let expected = Vec2::new(2.0 * screen.x / viewport.x - 1.0, 1.0 - 2.0 * screen.y / viewport.y);
+        let expected = Vec2::new(
+            2.0 * screen.x / viewport.x - 1.0,
+            1.0 - 2.0 * screen.y / viewport.y,
+        );
         assert!(ndc.truncate().distance(expected) < 1e-4);
     }
 

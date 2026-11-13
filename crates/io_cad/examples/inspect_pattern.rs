@@ -5,14 +5,20 @@
 //! ```
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args().nth(1).ok_or("usage: inspect_pattern <file.pdf|file.svg>")?;
+    let path = std::env::args()
+        .nth(1)
+        .ok_or("usage: inspect_pattern <file.pdf|file.svg>")?;
     let bytes = std::fs::read(&path)?;
     let mut pattern = if path.to_ascii_lowercase().ends_with(".svg") {
         io_cad::import_pattern_svg(&bytes, &io_cad::SvgOptions::default())?
     } else {
         io_cad::import_pattern_pdf(&bytes, &io_cad::PdfOptions::default())?
     };
-    println!("{} pieces, {} open lines", pattern.pieces.len(), pattern.unassigned_open_lines.len());
+    println!(
+        "{} pieces, {} open lines",
+        pattern.pieces.len(),
+        pattern.unassigned_open_lines.len()
+    );
     // LABELS=<dir>: write each piece's drawn lettering as images, one per
     // orientation, to check what text recognition gets to see.
     if let Ok(dir) = std::env::var("LABELS") {
@@ -20,8 +26,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for index in 0..pattern.pieces.len() {
             let strokes = io_cad::drawn_text::piece_strokes(&pattern, index);
             let blocks = io_cad::drawn_text::text_blocks(&strokes);
-            for (flip, image) in io_cad::drawn_text::label_images(&pattern, index).iter().enumerate() {
-                std::fs::write(format!("{dir}/piece{}_label{flip}.pgm", index + 1), image.to_pgm())?;
+            for (flip, image) in io_cad::drawn_text::label_images(&pattern, index)
+                .iter()
+                .enumerate()
+            {
+                std::fs::write(
+                    format!("{dir}/piece{}_label{flip}.pgm", index + 1),
+                    image.to_pgm(),
+                )?;
             }
             if let Some(image) = io_cad::drawn_text::render_strokes_at(&strokes, 0, 6.0) {
                 std::fs::write(format!("{dir}/piece{}_all.pgm", index + 1), image.to_pgm())?;
@@ -29,14 +41,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (b, block) in blocks.iter().enumerate() {
                 for turns in 0..4 {
                     if let Some(image) = io_cad::drawn_text::render_strokes(block, turns) {
-                        std::fs::write(format!("{dir}/piece{}_block{b}_{turns}.pgm", index + 1), image.to_pgm())?;
+                        std::fs::write(
+                            format!("{dir}/piece{}_block{b}_{turns}.pgm", index + 1),
+                            image.to_pgm(),
+                        )?;
                     }
                 }
             }
-            println!("piece {}: {} label strokes in {} blocks", index + 1, strokes.len(), blocks.len());
+            println!(
+                "piece {}: {} label strokes in {} blocks",
+                index + 1,
+                strokes.len(),
+                blocks.len()
+            );
             for block in blocks.iter().filter(|b| b.len() >= 6) {
-                let (lo, hi) = block.iter().flatten().fold((glam::Vec2::INFINITY, glam::Vec2::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)));
-                println!("    block of {:>3} strokes, {:>5.1} x {:<5.1} mm", block.len(), hi.x - lo.x, hi.y - lo.y);
+                let (lo, hi) = block.iter().flatten().fold(
+                    (glam::Vec2::INFINITY, glam::Vec2::NEG_INFINITY),
+                    |(lo, hi), &p| (lo.min(p), hi.max(p)),
+                );
+                println!(
+                    "    block of {:>3} strokes, {:>5.1} x {:<5.1} mm",
+                    block.len(),
+                    hi.x - lo.x,
+                    hi.y - lo.y
+                );
             }
         }
     }
@@ -45,9 +73,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("named {named} pieces from drawn labels");
     }
     for piece in &pattern.pieces {
-        println!("{:?} allowance {:.1} mm", piece.name, piece.seam_allowance_mm);
+        println!(
+            "{:?} allowance {:.1} mm",
+            piece.name, piece.seam_allowance_mm
+        );
         for lp in &piece.loops {
-            let curves = lp.outline.segments().iter().filter(|s| !matches!(s, cad_core::Segment::Line)).count();
+            let curves = lp
+                .outline
+                .segments()
+                .iter()
+                .filter(|s| !matches!(s, cad_core::Segment::Line))
+                .count();
             let size = lp.bounds.1 - lp.bounds.0;
             println!(
                 "   {:<26} {:>4} edges ({curves} curved)  {:>5.0} x {:<5.0} mm at ({:.0}, {:.0})",
@@ -65,9 +101,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     use cad_core::geometry::Curve;
                     let curve = outline.curve(e as u32);
                     let next = outline.curve(((e + 1) % n) as u32);
-                    let turn = curve.tangent(1.0).normalize_or_zero().angle_to(next.tangent(0.0).normalize_or_zero()).to_degrees();
-                    let kind = match outline.segments()[e] { cad_core::Segment::Line => "line", cad_core::Segment::Quadratic { .. } => "quad", cad_core::Segment::Cubic { .. } => "cubic" };
-                    println!("      {e:>3} {kind:<5} {:>6.1} mm, turn to next {turn:>6.1}°", curve.length(0.1));
+                    let turn = curve
+                        .tangent(1.0)
+                        .normalize_or_zero()
+                        .angle_to(next.tangent(0.0).normalize_or_zero())
+                        .to_degrees();
+                    let kind = match outline.segments()[e] {
+                        cad_core::Segment::Line => "line",
+                        cad_core::Segment::Quadratic { .. } => "quad",
+                        cad_core::Segment::Cubic { .. } => "cubic",
+                    };
+                    println!(
+                        "      {e:>3} {kind:<5} {:>6.1} mm, turn to next {turn:>6.1}°",
+                        curve.length(0.1)
+                    );
                 }
             }
         }

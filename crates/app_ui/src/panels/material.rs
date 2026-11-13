@@ -20,9 +20,13 @@ impl Panel for MaterialPanel {
         }
         for fabric in cx.document.fabrics() {
             ui.horizontal(|ui| {
-                let [r, g, b] = fabric.base_color.map(|c| (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
-                let (swatch, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                ui.painter().rect_filled(swatch, 3.0, egui::Color32::from_rgb(r, g, b));
+                let [r, g, b] = fabric
+                    .base_color
+                    .map(|c| (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
+                let (swatch, _) =
+                    ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(swatch, 3.0, egui::Color32::from_rgb(r, g, b));
                 ui.selectable_value(selected, Some(fabric.id), &fabric.name);
             });
         }
@@ -34,10 +38,28 @@ impl Panel for MaterialPanel {
         ui.separator();
 
         let Some(id) = *selected else { return };
-        let Some(fabric) = cx.document.fabric_mut(id) else { return };
+        let Some(fabric) = cx.document.fabric_mut(id) else {
+            return;
+        };
         let mut changed = false;
 
         ui.strong("Appearance");
+        ui.horizontal(|ui| {
+            ui.label("Preset");
+            egui::ComboBox::from_id_salt("fabric-preset")
+                .selected_text(fabric.pattern.label())
+                .show_ui(ui, |ui| {
+                    for pattern in cad_core::FabricPattern::ALL {
+                        if ui
+                            .selectable_label(fabric.pattern == pattern, pattern.label())
+                            .clicked()
+                        {
+                            *fabric = preset(fabric.id, pattern);
+                            changed = true;
+                        }
+                    }
+                });
+        });
         property_grid(ui, "fabric appearance", |ui| {
             ui.label("Name");
             changed |= ui.text_edit_singleline(&mut fabric.name).changed();
@@ -46,13 +68,34 @@ impl Panel for MaterialPanel {
             changed |= ui.color_edit_button_rgb(&mut fabric.base_color).changed();
             ui.end_row();
             ui.label("Roughness");
-            changed |= ui.add(egui::Slider::new(&mut fabric.roughness, 0.05..=1.0)).changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut fabric.roughness, 0.05..=1.0))
+                .changed();
             ui.end_row();
             ui.label("Metallic");
-            changed |= ui.add(egui::Slider::new(&mut fabric.metallic, 0.0..=1.0)).changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut fabric.metallic, 0.0..=1.0))
+                .changed();
             ui.end_row();
             ui.label("Weave");
-            changed |= ui.add(egui::Slider::new(&mut fabric.weave_strength, 0.0..=1.0)).changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut fabric.weave_strength, 0.0..=1.0))
+                .changed();
+            ui.end_row();
+            ui.label("Wash / variation");
+            changed |= ui
+                .add(egui::Slider::new(&mut fabric.wash, 0.0..=1.0))
+                .changed();
+            ui.end_row();
+            ui.label("Pattern scale");
+            changed |= ui
+                .add(egui::Slider::new(&mut fabric.pattern_scale, 0.25..=4.0))
+                .changed();
+            ui.end_row();
+            ui.label("Surface relief");
+            changed |= ui
+                .add(egui::Slider::new(&mut fabric.relief, 0.0..=2.0))
+                .changed();
             ui.end_row();
         });
 
@@ -61,11 +104,22 @@ impl Panel for MaterialPanel {
         let physics = &mut fabric.physics;
         property_grid(ui, "fabric physics", |ui| {
             ui.label("Density");
-            changed |= ui.add(egui::DragValue::new(&mut physics.density).range(10.0..=2000.0).suffix(" g/m²")).changed();
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut physics.density)
+                        .range(10.0..=2000.0)
+                        .suffix(" g/m²"),
+                )
+                .changed();
             ui.end_row();
             ui.label("Thickness");
             changed |= ui
-                .add(egui::DragValue::new(&mut physics.thickness).range(0.05..=20.0).speed(0.01).suffix(" mm"))
+                .add(
+                    egui::DragValue::new(&mut physics.thickness)
+                        .range(0.05..=20.0)
+                        .speed(0.01)
+                        .suffix(" mm"),
+                )
                 .changed();
             ui.end_row();
             for (label, value) in [
@@ -85,4 +139,74 @@ impl Panel for MaterialPanel {
             cx.output.changes.push(DocumentChange::Fabric(id));
         }
     }
+}
+
+fn preset(id: cad_core::FabricId, pattern: cad_core::FabricPattern) -> cad_core::Fabric {
+    let mut fabric = cad_core::Fabric::new(
+        id,
+        pattern.label(),
+        match pattern {
+            cad_core::FabricPattern::Denim => [0.035, 0.10, 0.28],
+            cad_core::FabricPattern::Leather => [0.16, 0.045, 0.025],
+            cad_core::FabricPattern::Corduroy => [0.33, 0.12, 0.045],
+            cad_core::FabricPattern::Wool => [0.28, 0.30, 0.34],
+            cad_core::FabricPattern::Knit => [0.55, 0.12, 0.10],
+            cad_core::FabricPattern::Satin => [0.40, 0.08, 0.18],
+            cad_core::FabricPattern::Plain => [0.5; 3],
+        },
+    );
+    fabric.pattern = pattern;
+    fabric.weave_strength = if pattern == cad_core::FabricPattern::Leather {
+        0.65
+    } else {
+        0.5
+    };
+    fabric.wash = if pattern == cad_core::FabricPattern::Denim {
+        0.25
+    } else {
+        0.0
+    };
+    fabric.pattern_scale = match pattern {
+        cad_core::FabricPattern::Denim => 1.0,
+        cad_core::FabricPattern::Corduroy => 1.0,
+        _ => 1.0,
+    };
+    fabric.relief = match pattern {
+        cad_core::FabricPattern::Corduroy => 1.0,
+        cad_core::FabricPattern::Denim => 0.35,
+        _ => 0.0,
+    };
+    fabric.roughness = match pattern {
+        cad_core::FabricPattern::Leather => 0.48,
+        cad_core::FabricPattern::Satin => 0.24,
+        _ => 0.82,
+    };
+    fabric.physics = match pattern {
+        cad_core::FabricPattern::Leather => cad_core::FabricPhysics {
+            density: 850.0,
+            stretch_weft: 0.12,
+            stretch_warp: 0.16,
+            shear: 0.18,
+            bending: 0.82,
+            thickness: 1.2,
+        },
+        cad_core::FabricPattern::Denim => cad_core::FabricPhysics {
+            density: 420.0,
+            stretch_weft: 0.18,
+            stretch_warp: 0.28,
+            shear: 0.35,
+            bending: 0.52,
+            thickness: 0.8,
+        },
+        cad_core::FabricPattern::Corduroy => cad_core::FabricPhysics {
+            density: 360.0,
+            stretch_weft: 0.25,
+            stretch_warp: 0.32,
+            shear: 0.35,
+            bending: 0.42,
+            thickness: 0.9,
+        },
+        _ => fabric.physics,
+    };
+    fabric
 }

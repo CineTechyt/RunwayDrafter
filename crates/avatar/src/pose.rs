@@ -30,7 +30,10 @@ impl Pose {
     /// Rotates `bone` (and everything attached to it) about its head joint,
     /// on top of any rotation already set for it.
     pub fn rotate(&mut self, bone: &str, rotation: Quat) {
-        let entry = self.rotations.entry(bone.to_owned()).or_insert(Quat::IDENTITY);
+        let entry = self
+            .rotations
+            .entry(bone.to_owned())
+            .or_insert(Quat::IDENTITY);
         *entry = (rotation * *entry).normalize();
     }
 
@@ -43,7 +46,11 @@ impl Pose {
     }
 
     pub fn is_rest(&self) -> bool {
-        self.rotations.values().all(|q| q.abs_diff_eq(Quat::IDENTITY, 1e-6)) && self.offset.x == 0.0 && self.offset.z == 0.0
+        self.rotations
+            .values()
+            .all(|q| q.abs_diff_eq(Quat::IDENTITY, 1e-6))
+            && self.offset.x == 0.0
+            && self.offset.z == 0.0
     }
 }
 
@@ -67,32 +74,64 @@ impl PoseParams {
     /// Named starting points, in the order the UI lists them.
     pub const PRESETS: [(&'static str, PoseParams); 5] = [
         ("A-pose", PoseParams::a_pose()),
-        ("T-pose", PoseParams { arm_angle: Some(90.0), ..PoseParams::modelled() }),
-        ("Arms down", PoseParams { arm_angle: Some(14.0), ..PoseParams::modelled() }),
-        ("Wide stance", PoseParams { leg_angle: Some(14.0), ..PoseParams::a_pose() }),
+        (
+            "T-pose",
+            PoseParams {
+                arm_angle: Some(90.0),
+                ..PoseParams::modelled()
+            },
+        ),
+        (
+            "Arms down",
+            PoseParams {
+                arm_angle: Some(14.0),
+                ..PoseParams::modelled()
+            },
+        ),
+        (
+            "Wide stance",
+            PoseParams {
+                leg_angle: Some(14.0),
+                ..PoseParams::a_pose()
+            },
+        ),
         ("As modelled", PoseParams::modelled()),
     ];
 
     /// The pose of the base mesh.
     pub const fn modelled() -> Self {
-        Self { arm_angle: None, arm_forward: 0.0, elbow_bend: 0.0, leg_angle: None, knee_bend: 0.0 }
+        Self {
+            arm_angle: None,
+            arm_forward: 0.0,
+            elbow_bend: 0.0,
+            leg_angle: None,
+            knee_bend: 0.0,
+        }
     }
 
     /// Arms at 45°: clear of the torso, so side seams can be sewn, without
     /// stressing the shoulders the way a T-pose does.
     pub const fn a_pose() -> Self {
-        Self { arm_angle: Some(45.0), ..Self::modelled() }
+        Self {
+            arm_angle: Some(45.0),
+            ..Self::modelled()
+        }
     }
 
     /// The arm and leg angles (degrees from the vertical) the body was
     /// modelled with, i.e. what `None` stands for.
     pub fn modelled_angles(model: &BodyModel, rest: &BodyMesh) -> (f32, f32) {
         let angle = |upper: &str, lower: &str| {
-            let (Some(a), Some(b)) = (model.bone(upper), model.bone(lower)) else { return 0.0 };
+            let (Some(a), Some(b)) = (model.bone(upper), model.bone(lower)) else {
+                return 0.0;
+            };
             let along = (rest.joints[b].head - rest.joints[a].head).normalize_or(Vec3::NEG_Y);
             along.x.abs().atan2(-along.y).to_degrees()
         };
-        (angle("upperarm01.L", "lowerarm01.L"), angle("upperleg01.L", "lowerleg01.L"))
+        (
+            angle("upperarm01.L", "lowerarm01.L"),
+            angle("upperleg01.L", "lowerleg01.L"),
+        )
     }
 
     /// The bone rotations for these angles on a particular body (`rest` is
@@ -104,7 +143,9 @@ impl PoseParams {
             let bone = |stem: &str| format!("{stem}.{suffix}");
 
             // --- arm -------------------------------------------------------
-            if let (Some(upper), Some(lower)) = (joint(&bone("upperarm01")), joint(&bone("lowerarm01"))) {
+            if let (Some(upper), Some(lower)) =
+                (joint(&bone("upperarm01")), joint(&bone("lowerarm01")))
+            {
                 let along = (lower.head - upper.head).normalize_or(Vec3::NEG_Y);
                 // Raising happens about the front-back axis. The left arm
                 // points towards +x, so it rises counter-clockwise.
@@ -112,28 +153,43 @@ impl PoseParams {
                 let raise = (self.arm_angle.unwrap_or(modelled) - modelled).to_radians() * side;
                 // A raise comes partly from the shoulder girdle; spreading
                 // it over three bones keeps the skin from collapsing.
-                for (stem, share) in [("clavicle", 0.12), ("shoulder01", 0.18), ("upperarm01", 0.70)] {
+                for (stem, share) in [
+                    ("clavicle", 0.12),
+                    ("shoulder01", 0.18),
+                    ("upperarm01", 0.70),
+                ] {
                     pose.rotate(&bone(stem), Quat::from_rotation_z(raise * share));
                 }
                 // Forward swing about the vertical through the shoulder.
-                pose.rotate(&bone("upperarm01"), Quat::from_rotation_y(-self.arm_forward.to_radians() * side));
+                pose.rotate(
+                    &bone("upperarm01"),
+                    Quat::from_rotation_y(-self.arm_forward.to_radians() * side),
+                );
                 // The elbow folds the forearm towards the front.
                 if let Some(wrist) = joint(&bone("wrist")) {
                     let forearm = (wrist.head - lower.head).normalize_or(along);
                     let axis = forearm.cross(Vec3::Z).normalize_or(Vec3::X);
-                    pose.rotate(&bone("lowerarm01"), Quat::from_axis_angle(axis, self.elbow_bend.to_radians()));
+                    pose.rotate(
+                        &bone("lowerarm01"),
+                        Quat::from_axis_angle(axis, self.elbow_bend.to_radians()),
+                    );
                 }
             }
 
             // --- leg ---------------------------------------------------------
-            if let (Some(upper), Some(lower)) = (joint(&bone("upperleg01")), joint(&bone("lowerleg01"))) {
+            if let (Some(upper), Some(lower)) =
+                (joint(&bone("upperleg01")), joint(&bone("lowerleg01")))
+            {
                 let along = (lower.head - upper.head).normalize_or(Vec3::NEG_Y);
                 let modelled = (along.x * side).atan2(-along.y).to_degrees();
                 let spread = (self.leg_angle.unwrap_or(modelled) - modelled).to_radians() * side;
                 pose.rotate(&bone("upperleg01"), Quat::from_rotation_z(spread));
                 // The knee folds the lower leg backwards.
                 let axis = along.cross(Vec3::NEG_Z).normalize_or(Vec3::X);
-                pose.rotate(&bone("lowerleg01"), Quat::from_axis_angle(axis, self.knee_bend.to_radians()));
+                pose.rotate(
+                    &bone("lowerleg01"),
+                    Quat::from_axis_angle(axis, self.knee_bend.to_radians()),
+                );
             }
         }
         pose
@@ -161,7 +217,9 @@ impl BodyModel {
         let mut world: Vec<Affine3A> = Vec::with_capacity(self.bones.len());
         for (index, bone) in self.bones.iter().enumerate() {
             let head = rest.joints[index].head;
-            let local = Affine3A::from_translation(head) * Affine3A::from_quat(pose.get(&bone.name)) * Affine3A::from_translation(-head);
+            let local = Affine3A::from_translation(head)
+                * Affine3A::from_quat(pose.get(&bone.name))
+                * Affine3A::from_translation(-head);
             world.push(match bone.parent {
                 Some(parent) => world[parent] * local,
                 None => local,
@@ -183,7 +241,11 @@ impl BodyModel {
             .iter()
             .zip(&rest.positions)
             .map(|((bones, weights), &p)| {
-                (0..4).filter(|&k| weights[k] > 0.0).map(|k| world[bones[k] as usize].transform_point3(p) * weights[k]).sum::<Vec3>() + shift
+                (0..4)
+                    .filter(|&k| weights[k] > 0.0)
+                    .map(|k| world[bones[k] as usize].transform_point3(p) * weights[k])
+                    .sum::<Vec3>()
+                    + shift
             })
             .collect();
         let low = positions.iter().map(|p| p.y).fold(f32::MAX, f32::min);
@@ -209,17 +271,28 @@ impl BodyModel {
         // the matrices, the skin keeps its volume where bones turn far
         // apart, as the shoulder does under a raised arm.
         let centres = rest.centres.get_or_init(|| {
-            std::sync::Arc::new(crate::skinning::centres(&self.bins, &self.weights, &rest.positions, rest.skin()))
+            std::sync::Arc::new(crate::skinning::centres(
+                &self.bins,
+                &self.weights,
+                &rest.positions,
+                rest.skin(),
+            ))
         });
-        let mut transforms = if centres.len() == self.weights.len() && rest.positions.len() == self.weights.len() {
-            crate::skinning::transforms(&self.weights, centres, &world)
-        } else {
-            vec![Affine3A::IDENTITY; rest.positions.len()]
-        };
+        let mut transforms =
+            if centres.len() == self.weights.len() && rest.positions.len() == self.weights.len() {
+                crate::skinning::transforms(&self.weights, centres, &world)
+            } else {
+                vec![Affine3A::IDENTITY; rest.positions.len()]
+            };
 
         let mut mesh = rest.clone();
         mesh.centres = Default::default();
-        for ((position, &rest_position), transform) in mesh.positions.iter_mut().zip(&rest.positions).zip(&transforms) {
+        for ((position, &rest_position), transform) in mesh
+            .positions
+            .iter_mut()
+            .zip(&rest.positions)
+            .zip(&transforms)
+        {
             *position = transform.transform_point3(rest_position);
         }
         for (joint, transform) in mesh.joints.iter_mut().zip(&world) {
@@ -282,13 +355,19 @@ pub fn attach(points: &[Vec3], body: PosedBody<'_>) -> Vec<Attachment> {
 
 /// Like [`attach`], to the nearest skin vertex for which `allowed` is true
 /// (all of them where it is `None`).
-pub fn attach_to(points: &[Vec3], body: PosedBody<'_>, allowed: Option<&[bool]>) -> Vec<Attachment> {
+pub fn attach_to(
+    points: &[Vec3],
+    body: PosedBody<'_>,
+    allowed: Option<&[bool]>,
+) -> Vec<Attachment> {
     use rayon::prelude::*;
     let count = body.posed.positions.len();
     if count == 0 {
         return Vec::new();
     }
-    let candidates: Vec<usize> = (0..count).filter(|&i| allowed.is_none_or(|a| a.get(i).copied().unwrap_or(true))).collect();
+    let candidates: Vec<usize> = (0..count)
+        .filter(|&i| allowed.is_none_or(|a| a.get(i).copied().unwrap_or(true)))
+        .collect();
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -298,10 +377,18 @@ pub fn attach_to(points: &[Vec3], body: PosedBody<'_>, allowed: Option<&[bool]>)
             let nearest = candidates
                 .iter()
                 .copied()
-                .min_by(|&a, &b| body.posed.positions[a].distance_squared(*point).total_cmp(&body.posed.positions[b].distance_squared(*point)))
+                .min_by(|&a, &b| {
+                    body.posed.positions[a]
+                        .distance_squared(*point)
+                        .total_cmp(&body.posed.positions[b].distance_squared(*point))
+                })
                 .unwrap_or(0);
-            let offset = body.transforms[nearest].inverse().transform_point3(*point) - body.rest.positions[nearest];
-            Attachment { vertex: nearest as u32, offset }
+            let offset = body.transforms[nearest].inverse().transform_point3(*point)
+                - body.rest.positions[nearest];
+            Attachment {
+                vertex: nearest as u32,
+                offset,
+            }
         })
         .collect()
 }
@@ -311,7 +398,8 @@ pub fn attach_to(points: &[Vec3], body: PosedBody<'_>, allowed: Option<&[bool]>)
 pub fn follow(attachments: &[Attachment], body: PosedBody<'_>, points: &mut [Vec3]) {
     for (point, attachment) in points.iter_mut().zip(attachments) {
         let i = (attachment.vertex as usize).min(body.rest.positions.len().saturating_sub(1));
-        if let (Some(transform), Some(rest)) = (body.transforms.get(i), body.rest.positions.get(i)) {
+        if let (Some(transform), Some(rest)) = (body.transforms.get(i), body.rest.positions.get(i))
+        {
             *point = transform.transform_point3(*rest + attachment.offset);
         }
     }

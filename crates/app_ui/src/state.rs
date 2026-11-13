@@ -367,7 +367,14 @@ pub enum GarmentStatus {
 
 impl Default for AnimationState {
     fn default() -> Self {
-        Self { motion: None, playing: false, time: 0.0, speed: 1.0, garment_follows: true, garment: GarmentStatus::default() }
+        Self {
+            motion: None,
+            playing: false,
+            time: 0.0,
+            speed: 1.0,
+            garment_follows: true,
+            garment: GarmentStatus::default(),
+        }
     }
 }
 
@@ -537,7 +544,11 @@ pub enum UiCommand {
     DeleteSelection,
     /// Make an anchor a turn point (splits the line there) or a curve
     /// point (joins the two lines meeting there into one).
-    SetPointKind { piece: PieceId, anchor: u32, kind: cad_core::PointKind },
+    SetPointKind {
+        piece: PieceId,
+        anchor: u32,
+        kind: cad_core::PointKind,
+    },
     /// Lay all pieces out side by side without overlaps.
     TidyLayout,
     DeleteSeam(cad_core::SeamId),

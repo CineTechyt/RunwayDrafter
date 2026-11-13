@@ -42,7 +42,11 @@ fn wrap_radius(half_width: f32, reach: f32) -> Option<f32> {
     }
     for _ in 0..40 {
         let mid = 0.5 * (low + high);
-        if mid * (half_width / mid).sin() < reach { low = mid } else { high = mid }
+        if mid * (half_width / mid).sin() < reach {
+            low = mid
+        } else {
+            high = mid
+        }
     }
     Some(0.5 * (low + high))
 }
@@ -54,7 +58,11 @@ fn torso_reach(body: &BodyMesh, measurements: &Measurements, d: Vec3) -> f32 {
     let height = body.height();
     body.positions
         .iter()
-        .filter(|p| p.y > 0.45 * height && p.y < 0.85 * height && p.x.abs() <= measurements.torso_half_width * 1.05)
+        .filter(|p| {
+            p.y > 0.45 * height
+                && p.y < 0.85 * height
+                && p.x.abs() <= measurements.torso_half_width * 1.05
+        })
         .map(|p| p.x * d.x + p.z * d.z)
         .fold(0.0, f32::max)
 }
@@ -64,7 +72,11 @@ fn torso_reach(body: &BodyMesh, measurements: &Measurements, d: Vec3) -> f32 {
 /// their sides reach around the torso; pieces placed elsewhere (side
 /// panels, a front half) are wrapped onto a cylinder around the body at
 /// their angle.
-pub fn arrange_around(document: &mut PatternDocument, body: &BodyMesh, measurements: &Measurements) -> Vec<DocumentChange> {
+pub fn arrange_around(
+    document: &mut PatternDocument,
+    body: &BodyMesh,
+    measurements: &Measurements,
+) -> Vec<DocumentChange> {
     let ids: Vec<_> = document.pieces().iter().map(|p| p.id).collect();
     // Pieces whose buttonholes are done up over another piece's buttons:
     // the overlapping side, which is worn on top.
@@ -84,13 +96,16 @@ pub fn arrange_around(document: &mut PatternDocument, body: &BodyMesh, measureme
     let mut changes = Vec::new();
     for id in ids {
         let over = overlapping.contains(&id);
-        let Some(piece) = document.piece_mut(id) else { continue };
+        let Some(piece) = document.piece_mut(id) else {
+            continue;
+        };
         let (low, high) = piece.outline.bounds();
         let half_width = 0.5 * (high.x - low.x) * 1e-3;
         // Two front halves sit on the same cylinder; where they overlap at
         // the button stand they would start inside each other, and nothing
         // would say which belongs on top.
-        let outset = piece.layer.saturating_sub(1) as f32 * LAYER_SPACING + if over { OVERLAP_OUTSET } else { 0.0 };
+        let outset = piece.layer.saturating_sub(1) as f32 * LAYER_SPACING
+            + if over { OVERLAP_OUTSET } else { 0.0 };
         let angle = piece.placement.angle.to_radians();
         // Exact directions at quarter turns: sin(180°) is not quite zero
         // in floating point.
@@ -104,7 +119,10 @@ pub fn arrange_around(document: &mut PatternDocument, body: &BodyMesh, measureme
         arrangement.rotation = Quat::from_rotation_y(angle);
         let depth = if centred {
             let side = outward.z.signum();
-            let radius = wrap_radius(half_width, measurements.torso_half_width + SIDE_CLEARANCE + outset);
+            let radius = wrap_radius(
+                half_width,
+                measurements.torso_half_width + SIDE_CLEARANCE + outset,
+            );
             arrangement.curvature = radius.map_or(0.0, |r| 1.0 / r);
             // Wrapping moves the side edges towards the body by `sag`; keep
             // them on the piece's own side of the centre plane.
@@ -132,7 +150,9 @@ pub fn arrange_around(document: &mut PatternDocument, body: &BodyMesh, measureme
                 if !centred && placed.x.abs() > reach {
                     return None;
                 }
-                Some(body.shoulder_surface(placed.x.abs())? + SHOULDER_CLEARANCE + outset - placed.y)
+                Some(
+                    body.shoulder_surface(placed.x.abs())? + SHOULDER_CLEARANCE + outset - placed.y,
+                )
             })
             .fold(f32::MIN, f32::max);
         arrangement.translation.y = if lift > f32::MIN {
@@ -157,7 +177,10 @@ pub fn arrange_around(document: &mut PatternDocument, body: &BodyMesh, measureme
             .fastenings()
             .filter(|&(_, _, h, _)| h == hole_piece)
             .filter_map(|(button_piece, button, _, hole)| {
-                let b = document.piece(button_piece)?.arrangement.place(button.position);
+                let b = document
+                    .piece(button_piece)?
+                    .arrangement
+                    .place(button.position);
                 let h = document.piece(hole_piece)?.arrangement.place(hole.position);
                 Some((b, h))
             })
@@ -166,11 +189,17 @@ pub fn arrange_around(document: &mut PatternDocument, body: &BodyMesh, measureme
             continue;
         }
         let heading = |p: Vec3| p.x.atan2(p.z);
-        let turn = pairs.iter().map(|(b, h)| wrap_angle(heading(*b) - heading(*h))).sum::<f32>() / pairs.len() as f32;
+        let turn = pairs
+            .iter()
+            .map(|(b, h)| wrap_angle(heading(*b) - heading(*h)))
+            .sum::<f32>()
+            / pairs.len() as f32;
         if turn.abs() < 1e-4 {
             continue;
         }
-        let Some(piece) = document.piece_mut(hole_piece) else { continue };
+        let Some(piece) = document.piece_mut(hole_piece) else {
+            continue;
+        };
         let spin = Quat::from_rotation_y(turn);
         piece.arrangement.rotation = spin * piece.arrangement.rotation;
         let height = piece.arrangement.translation.y;

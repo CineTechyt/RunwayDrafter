@@ -15,7 +15,7 @@ struct Globals {
 struct Object {
     model: mat4x4<f32>,
     base_color: vec4<f32>,
-    // x: roughness, y: metallic, z: weave strength, w: weave threads per UV unit
+    // x: roughness, y: metallic, z: pattern strength, w: pattern id + wash/10
     params: vec4<f32>,
     emissive: vec4<f32>,
     // Technical views of the garment. x: 0 = fabric, 1 = strain heatmap,
@@ -24,6 +24,8 @@ struct Object {
     // x: 0 = standard, 1 = skin, 2 = hair (yzw: the crown, where strands
     // start), 3 = prop (material per vertex: colour, uv = roughness/metallic).
     shading: vec4<f32>,
+    // x: procedural repeat scale, y: relief strength.
+    fabric: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -47,9 +49,25 @@ struct VertexOutput {
     @location(4) color: vec3<f32>,
 };
 
+fn pattern_height(uv: vec2<f32>, kind: f32, scale: f32, relief: f32) -> f32 {
+    let s = max(scale, 0.1);
+    if kind == 3.0 {
+        let phase = uv.x * 18.0 * s * 2.0 * PI;
+        let ridge = 0.5 + 0.5 * cos(phase);
+        return ridge * ridge * (3.0 - 2.0 * ridge) * 0.006 * relief;
+    }
+    if kind == 1.0 {
+        let phase = (uv.x + uv.y) * 36.0 * s * 2.0 * PI;
+        return (0.5 + 0.5 * cos(phase)) * 0.001 * relief;
+    }
+    return 0.0;
+}
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
+    // The relief of a weave is far finer than the mesh: it is shaded in the
+    // fragment stage only. Moving vertices by it would only tear the edges.
     let world = object.model * vec4<f32>(in.position, 1.0);
     out.world_position = world.xyz;
     // Models are only translated/rotated/uniformly scaled, so the model
@@ -107,6 +125,39 @@ fn weave(uv: vec2<f32>, threads: f32) -> f32 {
     let fade = clamp(1.0 - footprint * 1.5, 0.0, 1.0);
     let pattern = sin(p.x * 2.0 * PI) * sin(p.y * 2.0 * PI);
     return 1.0 + (pattern * 0.5 - 0.5) * fade;
+}
+
+fn denim_fiber_mask(uv: vec2<f32>) -> f32 {
+    let phase = (uv.x + uv.y) * 36.0 * 2.0 * PI;
+    let footprint = fwidth(phase);
+    let visibility = 1.0 - smoothstep(1.5, 7.0, footprint);
+    let fiber = 0.5 + 0.5 * cos(phase);
+    return smoothstep(0.78, 0.98, fiber) * visibility;
+}
+
+fn fabric_surface(uv: vec2<f32>, kind: f32, wash: f32, scale: f32) -> vec3<f32> {
+    // Denim is a blue twill with pale warp fibres crossing the darker weft.
+    // The narrow lines are deliberately irregular so it reads as yarn rather
+    // than a regular checkerboard when the garment is viewed close-up.
+    let pale_fiber = denim_fiber_mask(uv);
+    let macro_twill = 0.80 + 0.40 * (0.5 + 0.5 * cos((uv.x + uv.y) * 5.5 * 2.0 * PI));
+    let denim = vec3<f32>(macro_twill) * mix(vec3<f32>(0.88), vec3<f32>(1.35), pale_fiber);
+    let leather = 0.82 + 0.28 * noise3(vec3<f32>(uv * 90.0, 0.0));
+    let cord_phase = uv.x * 18.0 * max(scale, 0.1) * 2.0 * PI;
+    let cord_visibility = 1.0 - smoothstep(1.5, 7.0, fwidth(cord_phase));
+    let cord = 0.92 + 0.14 * (0.5 + 0.5 * cos(cord_phase)) * cord_visibility;
+    let wool = 0.9 + 0.18 * noise3(vec3<f32>(uv * 180.0, 0.0));
+    let knit = 0.88 + 0.12 * sin(uv.x * 150.0 * PI) * sin(uv.y * 150.0 * PI);
+    let satin = 1.0 + 0.04 * sin(uv.y * 80.0 * PI);
+    var value = vec3<f32>(1.0);
+    if kind == 1.0 { value = denim; }
+    if kind == 2.0 { value = vec3<f32>(leather); }
+    if kind == 3.0 { value = vec3<f32>(cord); }
+    if kind == 4.0 { value = vec3<f32>(wool); }
+    if kind == 5.0 { value = vec3<f32>(knit); }
+    if kind == 6.0 { value = vec3<f32>(satin); }
+    let irregular = 0.88 + 0.24 * noise3(vec3<f32>(uv * 8.0, 0.0));
+    return mix(value, value * irregular, clamp(wash, 0.0, 1.0));
 }
 
 // ---------------------------------------------------------------------------
@@ -267,12 +318,24 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> @loca
     var roughness = clamp(object.params.x, 0.045, 1.0);
     var metallic = clamp(object.params.y, 0.0, 1.0);
     var albedo = object.base_color.rgb * in.color;
+    let pattern_id = floor(object.params.w + 0.001);
+    let wash = fract(object.params.w * 10.0);
     if kind == 3u {
         roughness = clamp(in.uv.x, 0.045, 1.0);
         metallic = clamp(in.uv.y, 0.0, 1.0);
     }
     if object.params.z > 0.0 {
-        albedo *= mix(1.0, weave(in.uv, object.params.w), object.params.z);
+        let pattern = fabric_surface(in.uv, pattern_id, wash, object.fabric.x);
+        var threads = 36.0 * object.fabric.x;
+        if pattern_id == 3.0 { threads = 18.0 * object.fabric.x; }
+        albedo *= mix(vec3<f32>(1.0), pattern * weave(in.uv, threads), object.params.z);
+        if pattern_id == 1.0 {
+            albedo = mix(albedo, vec3<f32>(0.92, 0.94, 1.0), denim_fiber_mask(in.uv) * object.params.z * 0.72);
+        }
+        let height = pattern_height(in.uv, pattern_id, object.fabric.x, object.fabric.y) * object.params.z;
+        // Use screen-space derivatives as a stable tangent-space bump. This
+        // adds ridge highlights without changing the cloth mesh or physics.
+        n = normalize(n - vec3<f32>(dpdx(height), dpdy(height), 0.0) * 18.0);
     }
     let key = normalize(globals.key_direction.xyz);
     let fill = normalize(globals.fill_direction.xyz);

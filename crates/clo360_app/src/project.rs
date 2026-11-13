@@ -63,7 +63,12 @@ struct LooksFile {
 }
 
 impl AvatarFile {
-    pub fn new(params: &BodyParams, pose: &PoseParams, targets: &[Option<f32>], looks: &Appearance) -> Self {
+    pub fn new(
+        params: &BodyParams,
+        pose: &PoseParams,
+        targets: &[Option<f32>],
+        looks: &Appearance,
+    ) -> Self {
         Self {
             gender: params.gender,
             weight: params.weight,
@@ -96,12 +101,23 @@ impl AvatarFile {
 
     /// The saved looks; defaults for what is missing or unknown.
     pub fn appearance(&self) -> Appearance {
-        let Some(looks) = &self.looks else { return Appearance::default() };
-        let style = HairStyle::ALL.into_iter().find(|s| format!("{s:?}") == looks.hair_style).unwrap_or_default();
+        let Some(looks) = &self.looks else {
+            return Appearance::default();
+        };
+        let style = HairStyle::ALL
+            .into_iter()
+            .find(|s| format!("{s:?}") == looks.hair_style)
+            .unwrap_or_default();
         Appearance {
             skin: looks.skin,
             eyes: looks.eyes,
-            hair: Hair { style, color: looks.hair_color, length: looks.hair_length, volume: looks.hair_volume, fringe: looks.fringe },
+            hair: Hair {
+                style,
+                color: looks.hair_color,
+                length: looks.hair_length,
+                volume: looks.hair_volume,
+                fringe: looks.fringe,
+            },
         }
     }
 
@@ -143,8 +159,18 @@ impl AvatarFile {
 }
 
 impl Project {
-    pub fn new(document: PatternDocument, avatar: Option<AvatarFile>, particle_distance: f32) -> Self {
-        Self { format: FORMAT.to_owned(), version: VERSION, document, avatar, particle_distance }
+    pub fn new(
+        document: PatternDocument,
+        avatar: Option<AvatarFile>,
+        particle_distance: f32,
+    ) -> Self {
+        Self {
+            format: FORMAT.to_owned(),
+            version: VERSION,
+            document,
+            avatar,
+            particle_distance,
+        }
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -152,16 +178,23 @@ impl Project {
         // Write next to the target and rename: a crash mid-write never
         // leaves a half-written project behind.
         let temporary = path.with_extension(format!("{EXTENSION}.tmp"));
-        std::fs::write(&temporary, json).with_context(|| format!("cannot write {}", temporary.display()))?;
-        std::fs::rename(&temporary, path).with_context(|| format!("cannot write {}", path.display()))?;
+        std::fs::write(&temporary, json)
+            .with_context(|| format!("cannot write {}", temporary.display()))?;
+        std::fs::rename(&temporary, path)
+            .with_context(|| format!("cannot write {}", path.display()))?;
         Ok(())
     }
 
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
         let project: Self = serde_json::from_str(&text).context("not a clo360 project file")?;
         anyhow::ensure!(project.format == FORMAT, "not a clo360 project file");
-        anyhow::ensure!(project.version <= VERSION, "made by a newer clo360 (format version {})", project.version);
+        anyhow::ensure!(
+            project.version <= VERSION,
+            "made by a newer clo360 (format version {})",
+            project.version
+        );
         Ok(project)
     }
 }
@@ -177,17 +210,32 @@ mod tests {
         document.piece_mut(front).unwrap().placement.angle = 30.0;
         let mut params = BodyParams::male();
         params.weight = 0.7;
-        let pose = PoseParams { elbow_bend: 25.0, ..PoseParams::default() };
+        let pose = PoseParams {
+            elbow_bend: 25.0,
+            ..PoseParams::default()
+        };
         let mut targets = [None; Measure::ALL.len()];
         targets[0] = Some(1.81);
         let looks = Appearance {
             skin: [0.3, 0.2, 0.15],
-            hair: Hair { style: HairStyle::Ponytail, length: 0.4, fringe: true, ..Hair::default() },
+            hair: Hair {
+                style: HairStyle::Ponytail,
+                length: 0.4,
+                fringe: true,
+                ..Hair::default()
+            },
             ..Appearance::default()
         };
-        let project = Project::new(document, Some(AvatarFile::new(&params, &pose, &targets, &looks)), 10.0);
+        let project = Project::new(
+            document,
+            Some(AvatarFile::new(&params, &pose, &targets, &looks)),
+            10.0,
+        );
 
-        let path = std::env::temp_dir().join(format!("clo360_project_test_{}.{EXTENSION}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "clo360_project_test_{}.{EXTENSION}",
+            std::process::id()
+        ));
         project.save(&path).unwrap();
         let loaded = Project::load(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -206,22 +254,40 @@ mod tests {
     /// sample with `CLO360_BLESS=1 cargo test -p clo360_app sample`.
     #[test]
     fn the_sample_project_file_is_current() {
-        let looks = Appearance { hair: Hair { style: HairStyle::Long, length: 0.45, ..Hair::default() }, ..Appearance::default() };
-        let avatar = AvatarFile::new(&BodyParams::female(), &PoseParams::default(), &[None; Measure::ALL.len()], &looks);
+        let looks = Appearance {
+            hair: Hair {
+                style: HairStyle::Long,
+                length: 0.45,
+                ..Hair::default()
+            },
+            ..Appearance::default()
+        };
+        let avatar = AvatarFile::new(
+            &BodyParams::female(),
+            &PoseParams::default(),
+            &[None; Measure::ALL.len()],
+            &looks,
+        );
         let expected = Project::new(PatternDocument::demo_waistcoat(), Some(avatar), 20.0);
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../projects/waistcoat_with_buttons.clo360");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../projects/waistcoat_with_buttons.clo360");
         if std::env::var_os("CLO360_BLESS").is_some() {
             expected.save(&path).unwrap();
         }
-        let shipped = Project::load(&path).expect("run with CLO360_BLESS=1 to write the sample project");
-        assert_eq!(shipped, expected, "the sample project is out of date: run with CLO360_BLESS=1");
+        let shipped =
+            Project::load(&path).expect("run with CLO360_BLESS=1 to write the sample project");
+        assert_eq!(
+            shipped, expected,
+            "the sample project is out of date: run with CLO360_BLESS=1"
+        );
         let fastened = shipped.document.fastenings().count();
         assert_eq!(fastened, 5);
     }
 
     #[test]
     fn other_files_are_refused() {
-        let path = std::env::temp_dir().join(format!("clo360_not_a_project_{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("clo360_not_a_project_{}.json", std::process::id()));
         std::fs::write(&path, "{\"hello\": 1}").unwrap();
         assert!(Project::load(&path).is_err());
         std::fs::remove_file(&path).unwrap();

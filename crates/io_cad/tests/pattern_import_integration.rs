@@ -4,9 +4,7 @@
 
 use cad_core::{HandleKind, HandleRef, Segment};
 use glam::Vec2;
-use io_cad::{
-    LineRole, PdfOptions, SvgOptions, import_pattern_pdf, import_pattern_svg,
-};
+use io_cad::{LineRole, PdfOptions, SvgOptions, import_pattern_pdf, import_pattern_svg};
 use topology_sync::{GarmentTopology, TopologySync};
 
 #[test]
@@ -34,7 +32,10 @@ fn test_pdf_with_splines_and_lines_creates_alterable_project() {
     pdf.extend_from_slice(&compressed);
     pdf.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<<>>\n%%EOF");
 
-    let opts = PdfOptions { scale: 1.0, default_allowance_mm: 10.0 };
+    let opts = PdfOptions {
+        scale: 1.0,
+        default_allowance_mm: 10.0,
+    };
     let imported = import_pattern_pdf(&pdf, &opts).expect("PDF import should succeed");
 
     assert_eq!(imported.pieces.len(), 1);
@@ -54,10 +55,18 @@ fn test_pdf_with_splines_and_lines_creates_alterable_project() {
     let piece_id = doc.pieces()[0].id;
 
     // Directly alter the spline by moving its anchor
-    let handle = HandleRef { piece: piece_id, kind: HandleKind::Anchor(2) };
+    let handle = HandleRef {
+        piece: piece_id,
+        kind: HandleKind::Anchor(2),
+    };
     let initial_pos = doc.handle_position(handle).unwrap();
     let new_pos = initial_pos + Vec2::new(15.0, 5.0);
-    assert!(doc.piece_mut(piece_id).unwrap().outline.set_handle_position(handle.kind, new_pos));
+    assert!(
+        doc.piece_mut(piece_id)
+            .unwrap()
+            .outline
+            .set_handle_position(handle.kind, new_pos)
+    );
     assert_eq!(doc.handle_position(handle).unwrap(), new_pos);
 
     // Verify that topology / cloth meshing works seamlessly on this imported and altered piece
@@ -87,12 +96,20 @@ fn test_pdf_from_non_inkscape_sources_with_v_y_and_re_operators() {
     pdf.extend_from_slice(stream);
     pdf.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<<>>\n%%EOF");
 
-    let opts = PdfOptions { scale: 1.0, default_allowance_mm: 8.0 };
+    let opts = PdfOptions {
+        scale: 1.0,
+        default_allowance_mm: 8.0,
+    };
     let imported = import_pattern_pdf(&pdf, &opts).unwrap();
     assert!(imported.pieces.len() >= 1);
     let p = &imported.pieces[0];
     // Must contain cubic beziers generated from v and y operators in its loops
-    assert!(p.loops.iter().any(|lp| lp.outline.segments().iter().any(|s| matches!(s, Segment::Cubic { .. }))));
+    assert!(p.loops.iter().any(|lp| {
+        lp.outline
+            .segments()
+            .iter()
+            .any(|s| matches!(s, Segment::Cubic { .. }))
+    }));
 }
 
 #[test]
@@ -102,7 +119,11 @@ fn test_svg_with_cubic_and_quadratic_splines_and_lines() {
         <path d="M 50 50 L 250 50 C 270 100 270 150 250 200 S 230 300 250 350 Q 150 400 50 350 Z" />
     </svg>"#;
 
-    let opts = SvgOptions { scale: Some(1.0), flip_y: false, default_allowance_mm: 12.0 };
+    let opts = SvgOptions {
+        scale: Some(1.0),
+        flip_y: false,
+        default_allowance_mm: 12.0,
+    };
     let imported = import_pattern_svg(svg.as_bytes(), &opts).unwrap();
 
     assert_eq!(imported.pieces.len(), 1);
@@ -110,9 +131,24 @@ fn test_svg_with_cubic_and_quadratic_splines_and_lines() {
     let outline = &piece.loops[0].outline;
 
     // Verify segments contain Line, Cubic, and Quadratic
-    assert!(outline.segments().iter().any(|s| matches!(s, Segment::Line)));
-    assert!(outline.segments().iter().any(|s| matches!(s, Segment::Cubic { .. })));
-    assert!(outline.segments().iter().any(|s| matches!(s, Segment::Quadratic { .. })));
+    assert!(
+        outline
+            .segments()
+            .iter()
+            .any(|s| matches!(s, Segment::Line))
+    );
+    assert!(
+        outline
+            .segments()
+            .iter()
+            .any(|s| matches!(s, Segment::Cubic { .. }))
+    );
+    assert!(
+        outline
+            .segments()
+            .iter()
+            .any(|s| matches!(s, Segment::Quadratic { .. }))
+    );
 
     let doc = imported.to_document();
     let mut topology = GarmentTopology::default();
@@ -130,15 +166,25 @@ fn test_lines_selectable_as_cutting_line_or_seam_allowance_and_role_swapping() {
         <path d="M 10 10 L 130 10 L 130 130 L 10 130 Z" />
     </svg>"#;
 
-    let opts = SvgOptions { scale: Some(1.0), flip_y: false, default_allowance_mm: 10.0 };
+    let opts = SvgOptions {
+        scale: Some(1.0),
+        flip_y: false,
+        default_allowance_mm: 10.0,
+    };
     let mut imported = import_pattern_svg(svg.as_bytes(), &opts).unwrap();
 
     assert_eq!(imported.pieces.len(), 1);
     assert_eq!(imported.pieces[0].loops.len(), 2);
 
     // Automatic detection classified outer as CuttingLine and inner as SeamAllowance
-    assert_eq!(imported.pieces[0].cut_loop().unwrap().role, LineRole::CuttingLine);
-    assert_eq!(imported.pieces[0].sew_loop().unwrap().role, LineRole::SeamAllowance);
+    assert_eq!(
+        imported.pieces[0].cut_loop().unwrap().role,
+        LineRole::CuttingLine
+    );
+    assert_eq!(
+        imported.pieces[0].sew_loop().unwrap().role,
+        LineRole::SeamAllowance
+    );
     assert!((imported.pieces[0].seam_allowance_mm - 10.0).abs() < 1.0);
 
     // Build document: the sew loop (10..130) is the outline

@@ -26,7 +26,11 @@ pub struct ImportOptions {
 
 impl Default for ImportOptions {
     fn default() -> Self {
-        Self { scale: None, up: UpAxis::Auto, ground: true }
+        Self {
+            scale: None,
+            up: UpAxis::Auto,
+            ground: true,
+        }
     }
 }
 
@@ -43,7 +47,11 @@ pub struct ImportedMesh {
 impl ImportedMesh {
     /// Axis-aligned bounds `(min, max)`.
     pub fn bounds(&self) -> (Vec3, Vec3) {
-        self.positions.iter().fold((Vec3::INFINITY, Vec3::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)))
+        self.positions
+            .iter()
+            .fold((Vec3::INFINITY, Vec3::NEG_INFINITY), |(lo, hi), &p| {
+                (lo.min(p), hi.max(p))
+            })
     }
 
     /// Area-weighted vertex normals.
@@ -66,8 +74,15 @@ impl ImportedMesh {
     /// makes sure there is a normal per vertex.
     pub(crate) fn finish(mut self) -> Self {
         let count = self.positions.len() as u32;
-        self.triangles.retain(|t| t.iter().all(|&i| i < count) && t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
-        if self.normals.len() != self.positions.len() || self.normals.iter().any(|n| !n.is_finite() || n.length_squared() < 1e-12) {
+        self.triangles.retain(|t| {
+            t.iter().all(|&i| i < count) && t[0] != t[1] && t[1] != t[2] && t[0] != t[2]
+        });
+        if self.normals.len() != self.positions.len()
+            || self
+                .normals
+                .iter()
+                .any(|n| !n.is_finite() || n.length_squared() < 1e-12)
+        {
             self.recompute_normals();
         }
         self
@@ -121,7 +136,13 @@ mod tests {
         // A 40 × 20 × 170 box, corner at (100, 100, 5).
         let mut mesh = ImportedMesh {
             positions: (0..8)
-                .map(|i| Vec3::new(100.0 + 40.0 * (i & 1) as f32, 100.0 + 20.0 * ((i >> 1) & 1) as f32, 5.0 + 170.0 * ((i >> 2) & 1) as f32))
+                .map(|i| {
+                    Vec3::new(
+                        100.0 + 40.0 * (i & 1) as f32,
+                        100.0 + 20.0 * ((i >> 1) & 1) as f32,
+                        5.0 + 170.0 * ((i >> 2) & 1) as f32,
+                    )
+                })
                 .collect(),
             triangles: vec![[0, 1, 2]],
             ..Default::default()

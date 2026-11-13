@@ -54,10 +54,17 @@ impl GpuContext {
             })
             .await?;
         let info = adapter.get_info();
-        log::info!("adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+        log::info!(
+            "adapter: {} ({:?}, {:?})",
+            info.name,
+            info.backend,
+            info.device_type
+        );
 
-        let supports_compute =
-            adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS);
+        let supports_compute = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS);
         // Ask for the smallest limit set that covers what we use, at the
         // adapter's real texture resolution: the downlevel baseline where
         // compute exists, the WebGL2 one (render only) where it does not.
@@ -75,6 +82,13 @@ impl GpuContext {
                 ..Default::default()
             })
             .await?;
-        Ok((Self { device, queue, supports_compute }, adapter))
+        Ok((
+            Self {
+                device,
+                queue,
+                supports_compute,
+            },
+            adapter,
+        ))
     }
 }

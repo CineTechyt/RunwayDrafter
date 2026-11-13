@@ -3,7 +3,10 @@
 use std::collections::HashSet;
 
 use cad_core::geometry::Curve;
-use cad_core::{ButtonStyle, EdgeRef, EdgeSpan, HandleKind, HandleRef, NotchKind, PatternDocument, PatternPiece, PieceId, PointKind};
+use cad_core::{
+    ButtonStyle, EdgeRef, EdgeSpan, HandleKind, HandleRef, NotchKind, PatternDocument,
+    PatternPiece, PieceId, PointKind,
+};
 use glam::Vec2;
 use topology_sync::GarmentMesh;
 
@@ -57,8 +60,14 @@ impl Default for CanvasOverlay {
 }
 
 /// One colour per seam so both sewn edges are recognisable as a pair.
-const SEAM_PALETTE: [[u8; 3]; 6] =
-    [[0x4c, 0xc9, 0xf0], [0xf7, 0xb8, 0x01], [0x80, 0xed, 0x99], [0xf7, 0x25, 0x85], [0xb5, 0x8c, 0xff], [0xff, 0x8c, 0x42]];
+const SEAM_PALETTE: [[u8; 3]; 6] = [
+    [0x4c, 0xc9, 0xf0],
+    [0xf7, 0xb8, 0x01],
+    [0x80, 0xed, 0x99],
+    [0xf7, 0x25, 0x85],
+    [0xb5, 0x8c, 0xff],
+    [0xff, 0x8c, 0x42],
+];
 
 /// Rebuilds `batch` for the current frame. Line widths and handle sizes are
 /// given in pixels and converted with the camera so they stay constant on
@@ -89,7 +98,12 @@ pub fn build(
         highlight_line(batch, doc, highlight, px);
     }
     if overlay.sketch_points.len() >= 2 {
-        batch.polyline(&overlay.sketch_points, false, 2.5 * px, srgba(80, 220, 255, 0.9));
+        batch.polyline(
+            &overlay.sketch_points,
+            false,
+            2.5 * px,
+            srgba(80, 220, 255, 0.9),
+        );
     }
     for point in &overlay.sketch_points {
         batch.disc(*point, 4.0 * px, srgba(80, 220, 255, 1.0));
@@ -103,20 +117,33 @@ pub fn build(
 /// For the seams of the selected piece, thin lines between the points
 /// that are sewn together at either end of each seam: a twisted seam shows
 /// as a cross.
-fn seam_connectors(batch: &mut CanvasBatch, doc: &PatternDocument, overlay: &CanvasOverlay, px: f32) {
-    let Some(selected) = overlay.selected_piece else { return };
+fn seam_connectors(
+    batch: &mut CanvasBatch,
+    doc: &PatternDocument,
+    overlay: &CanvasOverlay,
+    px: f32,
+) {
+    let Some(selected) = overlay.selected_piece else {
+        return;
+    };
     for (index, seam) in doc.seams().iter().enumerate() {
         if seam.a.piece != selected && seam.b.piece != selected {
             continue;
         }
-        let (Some(a), Some(b)) = (doc.piece(seam.a.piece), doc.piece(seam.b.piece)) else { continue };
+        let (Some(a), Some(b)) = (doc.piece(seam.a.piece), doc.piece(seam.b.piece)) else {
+            continue;
+        };
         let ends = |piece: &PatternPiece, span: EdgeSpan| {
             let points = piece.outline.span_points(span, 1.0);
             (points[0], points[points.len() - 1])
         };
         let (a_start, a_end) = ends(a, seam.a_span());
         let (b_start, b_end) = ends(b, seam.b_span());
-        let (b_first, b_last) = if seam.reversed { (b_end, b_start) } else { (b_start, b_end) };
+        let (b_first, b_last) = if seam.reversed {
+            (b_end, b_start)
+        } else {
+            (b_start, b_end)
+        };
         let [r, g, bl] = SEAM_PALETTE[index % SEAM_PALETTE.len()];
         let color = srgba(r, g, bl, 0.75);
         batch.dashed_polyline(&[a_start, b_first], false, px, 5.0 * px, 4.0 * px, color);
@@ -126,8 +153,15 @@ fn seam_connectors(batch: &mut CanvasBatch, doc: &PatternDocument, overlay: &Can
     }
 }
 
-fn highlight_line(batch: &mut CanvasBatch, doc: &PatternDocument, highlight: &LineHighlight, px: f32) {
-    let Some(piece) = doc.piece(highlight.piece) else { return };
+fn highlight_line(
+    batch: &mut CanvasBatch,
+    doc: &PatternDocument,
+    highlight: &LineHighlight,
+    px: f32,
+) {
+    let Some(piece) = doc.piece(highlight.piece) else {
+        return;
+    };
     let points = piece.outline.span_points(highlight.span, 0.5 * px);
     if points.len() < 2 {
         return;
@@ -136,7 +170,10 @@ fn highlight_line(batch: &mut CanvasBatch, doc: &PatternDocument, highlight: &Li
     if let Some(at_end) = highlight.start_at_end {
         // The end the seam starts at, with an arrow along the line.
         let (tip, next) = if at_end {
-            (points[points.len() - 1], points[points.len().saturating_sub(4).max(0)])
+            (
+                points[points.len() - 1],
+                points[points.len().saturating_sub(4).max(0)],
+            )
         } else {
             (points[0], points[3.min(points.len() - 1)])
         };
@@ -145,8 +182,18 @@ fn highlight_line(batch: &mut CanvasBatch, doc: &PatternDocument, highlight: &Li
         let direction = (next - tip).normalize_or_zero();
         let head = tip + direction * 22.0 * px;
         batch.segment(tip, head, 2.0 * px, highlight.color);
-        batch.segment(head, head - direction * 7.0 * px + direction.perp() * 5.0 * px, 2.0 * px, highlight.color);
-        batch.segment(head, head - direction * 7.0 * px - direction.perp() * 5.0 * px, 2.0 * px, highlight.color);
+        batch.segment(
+            head,
+            head - direction * 7.0 * px + direction.perp() * 5.0 * px,
+            2.0 * px,
+            highlight.color,
+        );
+        batch.segment(
+            head,
+            head - direction * 7.0 * px - direction.perp() * 5.0 * px,
+            2.0 * px,
+            highlight.color,
+        );
     }
 }
 
@@ -155,7 +202,10 @@ fn grid(batch: &mut CanvasBatch, camera: &Camera2D, viewport: Vec2) {
     let (min, max) = camera.visible(viewport);
     // 10 mm lines fade in once they are at least ~8 px apart; 100 mm lines
     // are always shown.
-    for (step, color) in [(10.0f32, srgba(255, 255, 255, 0.035)), (100.0, srgba(255, 255, 255, 0.08))] {
+    for (step, color) in [
+        (10.0f32, srgba(255, 255, 255, 0.035)),
+        (100.0, srgba(255, 255, 255, 0.08)),
+    ] {
         if step * camera.zoom < 8.0 {
             continue;
         }
@@ -184,12 +234,19 @@ fn fill(
     wireframe: bool,
     px: f32,
 ) {
-    let Some(span) = mesh.span(piece.id) else { return };
-    let positions = &mesh.pattern_positions[span.vertices.start as usize..span.vertices.end as usize];
+    let Some(span) = mesh.span(piece.id) else {
+        return;
+    };
+    let positions =
+        &mesh.pattern_positions[span.vertices.start as usize..span.vertices.end as usize];
     let indices = &mesh.indices[span.indices.start as usize..span.indices.end as usize];
     let [r, g, b] = doc.fabric(piece.fabric).map_or([0.5; 3], |f| f.base_color);
     let alpha = if selected { 0.42 } else { 0.28 };
-    batch.triangles(positions, indices.iter().map(|i| i - span.vertices.start), [r, g, b, alpha]);
+    batch.triangles(
+        positions,
+        indices.iter().map(|i| i - span.vertices.start),
+        [r, g, b, alpha],
+    );
 
     if wireframe {
         let color = srgba(255, 255, 255, 0.16);
@@ -200,7 +257,12 @@ fn fill(
             .map(|(a, b)| (a.min(b), a.max(b)))
             .collect();
         for (a, b) in edges {
-            batch.segment(mesh.pattern_positions[a as usize], mesh.pattern_positions[b as usize], px, color);
+            batch.segment(
+                mesh.pattern_positions[a as usize],
+                mesh.pattern_positions[b as usize],
+                px,
+                color,
+            );
         }
     }
 }
@@ -209,7 +271,14 @@ fn annotations(batch: &mut CanvasBatch, piece: &PatternPiece, overlay: &CanvasOv
     if overlay.show_seam_allowance
         && let Some(cut_line) = piece.seam_allowance_outline(0.25)
     {
-        batch.dashed_polyline(&cut_line, true, px, 6.0 * px, 4.0 * px, srgba(220, 220, 230, 0.55));
+        batch.dashed_polyline(
+            &cut_line,
+            true,
+            px,
+            6.0 * px,
+            4.0 * px,
+            srgba(220, 220, 230, 0.55),
+        );
     }
 
     // Grainline: a double-headed arrow.
@@ -225,7 +294,9 @@ fn annotations(batch: &mut CanvasBatch, piece: &PatternPiece, overlay: &CanvasOv
 
     let color = srgba(255, 214, 102, 1.0);
     for notch in &piece.notches {
-        let Some((at, inward)) = piece.notch_frame(notch) else { continue };
+        let Some((at, inward)) = piece.notch_frame(notch) else {
+            continue;
+        };
         let tip = at + inward * notch.depth;
         let half = inward.perp() * notch.depth * 0.5;
         match notch.kind {
@@ -267,7 +338,10 @@ fn buttons(batch: &mut CanvasBatch, piece: &PatternPiece, px: f32) {
                 batch.disc(at, r * 0.78, shade(0.8));
                 let spread = r * 0.3;
                 let holes: Vec<Vec2> = if button.style == ButtonStyle::FourHole {
-                    [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].iter().map(|&(x, y)| at + Vec2::new(x, y) * spread * 0.75).collect()
+                    [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                        .iter()
+                        .map(|&(x, y)| at + Vec2::new(x, y) * spread * 0.75)
+                        .collect()
                 } else {
                     vec![at - Vec2::X * spread, at + Vec2::X * spread]
                 };
@@ -308,20 +382,35 @@ fn buttons(batch: &mut CanvasBatch, piece: &PatternPiece, px: f32) {
     }
 }
 
-fn outline(batch: &mut CanvasBatch, doc: &PatternDocument, piece: &PatternPiece, selected: bool, px: f32) {
+fn outline(
+    batch: &mut CanvasBatch,
+    doc: &PatternDocument,
+    piece: &PatternPiece,
+    selected: bool,
+    px: f32,
+) {
     for edge in 0..piece.outline.edge_count() {
         let width = if selected { 2.5 * px } else { 1.75 * px };
         let color = {
             match doc.seam_of(EdgeRef::new(piece.id, edge)) {
                 Some(seam) => {
-                    let index = doc.seams().iter().position(|s| s.id == seam.id).unwrap_or(0);
+                    let index = doc
+                        .seams()
+                        .iter()
+                        .position(|s| s.id == seam.id)
+                        .unwrap_or(0);
                     let [r, g, b] = SEAM_PALETTE[index % SEAM_PALETTE.len()];
                     srgba(r, g, b, 1.0)
                 }
                 None => srgba(236, 236, 240, 1.0),
             }
         };
-        batch.polyline(&piece.outline.curve(edge).flatten(0.5 * px), false, width, color);
+        batch.polyline(
+            &piece.outline.curve(edge).flatten(0.5 * px),
+            false,
+            width,
+            color,
+        );
     }
 }
 
@@ -335,7 +424,10 @@ fn handles(batch: &mut CanvasBatch, piece: &PatternPiece, overlay: &CanvasOverla
         }
     }
     for (kind, position) in piece.outline.handles() {
-        let handle = Some(HandleRef { piece: piece.id, kind });
+        let handle = Some(HandleRef {
+            piece: piece.id,
+            kind,
+        });
         let (emphasis, color) = if overlay.active == handle {
             (1.5, srgba(255, 160, 60, 1.0))
         } else if overlay.hovered == handle {
@@ -346,7 +438,9 @@ fn handles(batch: &mut CanvasBatch, piece: &PatternPiece, overlay: &CanvasOverla
         let border = srgba(20, 22, 28, 1.0);
         match kind {
             // Turn points are squares, curve points (smooth) are round.
-            HandleKind::Anchor(i) if piece.outline.points()[i as usize].kind == PointKind::Corner => {
+            HandleKind::Anchor(i)
+                if piece.outline.points()[i as usize].kind == PointKind::Corner =>
+            {
                 batch.square(position, 4.5 * emphasis * px, border);
                 batch.square(position, 3.25 * emphasis * px, color);
             }

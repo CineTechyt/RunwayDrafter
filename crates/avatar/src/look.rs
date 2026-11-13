@@ -79,12 +79,18 @@ impl HairStyle {
 
     /// Whether [`Hair::length`] does anything for this style.
     pub fn has_length(self) -> bool {
-        matches!(self, HairStyle::Bob | HairStyle::Long | HairStyle::Ponytail | HairStyle::Mullet)
+        matches!(
+            self,
+            HairStyle::Bob | HairStyle::Long | HairStyle::Ponytail | HairStyle::Mullet
+        )
     }
 
     /// Clipped sides that fade towards the skin.
     fn faded(self) -> bool {
-        matches!(self, HairStyle::TaperFade | HairStyle::Mullet | HairStyle::Quiff)
+        matches!(
+            self,
+            HairStyle::TaperFade | HairStyle::Mullet | HairStyle::Quiff
+        )
     }
 
     /// Combed back from the forehead rather than falling from the crown.
@@ -123,7 +129,13 @@ pub struct Hair {
 
 impl Default for Hair {
     fn default() -> Self {
-        Self { style: HairStyle::Short, color: [0.06, 0.035, 0.02], length: 0.0, volume: 0.5, fringe: false }
+        Self {
+            style: HairStyle::Short,
+            color: [0.06, 0.035, 0.02],
+            length: 0.0,
+            volume: 0.5,
+            fringe: false,
+        }
     }
 }
 
@@ -139,7 +151,11 @@ pub struct Appearance {
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { skin: [0.62, 0.42, 0.31], eyes: [0.10, 0.17, 0.25], hair: Hair::default() }
+        Self {
+            skin: [0.62, 0.42, 0.31],
+            eyes: [0.10, 0.17, 0.25],
+            hair: Hair::default(),
+        }
     }
 }
 
@@ -164,7 +180,14 @@ impl LookMesh {
         self.push_thin(position, normal, uv, color, 1.0)
     }
 
-    fn push_thin(&mut self, position: Vec3, normal: Vec3, uv: Vec2, color: [f32; 3], coverage: f32) -> u32 {
+    fn push_thin(
+        &mut self,
+        position: Vec3,
+        normal: Vec3,
+        uv: Vec2,
+        color: [f32; 3],
+        coverage: f32,
+    ) -> u32 {
         self.coverage.push(coverage);
         self.positions.push(position);
         self.normals.push(normal);
@@ -208,23 +231,37 @@ pub struct Head {
 impl Head {
     /// Finds the head of a body that has eyes (the built-in body model).
     pub fn find(body: &BodyMesh) -> Option<Head> {
-        let mut eye_vertices: Vec<u32> = body.triangles[body.skin_triangles..].iter().flatten().copied().collect();
+        let mut eye_vertices: Vec<u32> = body.triangles[body.skin_triangles..]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
         eye_vertices.sort_unstable();
         eye_vertices.dedup();
         let eye = |side: f32| -> Option<(Vec3, f32)> {
-            let points: Vec<Vec3> =
-                eye_vertices.iter().map(|&i| body.positions[i as usize]).filter(|p| p.x * side > 0.0).collect();
+            let points: Vec<Vec3> = eye_vertices
+                .iter()
+                .map(|&i| body.positions[i as usize])
+                .filter(|p| p.x * side > 0.0)
+                .collect();
             if points.len() < 8 {
                 return None;
             }
             let centre = points.iter().copied().sum::<Vec3>() / points.len() as f32;
-            let radius = points.iter().map(|p| p.distance(centre)).sum::<f32>() / points.len() as f32;
+            let radius =
+                points.iter().map(|p| p.distance(centre)).sum::<f32>() / points.len() as f32;
             Some((centre, radius))
         };
         let eyes = [eye(-1.0)?, eye(1.0)?];
         let eye_line = 0.5 * (eyes[0].0 + eyes[1].0);
-        let near_head = |p: &&Vec3| p.x.abs() < 0.13 && (p.z - eye_line.z).abs() < 0.2 && p.y > eye_line.y;
-        let crown = body.positions.iter().filter(near_head).map(|p| p.y).fold(f32::MIN, f32::max);
+        let near_head =
+            |p: &&Vec3| p.x.abs() < 0.13 && (p.z - eye_line.z).abs() < 0.2 && p.y > eye_line.y;
+        let crown = body
+            .positions
+            .iter()
+            .filter(near_head)
+            .map(|p| p.y)
+            .fold(f32::MIN, f32::max);
         if crown <= eye_line.y {
             return None;
         }
@@ -237,8 +274,14 @@ impl Head {
             .iter()
             .filter(band)
             .filter(|p| p.x.abs() < 0.04 && p.z < eye_line.z + 0.1 && p.z > eye_line.z - 0.35)
-            .fold((f32::MIN, f32::MAX), |(front, back), p| (front.max(p.z), back.min(p.z)));
-        let axis_z = if front > back { 0.5 * (front + back) } else { eye_line.z - 0.08 };
+            .fold((f32::MIN, f32::MAX), |(front, back), p| {
+                (front.max(p.z), back.min(p.z))
+            });
+        let axis_z = if front > back {
+            0.5 * (front + back)
+        } else {
+            eye_line.z - 0.08
+        };
         let skull = body
             .positions
             .iter()
@@ -246,7 +289,13 @@ impl Head {
             .filter(|p| (p.z - axis_z).abs() < 0.12 && p.x.abs() < 0.15)
             .map(|p| p.x.abs())
             .fold(0.0, f32::max);
-        Some(Head { eyes, eye_line, crown, axis_z, skull: skull.max(0.05) })
+        Some(Head {
+            eyes,
+            eye_line,
+            crown,
+            axis_z,
+            skull: skull.max(0.05),
+        })
     }
 
     /// Eyes to crown: the unit the head's features are measured in.
@@ -267,7 +316,11 @@ impl Head {
 
     /// The point at `radius` from the axis, at `azimuth` and height `y`.
     fn around(&self, azimuth: f32, y: f32, radius: f32) -> Vec3 {
-        Vec3::new(azimuth.sin() * radius, y, self.axis_z + azimuth.cos() * radius)
+        Vec3::new(
+            azimuth.sin() * radius,
+            y,
+            self.axis_z + azimuth.cos() * radius,
+        )
     }
 
     /// How much `p` is part of an ear, 0..=1: what sticks out sideways past
@@ -306,7 +359,10 @@ impl Head {
             (std::f32::consts::PI, -0.8),
         ];
         let a = azimuth.abs();
-        let k = LINE.windows(2).position(|w| a <= w[1].0).unwrap_or(LINE.len() - 2);
+        let k = LINE
+            .windows(2)
+            .position(|w| a <= w[1].0)
+            .unwrap_or(LINE.len() - 2);
         let ((a0, h0), (a1, h1)) = (LINE[k], LINE[k + 1]);
         h0 + (h1 - h0) * ((a - a0) / (a1 - a0)).clamp(0.0, 1.0)
     }
@@ -334,11 +390,19 @@ impl Head {
         let cover = smoothstep(0.05, 0.9, m);
         // Fuller on top than at the sides and back.
         let profile = 0.6 + 0.4 * smoothstep(0.2, 0.8, level);
-        let full = Growth { lift: 0.0015 + thickness * profile * m, coverage: cover, length: 1.0 };
+        let full = Growth {
+            lift: 0.0015 + thickness * profile * m,
+            coverage: cover,
+            length: 1.0,
+        };
         match hair.style {
             HairStyle::Bald => Growth::default(),
             // A close crop never covers the scalp completely.
-            HairStyle::Buzz => Growth { lift: 0.0008 + 0.0012 * m, coverage: 0.72 * cover, length: 0.0 },
+            HairStyle::Buzz => Growth {
+                lift: 0.0008 + 0.0012 * m,
+                coverage: 0.72 * cover,
+                length: 0.0,
+            },
             style if style.faded() => {
                 // Where the long top begins: a band around the head's
                 // widest point; the front is all top. A mullet keeps its
@@ -350,7 +414,11 @@ impl Head {
                 // Up the sides the clipped hair gets longer and denser.
                 let above = level - self.hairline(a);
                 let fade = smoothstep(0.0, 0.6, above);
-                let side = Growth { lift: 0.0006 + 0.004 * fade, coverage: (0.2 + 0.65 * fade) * cover, length: 0.15 * fade };
+                let side = Growth {
+                    lift: 0.0006 + 0.004 * fade,
+                    coverage: (0.2 + 0.65 * fade) * cover,
+                    length: 0.15 * fade,
+                };
                 let mut top_lift = full.lift;
                 if style == HairStyle::Quiff {
                     // Swept up off the forehead into a rounded crest.
@@ -384,7 +452,11 @@ struct Growth {
 /// hair combed back.
 pub fn hair_root(head: &Head, hair: &Hair) -> Vec3 {
     if hair.style.combed_back() {
-        Vec3::new(0.0, head.eye_line.y + 0.35 * head.unit(), head.eye_line.z + 0.03)
+        Vec3::new(
+            0.0,
+            head.eye_line.y + 0.35 * head.unit(),
+            head.eye_line.z + 0.03,
+        )
     } else {
         Vec3::new(0.0, head.crown, head.axis_z - 0.02)
     }
@@ -432,8 +504,13 @@ pub fn skin_colors(body: &BodyMesh, head: Option<&Head>, look: &Appearance) -> V
         .zip(&body.normals)
         .map(|(&p, &n)| {
             let density = head.growth(p, &look.hair, 0.0).coverage;
-            let skin = if density > 0.0 { mix(skin, roots, under * density) } else { skin };
-            if n.z < 0.1 || p.z < head.eye_line.z - 0.01 || (p.y - head.eye_line.y).abs() > 1.2 * s {
+            let skin = if density > 0.0 {
+                mix(skin, roots, under * density)
+            } else {
+                skin
+            };
+            if n.z < 0.1 || p.z < head.eye_line.z - 0.01 || (p.y - head.eye_line.y).abs() > 1.2 * s
+            {
                 return skin;
             }
             let mut color = skin;
@@ -449,7 +526,10 @@ pub fn skin_colors(body: &BodyMesh, head: Option<&Head>, look: &Appearance) -> V
                 }
             }
             // Lips: an ellipse under the nose.
-            let mouth = Vec2::new(p.x / (0.24 * s), (p.y - (head.eye_line.y - 0.62 * s)) / (0.1 * s));
+            let mouth = Vec2::new(
+                p.x / (0.24 * s),
+                (p.y - (head.eye_line.y - 0.62 * s)) / (0.1 * s),
+            );
             let lip = 1.0 - smoothstep(0.7, 1.05, mouth.length());
             mix(color, lips, lip)
         })
@@ -463,8 +543,26 @@ pub fn eyeballs(head: &Head, look: &Appearance) -> LookMesh {
     const IRIS: f32 = 0.40;
     // Rings by angle from the line of sight, dense around the iris so its
     // edges stay round.
-    let rings: Vec<f32> = [0.0, 0.07, PUPIL, PUPIL + 0.025, 0.23, 0.3, 0.36, IRIS, IRIS + 0.03, 0.58, 0.8, 1.05, 1.35, 1.7, 2.1, 2.6, std::f32::consts::PI]
-        .to_vec();
+    let rings: Vec<f32> = [
+        0.0,
+        0.07,
+        PUPIL,
+        PUPIL + 0.025,
+        0.23,
+        0.3,
+        0.36,
+        IRIS,
+        IRIS + 0.03,
+        0.58,
+        0.8,
+        1.05,
+        1.35,
+        1.7,
+        2.1,
+        2.6,
+        std::f32::consts::PI,
+    ]
+    .to_vec();
     let sectors = 36u32;
     let iris = look.eyes;
     let sclera = [0.80, 0.77, 0.72];
@@ -474,7 +572,11 @@ pub fn eyeballs(head: &Head, look: &Appearance) -> LookMesh {
         for s in 0..=sectors {
             let around = s as f32 / sectors as f32 * std::f32::consts::TAU;
             for &theta in &rings {
-                let normal = Vec3::new(theta.sin() * around.cos(), theta.sin() * around.sin(), theta.cos());
+                let normal = Vec3::new(
+                    theta.sin() * around.cos(),
+                    theta.sin() * around.sin(),
+                    theta.cos(),
+                );
                 let color = if theta < PUPIL {
                     [0.005; 3]
                 } else if theta <= IRIS {
@@ -488,7 +590,12 @@ pub fn eyeballs(head: &Head, look: &Appearance) -> LookMesh {
                     let shade = 1.0 - 0.25 * smoothstep(0.6, 1.4, theta);
                     sclera.map(|c| c * shade)
                 };
-                mesh.push(centre + normal * radius, normal, Vec2::new(around, theta), color);
+                mesh.push(
+                    centre + normal * radius,
+                    normal,
+                    Vec2::new(around, theta),
+                    color,
+                );
             }
         }
         let rows = rings.len() as u32;
@@ -512,7 +619,12 @@ impl Outline {
         let step = 0.005;
         let rows = (head.crown / step).ceil() as usize + 2;
         let mut radius = vec![0.0f32; rows * Self::AZIMUTHS];
-        let shoulder = body.shoulder_points.map(|i| body.positions.get(i as usize).copied().unwrap_or(Vec3::ZERO));
+        let shoulder = body.shoulder_points.map(|i| {
+            body.positions
+                .get(i as usize)
+                .copied()
+                .unwrap_or(Vec3::ZERO)
+        });
         let torso_half_width = shoulder[0].x.abs().max(shoulder[1].x.abs()).max(0.12) + 0.03;
         let shoulder_top = shoulder[0].y.max(shoulder[1].y) + 0.06;
         for p in &body.positions {
@@ -564,10 +676,15 @@ impl Outline {
                     }
                 }
                 // Never below the body itself.
-                smooth[row * Self::AZIMUTHS + bin] = (sum / count).max(radius[row * Self::AZIMUTHS + bin]);
+                smooth[row * Self::AZIMUTHS + bin] =
+                    (sum / count).max(radius[row * Self::AZIMUTHS + bin]);
             }
         }
-        Self { azimuths: Self::AZIMUTHS, step, radius: smooth }
+        Self {
+            azimuths: Self::AZIMUTHS,
+            step,
+            radius: smooth,
+        }
     }
 
     fn bin(azimuth: f32) -> usize {
@@ -607,10 +724,16 @@ pub fn hair(body: &BodyMesh, head: &Head, look: &Appearance) -> LookMesh {
     let outline = Outline::new(body, head);
     let length = hair.length.clamp(0.08, 1.2);
     match hair.style {
-        HairStyle::Bob => curtain(&mut mesh, head, &outline, look, thickness, 1.05, length, false),
-        HairStyle::Long => curtain(&mut mesh, head, &outline, look, thickness, 1.2, length, true),
+        HairStyle::Bob => curtain(
+            &mut mesh, head, &outline, look, thickness, 1.05, length, false,
+        ),
+        HairStyle::Long => curtain(
+            &mut mesh, head, &outline, look, thickness, 1.2, length, true,
+        ),
         HairStyle::Ponytail => ponytail(&mut mesh, head, &outline, look, thickness, length),
-        HairStyle::Mullet => curtain(&mut mesh, head, &outline, look, thickness, 2.15, length, false),
+        HairStyle::Mullet => curtain(
+            &mut mesh, head, &outline, look, thickness, 2.15, length, false,
+        ),
         HairStyle::Bun => bun(&mut mesh, head, &outline, look, thickness),
         _ => {}
     }
@@ -624,10 +747,17 @@ pub fn hair(body: &BodyMesh, head: &Head, look: &Appearance) -> LookMesh {
 /// thickest on top, thinning out over the hairline.
 fn shell(mesh: &mut LookMesh, body: &BodyMesh, head: &Head, look: &Appearance, thickness: f32) {
     let skin = &body.triangles[..body.skin_triangles];
-    let growth: Vec<Growth> = body.positions.iter().map(|&p| head.growth(p, &look.hair, thickness)).collect();
+    let growth: Vec<Growth> = body
+        .positions
+        .iter()
+        .map(|&p| head.growth(p, &look.hair, thickness))
+        .collect();
     let mut remap = vec![u32::MAX; body.positions.len()];
     for triangle in skin {
-        if triangle.iter().all(|&i| growth[i as usize].coverage <= 0.02) {
+        if triangle
+            .iter()
+            .all(|&i| growth[i as usize].coverage <= 0.02)
+        {
             continue;
         }
         let corners = triangle.map(|i| {
@@ -649,11 +779,33 @@ fn shell(mesh: &mut LookMesh, body: &BodyMesh, head: &Head, look: &Appearance, t
 /// side; `gather` draws it behind the shoulders as it falls. Two layers:
 /// a darker one underneath gives the hair depth where the outer one thins.
 #[allow(clippy::too_many_arguments)]
-fn curtain(mesh: &mut LookMesh, head: &Head, outline: &Outline, look: &Appearance, thickness: f32, front: f32, length: f32, gather: bool) {
+fn curtain(
+    mesh: &mut LookMesh,
+    head: &Head,
+    outline: &Outline,
+    look: &Appearance,
+    thickness: f32,
+    front: f32,
+    length: f32,
+    gather: bool,
+) {
     let volume = look.hair.volume.clamp(0.0, 1.0);
     let inset = 0.004 + 0.006 * volume;
-    curtain_layer(mesh, head, outline, look, thickness, front, length * 0.94, gather, -inset, 0.45);
-    curtain_layer(mesh, head, outline, look, thickness, front, length, gather, 0.0, 1.0);
+    curtain_layer(
+        mesh,
+        head,
+        outline,
+        look,
+        thickness,
+        front,
+        length * 0.94,
+        gather,
+        -inset,
+        0.45,
+    );
+    curtain_layer(
+        mesh, head, outline, look, thickness, front, length, gather, 0.0, 1.0,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -694,7 +846,8 @@ fn curtain_layer(
             let y = top + (bottom - top) * v;
             // Long hair is drawn in behind the shoulders as it falls.
             let squeeze = if gather {
-                1.0 - 0.62 * smoothstep(head.eye_line.y - 0.3 * s, neck - 0.3 * s, y) - 0.08 * smoothstep(neck, shoulders, y)
+                1.0 - 0.62 * smoothstep(head.eye_line.y - 0.3 * s, neck - 0.3 * s, y)
+                    - 0.08 * smoothstep(neck, shoulders, y)
             } else {
                 1.0
             };
@@ -702,18 +855,30 @@ fn curtain_layer(
             let body = outline.at(azimuth, y);
             // Lies on the head, then hangs: it may come in towards the
             // neck only slowly, and never into the body.
-            let clearance = if y > neck { thickness * 0.85 } else { 0.008 + 0.01 * volume };
-            radius = if r == 0 { body + clearance } else { (radius - 0.6 * (last_y - y)).max(body + clearance) };
+            let clearance = if y > neck {
+                thickness * 0.85
+            } else {
+                0.008 + 0.01 * volume
+            };
+            radius = if r == 0 {
+                body + clearance
+            } else {
+                (radius - 0.6 * (last_y - y)).max(body + clearance)
+            };
             last_y = y;
             let u = across * span * 0.09;
             let phase = hash((u / clump).floor() as i32 + 31) * std::f32::consts::TAU;
-            let wave = (u / clump * std::f32::consts::TAU + phase).sin() * ripple * smoothstep(0.05, 0.5, v);
+            let wave = (u / clump * std::f32::consts::TAU + phase).sin()
+                * ripple
+                * smoothstep(0.05, 0.5, v);
             let placed = (radius + offset + wave).max(body + 0.003);
             // Strands end over the last part of the length, and thin out
             // at the sides by the face.
             // It also fades in at the top, where it comes out from under
             // the scalp layer.
-            let coverage = (1.0 - smoothstep(0.8, 1.0, v)) * (1.0 - smoothstep(0.88, 1.0, across.abs())) * smoothstep(0.0, 0.06, v);
+            let coverage = (1.0 - smoothstep(0.8, 1.0, v))
+                * (1.0 - smoothstep(0.88, 1.0, across.abs()))
+                * smoothstep(0.0, 0.06, v);
             grid.push((head.around(azimuth, y, placed), u, coverage));
         }
     }
@@ -733,7 +898,13 @@ fn curtain_layer(
             // Darker at the roots, under the head.
             let v = r as f32 / (rows - 1) as f32;
             let k = shade * (0.7 + 0.3 * smoothstep(0.0, 0.3, v));
-            mesh.push_thin(p, normal, Vec2::new(u, 1.0), look.hair.color.map(|x| x * k), coverage);
+            mesh.push_thin(
+                p,
+                normal,
+                Vec2::new(u, 1.0),
+                look.hair.color.map(|x| x * k),
+                coverage,
+            );
         }
     }
     mesh.grid(base, columns as u32, rows as u32, true);
@@ -756,41 +927,73 @@ fn fringe(mesh: &mut LookMesh, head: &Head, outline: &Outline, look: &Appearance
             let radius = outline.at(azimuth, y) + thickness * (1.0 - 0.7 * v) + 0.002;
             let p = head.around(azimuth, y, radius);
             let normal = Vec3::new(azimuth.sin(), 0.25, azimuth.cos()).normalize();
-            let coverage = (1.0 - smoothstep(0.7, 1.0, v)) * (1.0 - smoothstep(0.8, 1.0, across.abs())) * smoothstep(0.0, 0.25, v);
-            mesh.push_thin(p, normal, Vec2::new(azimuth * radius, 1.0), look.hair.color, coverage);
+            let coverage = (1.0 - smoothstep(0.7, 1.0, v))
+                * (1.0 - smoothstep(0.8, 1.0, across.abs()))
+                * smoothstep(0.0, 0.25, v);
+            mesh.push_thin(
+                p,
+                normal,
+                Vec2::new(azimuth * radius, 1.0),
+                look.hair.color,
+                coverage,
+            );
         }
     }
     mesh.grid(base, columns, rows, true);
 }
 
 /// A tube swept along `path` with `radius(t)` for t in 0..=1.
-fn tube(mesh: &mut LookMesh, path: &[Vec3], radius: impl Fn(f32) -> f32, color: [f32; 3], coverage: impl Fn(f32) -> f32) {
+fn tube(
+    mesh: &mut LookMesh,
+    path: &[Vec3],
+    radius: impl Fn(f32) -> f32,
+    color: [f32; 3],
+    coverage: impl Fn(f32) -> f32,
+) {
     let sectors = 18u32;
     let base = mesh.positions.len() as u32;
     let n = path.len();
     for (k, &p) in path.iter().enumerate() {
         let t = k as f32 / (n - 1) as f32;
-        let along = (path[(k + 1).min(n - 1)] - path[k.saturating_sub(1)]).normalize_or(Vec3::NEG_Y);
+        let along =
+            (path[(k + 1).min(n - 1)] - path[k.saturating_sub(1)]).normalize_or(Vec3::NEG_Y);
         let side = along.cross(Vec3::Z).try_normalize().unwrap_or(Vec3::X);
         let up = side.cross(along);
         let r = radius(t);
         for s in 0..=sectors {
             let a = s as f32 / sectors as f32 * std::f32::consts::TAU;
             let normal = side * a.cos() + up * a.sin();
-            mesh.push_thin(p + normal * r, normal, Vec2::new(a * r, 1.0), color, coverage(t));
+            mesh.push_thin(
+                p + normal * r,
+                normal,
+                Vec2::new(a * r, 1.0),
+                color,
+                coverage(t),
+            );
         }
     }
     // Stored ring by ring: rings are "columns" of `sectors + 1`.
     mesh.grid(base, n as u32, sectors + 1, false);
 }
 
-fn ponytail(mesh: &mut LookMesh, head: &Head, outline: &Outline, look: &Appearance, thickness: f32, length: f32) {
+fn ponytail(
+    mesh: &mut LookMesh,
+    head: &Head,
+    outline: &Outline,
+    look: &Appearance,
+    thickness: f32,
+    length: f32,
+) {
     let s = head.unit();
     let volume = look.hair.volume.clamp(0.0, 1.0);
     let thick = 0.016 * (0.75 + 0.6 * volume) * (s / 0.1).clamp(0.7, 1.4);
     let back = std::f32::consts::PI;
     let tie_y = head.eye_line.y + 0.25 * s;
-    let tie = head.around(back, tie_y, outline.at(back, tie_y) + thickness + 0.4 * thick);
+    let tie = head.around(
+        back,
+        tie_y,
+        outline.at(back, tie_y) + thickness + 0.4 * thick,
+    );
     // Out from the head, then down the back, never into it.
     let bottom = (head.crown - length).min(tie_y - 0.05);
     let samples = 40;
@@ -803,10 +1006,20 @@ fn ponytail(mesh: &mut LookMesh, head: &Head, outline: &Outline, look: &Appearan
         let wall = head.axis_z - outline.at(back, y) - r - 0.006;
         // Swings out behind the head before it falls.
         let swing = tie.z - 0.05 * (t * 6.0).min(1.0).sqrt();
-        z = if k == 0 { tie.z } else { z.min(swing.max(z - 0.02)).min(wall) };
+        z = if k == 0 {
+            tie.z
+        } else {
+            z.min(swing.max(z - 0.02)).min(wall)
+        };
         path.push(Vec3::new(0.0, y, z));
     }
-    tube(mesh, &path, |t| thick * taper(t), look.hair.color, |t| 1.0 - smoothstep(0.7, 1.0, t));
+    tube(
+        mesh,
+        &path,
+        |t| thick * taper(t),
+        look.hair.color,
+        |t| 1.0 - smoothstep(0.7, 1.0, t),
+    );
     // The tie: a dark band.
     let band = [path[0], path[0] + (path[1] - path[0]) * 0.6];
     tube(mesh, &band, |_| thick * 0.95, [0.015, 0.015, 0.02], |_| 1.0);
@@ -832,11 +1045,21 @@ fn bun(mesh: &mut LookMesh, head: &Head, outline: &Outline, look: &Appearance, t
         for r in 0..=rings {
             let phi = r as f32 / rings as f32 * std::f32::consts::PI;
             // The strands spiral round the bun.
-            let unit = Vec3::new(phi.sin() * around.cos(), phi.sin() * around.sin(), phi.cos());
+            let unit = Vec3::new(
+                phi.sin() * around.cos(),
+                phi.sin() * around.sin(),
+                phi.cos(),
+            );
             // The pole faces away from the head (−Z).
             let p = centre + Vec3::new(unit.x * radii.x, unit.y * radii.y, -unit.z * radii.z);
-            let normal = Vec3::new(unit.x / radii.x, unit.y / radii.y, -unit.z / radii.z).normalize();
-            mesh.push(p, normal, Vec2::new((around + phi * 1.5) * size, 1.0), look.hair.color);
+            let normal =
+                Vec3::new(unit.x / radii.x, unit.y / radii.y, -unit.z / radii.z).normalize();
+            mesh.push(
+                p,
+                normal,
+                Vec2::new((around + phi * 1.5) * size, 1.0),
+                look.hair.color,
+            );
         }
     }
     mesh.grid(base, sectors + 1, rings + 1, false);

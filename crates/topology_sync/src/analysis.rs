@@ -38,11 +38,22 @@ pub fn strain_map(mesh: &GarmentMesh, out: &mut Vec<f32>) {
 /// body, found by casting a ray from the vertex along the fabric's normal
 /// towards the body (see [`TriangleMesh::clearance`]). Vertices further
 /// than `max_distance` from the body get `max_distance`.
-pub fn clearance_map(mesh: &GarmentMesh, body: &TriangleMesh, max_distance: f32, out: &mut Vec<f32>) {
+pub fn clearance_map(
+    mesh: &GarmentMesh,
+    body: &TriangleMesh,
+    max_distance: f32,
+    out: &mut Vec<f32>,
+) {
     out.clear();
-    out.extend(mesh.positions.iter().zip(&mesh.normals).map(|(&position, &normal)| {
-        body.clearance(Vec3A::from(position), Vec3A::from(normal), max_distance).unwrap_or(max_distance)
-    }));
+    out.extend(
+        mesh.positions
+            .iter()
+            .zip(&mesh.normals)
+            .map(|(&position, &normal)| {
+                body.clearance(Vec3A::from(position), Vec3A::from(normal), max_distance)
+                    .unwrap_or(max_distance)
+            }),
+    );
 }
 
 #[cfg(test)]
@@ -59,7 +70,10 @@ mod tests {
         topology.rebuild(&document);
         let mut strain = Vec::new();
         strain_map(topology.mesh(), &mut strain);
-        assert!(strain.iter().all(|s| s.abs() < 1e-3), "as arranged, nothing is strained");
+        assert!(
+            strain.iter().all(|s| s.abs() < 1e-3),
+            "as arranged, nothing is strained"
+        );
 
         // Scale the whole garment by 8 % about the origin.
         for p in &mut topology.mesh_mut().positions {
@@ -74,7 +88,12 @@ mod tests {
         // A large wall at z = 0 facing +z, and the demo top's front panel
         // moved to hang flat 3 cm in front of it.
         let wall = TriangleMesh::new(
-            vec![Vec3A::new(-5.0, -5.0, 0.0), Vec3A::new(5.0, -5.0, 0.0), Vec3A::new(5.0, 5.0, 0.0), Vec3A::new(-5.0, 5.0, 0.0)],
+            vec![
+                Vec3A::new(-5.0, -5.0, 0.0),
+                Vec3A::new(5.0, -5.0, 0.0),
+                Vec3A::new(5.0, 5.0, 0.0),
+                Vec3A::new(-5.0, 5.0, 0.0),
+            ],
             vec![[0, 1, 2], [0, 2, 3]],
         );
         let document = PatternDocument::demo_top();
@@ -89,6 +108,9 @@ mod tests {
         clearance_map(mesh, &wall, 0.2, &mut clearance);
         assert!(clearance.iter().all(|c| (c - 0.03).abs() < 1e-4));
         clearance_map(mesh, &wall, 0.01, &mut clearance);
-        assert!(clearance.iter().all(|&c| c == 0.01), "beyond the range: capped");
+        assert!(
+            clearance.iter().all(|&c| c == 0.01),
+            "beyond the range: capped"
+        );
     }
 }

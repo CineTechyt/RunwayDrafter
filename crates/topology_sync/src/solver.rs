@@ -109,17 +109,31 @@ impl DistanceField {
             return Vec3::ZERO;
         }
         let g = (p - self.origin) / self.voxel;
-        let max = Vec3::new(self.dims[0] as f32 - 1.0, self.dims[1] as f32 - 1.0, self.dims[2] as f32 - 1.0);
+        let max = Vec3::new(
+            self.dims[0] as f32 - 1.0,
+            self.dims[1] as f32 - 1.0,
+            self.dims[2] as f32 - 1.0,
+        );
         if g.cmplt(Vec3::ZERO).any() || g.cmpge(max).any() {
             return Vec3::ZERO;
         }
         let cell = g.floor();
         let f = g - cell;
         let (x, y, z) = (cell.x as u32, cell.y as u32, cell.z as u32);
-        let at = |dx: u32, dy: u32, dz: u32| self.velocity[(x + dx + self.dims[0] * (y + dy + self.dims[1] * (z + dz))) as usize];
+        let at = |dx: u32, dy: u32, dz: u32| {
+            self.velocity[(x + dx + self.dims[0] * (y + dy + self.dims[1] * (z + dz))) as usize]
+        };
         let lerp = |a: Vec3, b: Vec3, t: f32| a + (b - a) * t;
-        let y0 = lerp(lerp(at(0, 0, 0), at(1, 0, 0), f.x), lerp(at(0, 1, 0), at(1, 1, 0), f.x), f.y);
-        let y1 = lerp(lerp(at(0, 0, 1), at(1, 0, 1), f.x), lerp(at(0, 1, 1), at(1, 1, 1), f.x), f.y);
+        let y0 = lerp(
+            lerp(at(0, 0, 0), at(1, 0, 0), f.x),
+            lerp(at(0, 1, 0), at(1, 1, 0), f.x),
+            f.y,
+        );
+        let y1 = lerp(
+            lerp(at(0, 0, 1), at(1, 0, 1), f.x),
+            lerp(at(0, 1, 1), at(1, 1, 1), f.x),
+            f.y,
+        );
         lerp(y0, y1, f.z)
     }
 
@@ -133,7 +147,11 @@ impl DistanceField {
     #[inline]
     pub fn sample(&self, p: Vec3) -> Option<(f32, Vec3)> {
         let g = (p - self.origin) / self.voxel;
-        let max = Vec3::new(self.dims[0] as f32 - 1.0, self.dims[1] as f32 - 1.0, self.dims[2] as f32 - 1.0);
+        let max = Vec3::new(
+            self.dims[0] as f32 - 1.0,
+            self.dims[1] as f32 - 1.0,
+            self.dims[2] as f32 - 1.0,
+        );
         if g.cmplt(Vec3::ZERO).any() || g.cmpge(max).any() {
             return None;
         }
@@ -146,10 +164,19 @@ impl DistanceField {
         let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
         // Interpolate along x, then y, then z; the gradient is the exact
         // derivative of that interpolant.
-        let (x00, x10, x01, x11) = (lerp(c000, c100, f.x), lerp(c010, c110, f.x), lerp(c001, c101, f.x), lerp(c011, c111, f.x));
+        let (x00, x10, x01, x11) = (
+            lerp(c000, c100, f.x),
+            lerp(c010, c110, f.x),
+            lerp(c001, c101, f.x),
+            lerp(c011, c111, f.x),
+        );
         let (y0, y1) = (lerp(x00, x10, f.y), lerp(x01, x11, f.y));
         let distance = lerp(y0, y1, f.z);
-        let dx = lerp(lerp(c100 - c000, c110 - c010, f.y), lerp(c101 - c001, c111 - c011, f.y), f.z);
+        let dx = lerp(
+            lerp(c100 - c000, c110 - c010, f.y),
+            lerp(c101 - c001, c111 - c011, f.y),
+            f.z,
+        );
         let dy = lerp(x10 - x00, x11 - x01, f.z);
         let dz = y1 - y0;
         Some((distance, Vec3::new(dx, dy, dz) / self.voxel))

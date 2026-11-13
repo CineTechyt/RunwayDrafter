@@ -148,17 +148,27 @@ impl DxfWriter {
     /// the table.
     pub fn layer_table(&mut self, layers: &[u32]) -> &mut Self {
         self.begin_section("TABLES");
-        self.pair(0, "TABLE").pair(2, "LAYER").pair(70, layers.len());
+        self.pair(0, "TABLE")
+            .pair(2, "LAYER")
+            .pair(70, layers.len());
         for layer in layers {
             // 62 = colour number, 6 = line type.
-            self.pair(0, "LAYER").pair(2, layer).pair(70, 0).pair(62, 1 + layer % 7).pair(6, "CONTINUOUS");
+            self.pair(0, "LAYER")
+                .pair(2, layer)
+                .pair(70, 0)
+                .pair(62, 1 + layer % 7)
+                .pair(6, "CONTINUOUS");
         }
         self.pair(0, "ENDTAB");
         self.end_section()
     }
 
     pub fn begin_block(&mut self, name: &str, layer: u32) -> &mut Self {
-        self.pair(0, "BLOCK").pair(8, layer).pair(2, name).pair(70, 0).point(10, Vec2::ZERO)
+        self.pair(0, "BLOCK")
+            .pair(8, layer)
+            .pair(2, name)
+            .pair(70, 0)
+            .point(10, Vec2::ZERO)
     }
 
     pub fn end_block(&mut self, layer: u32) -> &mut Self {
@@ -167,18 +177,27 @@ impl DxfWriter {
 
     /// Places a block.
     pub fn insert(&mut self, block: &str, layer: u32, at: Vec2) -> &mut Self {
-        self.pair(0, "INSERT").pair(8, layer).pair(2, block).point(10, at)
+        self.pair(0, "INSERT")
+            .pair(8, layer)
+            .pair(2, block)
+            .point(10, at)
     }
 
     pub fn line(&mut self, layer: u32, a: Vec2, b: Vec2) -> &mut Self {
-        self.pair(0, "LINE").pair(8, layer).point(10, a).point(11, b)
+        self.pair(0, "LINE")
+            .pair(8, layer)
+            .point(10, a)
+            .point(11, b)
     }
 
     /// A POLYLINE with one VERTEX per point. `closed` sets flag 70 = 1,
     /// which joins the last point to the first.
     pub fn polyline(&mut self, layer: u32, points: &[Vec2], closed: bool) -> &mut Self {
         // 66 = "vertices follow".
-        self.pair(0, "POLYLINE").pair(8, layer).pair(66, 1).pair(70, u32::from(closed));
+        self.pair(0, "POLYLINE")
+            .pair(8, layer)
+            .pair(66, 1)
+            .pair(70, u32::from(closed));
         for &p in points {
             self.pair(0, "VERTEX").pair(8, layer).point(10, p);
         }
@@ -192,14 +211,23 @@ impl DxfWriter {
     /// A notch: a POINT on the cut line whose third coordinate carries the
     /// notch depth and whose angle (degrees from +X) points into the piece.
     pub fn notch(&mut self, layer: u32, p: Vec2, depth: f32, angle_degrees: f32) -> &mut Self {
-        self.point_entity(layer, p).number(30, depth).number(50, angle_degrees)
+        self.point_entity(layer, p)
+            .number(30, depth)
+            .number(50, angle_degrees)
     }
 
     /// Single-line text, `height` in drawing units.
     pub fn text(&mut self, layer: u32, at: Vec2, height: f32, text: &str) -> &mut Self {
         // DXF text is one line of plain characters.
-        let clean: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-        self.pair(0, "TEXT").pair(8, layer).point(10, at).number(40, height).pair(1, clean)
+        let clean: String = text
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        self.pair(0, "TEXT")
+            .pair(8, layer)
+            .point(10, at)
+            .number(40, height)
+            .pair(1, clean)
     }
 
     pub fn finish(mut self) -> String {
@@ -220,7 +248,11 @@ fn classify_points(polygon: &[Vec2]) -> (Vec<Vec2>, Vec<Vec2>) {
     for i in 0..count {
         let incoming = (polygon[i] - polygon[(i + count - 1) % count]).normalize_or_zero();
         let outgoing = (polygon[(i + 1) % count] - polygon[i]).normalize_or_zero();
-        if incoming.dot(outgoing) < 15f32.to_radians().cos() { turns.push(polygon[i]) } else { curves.push(polygon[i]) }
+        if incoming.dot(outgoing) < 15f32.to_radians().cos() {
+            turns.push(polygon[i])
+        } else {
+            curves.push(polygon[i])
+        }
     }
     (turns, curves)
 }
@@ -235,8 +267,17 @@ fn dedup_closed(points: &mut Vec<Vec2>) {
 
 /// A block name readers accept: letters, digits, `_` and `-`, and unique.
 fn block_name(piece: &PatternPiece, used: &mut Vec<String>) -> String {
-    let mut name: String =
-        piece.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_uppercase() } else { '_' }).collect();
+    let mut name: String = piece
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
     if name.is_empty() {
         name = "PIECE".to_owned();
     }
@@ -247,7 +288,13 @@ fn block_name(piece: &PatternPiece, used: &mut Vec<String>) -> String {
     name
 }
 
-fn write_piece(dxf: &mut DxfWriter, document: &PatternDocument, piece: &PatternPiece, name: &str, options: &DxfOptions) {
+fn write_piece(
+    dxf: &mut DxfWriter,
+    document: &PatternDocument,
+    piece: &PatternPiece,
+    name: &str,
+    options: &DxfOptions,
+) {
     let astm = options.standard == DxfStandard::Astm;
     dxf.begin_block(name, layer::BOUNDARY);
 
@@ -266,8 +313,12 @@ fn write_piece(dxf: &mut DxfWriter, document: &PatternDocument, piece: &PatternP
         dxf.polyline(layer::BOUNDARY_VALIDATION, boundary, true);
     }
     let (turns, curves) = classify_points(boundary);
-    turns.iter().for_each(|&p| _ = dxf.point_entity(layer::TURN_POINTS, p));
-    curves.iter().for_each(|&p| _ = dxf.point_entity(layer::CURVE_POINTS, p));
+    turns
+        .iter()
+        .for_each(|&p| _ = dxf.point_entity(layer::TURN_POINTS, p));
+    curves
+        .iter()
+        .for_each(|&p| _ = dxf.point_entity(layer::CURVE_POINTS, p));
 
     if cut_line.is_some() {
         dxf.polyline(layer::SEW_LINE, &sew_line, true);
@@ -278,22 +329,42 @@ fn write_piece(dxf: &mut DxfWriter, document: &PatternDocument, piece: &PatternP
         // exact, where an angle test could misread a tight curve.
         let anchors = piece.outline.points();
         for &p in &sew_line {
-            let corner = anchors.iter().any(|a| a.kind == PointKind::Corner && a.position.distance_squared(p) < 1e-6);
-            dxf.point_entity(if corner { layer::TURN_POINTS } else { layer::CURVE_POINTS }, p);
+            let corner = anchors
+                .iter()
+                .any(|a| a.kind == PointKind::Corner && a.position.distance_squared(p) < 1e-6);
+            dxf.point_entity(
+                if corner {
+                    layer::TURN_POINTS
+                } else {
+                    layer::CURVE_POINTS
+                },
+                p,
+            );
         }
     }
 
     // --- notches ---------------------------------------------------------------
     for notch in &piece.notches {
-        let Some((on_sew_line, inward)) = piece.notch_frame(notch) else { continue };
+        let Some((on_sew_line, inward)) = piece.notch_frame(notch) else {
+            continue;
+        };
         // Notches are cut from the cutting edge inwards.
-        let allowance = if piece.seam_allowance.enabled { piece.seam_allowance.width(notch.edge) } else { 0.0 };
+        let allowance = if piece.seam_allowance.enabled {
+            piece.seam_allowance.width(notch.edge)
+        } else {
+            0.0
+        };
         let position = on_sew_line - inward * allowance;
         let notch_layer = match (notch.kind, astm) {
             (NotchKind::T, true) => layer::T_NOTCHES,
             _ => layer::NOTCHES,
         };
-        dxf.notch(notch_layer, position, notch.depth, inward.to_angle().to_degrees());
+        dxf.notch(
+            notch_layer,
+            position,
+            notch.depth,
+            inward.to_angle().to_degrees(),
+        );
     }
 
     // --- grain line --------------------------------------------------------------
@@ -301,9 +372,15 @@ fn write_piece(dxf: &mut DxfWriter, document: &PatternDocument, piece: &PatternP
     dxf.line(layer::GRAIN_LINE, from, to);
 
     // --- system text ---------------------------------------------------------------
-    let (lo, hi) = boundary.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+    let (lo, hi) = boundary
+        .iter()
+        .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| {
+            (lo.min(p), hi.max(p))
+        });
     let height = ((hi.y - lo.y) * 0.02).clamp(3.0, 10.0);
-    let fabric = document.fabric(piece.fabric).map_or("", |f| f.name.as_str());
+    let fabric = document
+        .fabric(piece.fabric)
+        .map_or("", |f| f.name.as_str());
     let lines = [
         format!("Piece Name: {}", piece.name),
         format!("Size: {}", options.sample_size),
@@ -314,18 +391,28 @@ fn write_piece(dxf: &mut DxfWriter, document: &PatternDocument, piece: &PatternP
     ];
     let centre = (lo + hi) * 0.5;
     for (row, line) in lines.iter().enumerate() {
-        let at = Vec2::new(lo.x + (hi.x - lo.x) * 0.25, centre.y - row as f32 * height * 1.6);
+        let at = Vec2::new(
+            lo.x + (hi.x - lo.x) * 0.25,
+            centre.y - row as f32 * height * 1.6,
+        );
         dxf.text(layer::BOUNDARY, at, height, line);
     }
 
     // --- seam partners, for whoever sews it ----------------------------------------
     for edge in 0..piece.outline.edge_count() {
         let this = EdgeRef::new(piece.id, edge);
-        let Some(seam) = document.seam_of(this) else { continue };
+        let Some(seam) = document.seam_of(this) else {
+            continue;
+        };
         let other = if seam.a == this { seam.b } else { seam.a };
-        let Some(partner) = document.piece(other.piece) else { continue };
+        let Some(partner) = document.piece(other.piece) else {
+            continue;
+        };
         let curve = piece.outline.curve(edge);
-        let label = format!("Seam {}: to {} edge {}", seam.id.0, partner.name, other.edge);
+        let label = format!(
+            "Seam {}: to {} edge {}",
+            seam.id.0, partner.name, other.edge
+        );
         dxf.text(layer::ANNOTATION, curve.eval(0.5), height * 0.6, &label);
     }
 
@@ -337,7 +424,8 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let day_of_era = z.rem_euclid(146_097);
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let mp = (5 * day_of_year + 2) / 153;
     let day = (day_of_year - (153 * mp + 2) / 5 + 1) as u32;
@@ -346,10 +434,15 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 fn now() -> (String, String) {
-    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
     let time = seconds.rem_euclid(86_400);
-    (format!("{day:02}-{month:02}-{year}"), format!("{:02}:{:02}:{:02}", time / 3600, time / 60 % 60, time % 60))
+    (
+        format!("{day:02}-{month:02}-{year}"),
+        format!("{:02}:{:02}:{:02}", time / 3600, time / 60 % 60, time % 60),
+    )
 }
 
 /// Writes every piece of `document` as DXF-AAMA or DXF-ASTM: cut line,
@@ -361,7 +454,9 @@ pub fn export_pattern_dxf(document: &PatternDocument, options: &DxfOptions) -> S
 
     let (mut lo, mut hi) = (Vec2::INFINITY, Vec2::NEG_INFINITY);
     for piece in document.pieces() {
-        let outline = piece.seam_allowance_outline(1.0).unwrap_or_else(|| piece.outline.flatten(1.0).points);
+        let outline = piece
+            .seam_allowance_outline(1.0)
+            .unwrap_or_else(|| piece.outline.flatten(1.0).points);
         for p in outline {
             (lo, hi) = (lo.min(p), hi.max(p));
         }
@@ -381,7 +476,11 @@ pub fn export_pattern_dxf(document: &PatternDocument, options: &DxfOptions) -> S
         layer::ANNOTATION,
     ];
     if astm {
-        layers.extend([layer::T_NOTCHES, layer::BOUNDARY_VALIDATION, layer::SEW_LINE_VALIDATION]);
+        layers.extend([
+            layer::T_NOTCHES,
+            layer::BOUNDARY_VALIDATION,
+            layer::SEW_LINE_VALIDATION,
+        ]);
     }
     dxf.layer_table(&layers);
 
@@ -413,7 +512,12 @@ pub fn export_pattern_dxf(document: &PatternDocument, options: &DxfOptions) -> S
         "Units: METRIC".to_owned(),
     ];
     for (row, line) in style.iter().enumerate() {
-        dxf.text(layer::BOUNDARY, Vec2::new(lo.x, hi.y + 20.0 + (style.len() - row) as f32 * 12.0), 8.0, line);
+        dxf.text(
+            layer::BOUNDARY,
+            Vec2::new(lo.x, hi.y + 20.0 + (style.len() - row) as f32 * 12.0),
+            8.0,
+            line,
+        );
     }
     for name in &names {
         dxf.insert(name, layer::BOUNDARY, Vec2::ZERO);
@@ -444,29 +548,58 @@ mod tests {
     use cad_core::Notch;
 
     /// The entities of block `name` as `(type, layer, pairs)`.
-    fn block<'a>(pairs: &'a [(u32, &'a str)], name: &str) -> Vec<(&'a str, u32, &'a [(u32, &'a str)])> {
-        let start = pairs.windows(3).position(|w| w[0] == (0, "BLOCK") && w[2] == (2, name)).expect("block exists");
-        let end = start + pairs[start..].iter().position(|p| *p == (0, "ENDBLK")).unwrap();
+    fn block<'a>(
+        pairs: &'a [(u32, &'a str)],
+        name: &str,
+    ) -> Vec<(&'a str, u32, &'a [(u32, &'a str)])> {
+        let start = pairs
+            .windows(3)
+            .position(|w| w[0] == (0, "BLOCK") && w[2] == (2, name))
+            .expect("block exists");
+        let end = start
+            + pairs[start..]
+                .iter()
+                .position(|p| *p == (0, "ENDBLK"))
+                .unwrap();
         let body = &pairs[start + 1..end];
-        let starts: Vec<usize> = body.iter().enumerate().filter(|(_, p)| p.0 == 0).map(|(i, _)| i).collect();
+        let starts: Vec<usize> = body
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.0 == 0)
+            .map(|(i, _)| i)
+            .collect();
         starts
             .iter()
             .enumerate()
             .map(|(k, &at)| {
                 let entity = &body[at..starts.get(k + 1).copied().unwrap_or(body.len())];
-                (entity[0].1, entity.iter().find(|p| p.0 == 8).unwrap().1.parse().unwrap(), entity)
+                (
+                    entity[0].1,
+                    entity.iter().find(|p| p.0 == 8).unwrap().1.parse().unwrap(),
+                    entity,
+                )
             })
             .collect()
     }
 
     fn polyline_points(entities: &[(&str, u32, &[(u32, &str)])], on_layer: u32) -> Vec<Vec2> {
-        let start = entities.iter().position(|e| e.0 == "POLYLINE" && e.1 == on_layer).expect("polyline on layer");
+        let start = entities
+            .iter()
+            .position(|e| e.0 == "POLYLINE" && e.1 == on_layer)
+            .expect("polyline on layer");
         assert!(entities[start].2.contains(&(70, "1")), "closed");
         entities[start + 1..]
             .iter()
             .take_while(|e| e.0 == "VERTEX")
             .map(|e| {
-                let value = |code| e.2.iter().find(|p| p.0 == code).unwrap().1.parse::<f32>().unwrap();
+                let value = |code| {
+                    e.2.iter()
+                        .find(|p| p.0 == code)
+                        .unwrap()
+                        .1
+                        .parse::<f32>()
+                        .unwrap()
+                };
                 Vec2::new(value(10), value(20))
             })
             .collect()
@@ -476,7 +609,12 @@ mod tests {
         let mut document = PatternDocument::demo_top();
         let id = document.pieces()[0].id;
         let piece = document.piece_mut(id).unwrap();
-        piece.notches.push(Notch { edge: 0, t: 0.5, kind: NotchKind::T, depth: 6.0 });
+        piece.notches.push(Notch {
+            edge: 0,
+            t: 0.5,
+            kind: NotchKind::T,
+            depth: 6.0,
+        });
         document
     }
 
@@ -502,7 +640,17 @@ mod tests {
         let piece = &document.pieces()[0];
         let text = export_pattern_dxf(&document, &DxfOptions::default());
         let pairs = read_pairs(&text).unwrap();
-        let name: String = piece.name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }).collect();
+        let name: String = piece
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
         let entities = block(&pairs, &name);
 
         // Sew line = the outline; cut line = outline + seam allowance.
@@ -510,47 +658,126 @@ mod tests {
         let cut = polyline_points(&entities, layer::BOUNDARY);
         let outline = piece.outline.flatten(0.1).points;
         assert!((polygon_area(&sew) - polygon_area(&outline)).abs() < 1.0);
-        assert!(polygon_area(&cut) > polygon_area(&sew) * 1.02, "the cut line lies outside the sew line");
+        assert!(
+            polygon_area(&cut) > polygon_area(&sew) * 1.02,
+            "the cut line lies outside the sew line"
+        );
         for anchor in piece.outline.points() {
-            assert!(sew.iter().any(|p| p.distance(anchor.position) < 2e-3), "anchor {} is on the sew line", anchor.position);
+            assert!(
+                sew.iter().any(|p| p.distance(anchor.position) < 2e-3),
+                "anchor {} is on the sew line",
+                anchor.position
+            );
         }
 
         // Every boundary vertex is announced as a turn or a curve point.
-        let points = |on_layer| entities.iter().filter(|e| e.0 == "POINT" && e.1 == on_layer).count();
-        assert_eq!(points(layer::TURN_POINTS) + points(layer::CURVE_POINTS), sew.len() + cut.len());
-        assert!(points(layer::TURN_POINTS) >= 2 * piece.outline.points().iter().filter(|p| p.kind == PointKind::Corner).count() - 2);
+        let points = |on_layer| {
+            entities
+                .iter()
+                .filter(|e| e.0 == "POINT" && e.1 == on_layer)
+                .count()
+        };
+        assert_eq!(
+            points(layer::TURN_POINTS) + points(layer::CURVE_POINTS),
+            sew.len() + cut.len()
+        );
+        assert!(
+            points(layer::TURN_POINTS)
+                >= 2 * piece
+                    .outline
+                    .points()
+                    .iter()
+                    .filter(|p| p.kind == PointKind::Corner)
+                    .count()
+                    - 2
+        );
 
         // The notch sits on the cut line, with its depth; AAMA has no
         // T-notch layer.
-        let notch = entities.iter().find(|e| e.0 == "POINT" && e.1 == layer::NOTCHES).expect("notch");
-        let value = |code| notch.2.iter().find(|p| p.0 == code).unwrap().1.parse::<f32>().unwrap();
+        let notch = entities
+            .iter()
+            .find(|e| e.0 == "POINT" && e.1 == layer::NOTCHES)
+            .expect("notch");
+        let value = |code| {
+            notch
+                .2
+                .iter()
+                .find(|p| p.0 == code)
+                .unwrap()
+                .1
+                .parse::<f32>()
+                .unwrap()
+        };
         assert_eq!(value(30), 6.0);
         let at = Vec2::new(value(10), value(20));
-        assert!(geometry::distance_to_polygon(at, &cut) < 0.05, "notch is on the cut line");
+        assert!(
+            geometry::distance_to_polygon(at, &cut) < 0.05,
+            "notch is on the cut line"
+        );
 
         // The grain line.
-        let grain = entities.iter().find(|e| e.0 == "LINE" && e.1 == layer::GRAIN_LINE).expect("grain line");
-        let value = |code| grain.2.iter().find(|p| p.0 == code).unwrap().1.parse::<f32>().unwrap();
+        let grain = entities
+            .iter()
+            .find(|e| e.0 == "LINE" && e.1 == layer::GRAIN_LINE)
+            .expect("grain line");
+        let value = |code| {
+            grain
+                .2
+                .iter()
+                .find(|p| p.0 == code)
+                .unwrap()
+                .1
+                .parse::<f32>()
+                .unwrap()
+        };
         let (from, to) = piece.grainline.end_points();
-        assert!(Vec2::new(value(10), value(20)).distance(from) < 2e-3 && Vec2::new(value(11), value(21)).distance(to) < 2e-3);
+        assert!(
+            Vec2::new(value(10), value(20)).distance(from) < 2e-3
+                && Vec2::new(value(11), value(21)).distance(to) < 2e-3
+        );
 
-        assert!(entities.iter().any(|e| e.0 == "TEXT" && e.2.contains(&(1, format!("Piece Name: {}", piece.name).as_str()))));
-        assert!(entities.iter().any(|e| e.0 == "TEXT" && e.1 == layer::ANNOTATION), "seam partners are annotated");
+        assert!(entities.iter().any(|e| {
+            e.0 == "TEXT"
+                && e.2
+                    .contains(&(1, format!("Piece Name: {}", piece.name).as_str()))
+        }));
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.0 == "TEXT" && e.1 == layer::ANNOTATION),
+            "seam partners are annotated"
+        );
     }
 
     #[test]
     fn astm_adds_its_header_notch_layers_and_validation_curves() {
         let document = document_with_notch();
-        let options = DxfOptions { standard: DxfStandard::Astm, style_name: "Top 1".to_owned(), ..DxfOptions::default() };
+        let options = DxfOptions {
+            standard: DxfStandard::Astm,
+            style_name: "Top 1".to_owned(),
+            ..DxfOptions::default()
+        };
         let text = export_pattern_dxf(&document, &options);
         let pairs = read_pairs(&text).unwrap();
-        assert!(text.contains("ASTM/D13Proposal 1 Version: D 6673-04\n") && text.contains("Style Name: Top 1\n"));
+        assert!(
+            text.contains("ASTM/D13Proposal 1 Version: D 6673-04\n")
+                && text.contains("Style Name: Top 1\n")
+        );
         let on_layer = |entity: &str, on: u32| {
-            pairs.windows(2).filter(|w| w[0] == (0, entity) && w[1] == (8, on.to_string().as_str())).count()
+            pairs
+                .windows(2)
+                .filter(|w| w[0] == (0, entity) && w[1] == (8, on.to_string().as_str()))
+                .count()
         };
         assert_eq!(on_layer("POINT", layer::T_NOTCHES), 1);
-        assert_eq!(on_layer("POLYLINE", layer::BOUNDARY_VALIDATION), document.pieces().len());
-        assert_eq!(on_layer("POLYLINE", layer::SEW_LINE_VALIDATION), document.pieces().len());
+        assert_eq!(
+            on_layer("POLYLINE", layer::BOUNDARY_VALIDATION),
+            document.pieces().len()
+        );
+        assert_eq!(
+            on_layer("POLYLINE", layer::SEW_LINE_VALIDATION),
+            document.pieces().len()
+        );
     }
 
     #[test]

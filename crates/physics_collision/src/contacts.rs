@@ -60,7 +60,10 @@ pub struct ContactPlane {
 }
 
 impl ContactPlane {
-    pub const NONE: Self = Self { normal: [0.0; 3], offset: 0.0 };
+    pub const NONE: Self = Self {
+        normal: [0.0; 3],
+        offset: 0.0,
+    };
 
     #[inline]
     pub fn is_active(&self) -> bool {
@@ -86,7 +89,10 @@ pub struct ContactParams {
 
 impl Default for ContactParams {
     fn default() -> Self {
-        Self { thickness: 0.0025, layer_reach: 0.02 }
+        Self {
+            thickness: 0.0025,
+            layer_reach: 0.02,
+        }
     }
 }
 
@@ -120,7 +126,12 @@ impl ClothContacts {
     /// `layers` holds one entry per vertex; `stitches` are the vertex pairs
     /// sewn together; `rest` are any positions with undistorted triangles
     /// (used for the mean edge length only).
-    pub fn new(triangles: Vec<[u32; 3]>, layers: Vec<u32>, stitches: &[(u32, u32)], rest: &[Vec3A]) -> Self {
+    pub fn new(
+        triangles: Vec<[u32; 3]>,
+        layers: Vec<u32>,
+        stitches: &[(u32, u32)],
+        rest: &[Vec3A],
+    ) -> Self {
         // Union-find over the stitches.
         let mut groups: Vec<u32> = (0..layers.len() as u32).collect();
         fn root(groups: &mut [u32], mut v: u32) -> u32 {
@@ -148,7 +159,11 @@ impl ClothContacts {
         let layered = layers.iter().any(|&layer| layer != layers[0]);
         Self {
             planes: vec![[ContactPlane::NONE; PLANES_PER_VERTEX]; layers.len()],
-            mean_edge: if count > 0 { (total / count as f64) as f32 } else { 0.0 },
+            mean_edge: if count > 0 {
+                (total / count as f64) as f32
+            } else {
+                0.0
+            },
             triangles,
             layers,
             groups,
@@ -182,7 +197,9 @@ impl ClothContacts {
 
     /// The fabric thickness actually used for a requested one.
     pub fn effective_thickness(&self, requested: f32) -> f32 {
-        requested.min(self.mean_edge * MAX_THICKNESS_PER_EDGE).max(0.0)
+        requested
+            .min(self.mean_edge * MAX_THICKNESS_PER_EDGE)
+            .max(0.0)
     }
 
     /// Finds the contacts for the step that moved the cloth from `start`
@@ -204,15 +221,26 @@ impl ClothContacts {
             return ContactStats::default();
         }
         let thickness = self.effective_thickness(params.thickness);
-        let near = (NEAR_THICKNESSES * thickness).min(MAX_NEAR_PER_EDGE * self.mean_edge).max(thickness);
-        let reach = if self.layered && outward.is_some() { params.layer_reach.max(near) } else { near };
+        let near = (NEAR_THICKNESSES * thickness)
+            .min(MAX_NEAR_PER_EDGE * self.mean_edge)
+            .max(thickness);
+        let reach = if self.layered && outward.is_some() {
+            params.layer_reach.max(near)
+        } else {
+            near
+        };
 
         // Boxes around each triangle's path during the step.
         self.boxes.clear();
         self.boxes.extend(self.triangles.iter().map(|t| {
-            Aabb::from_points(t.iter().flat_map(|&i| [start[i as usize], positions[i as usize]]))
+            Aabb::from_points(
+                t.iter()
+                    .flat_map(|&i| [start[i as usize], positions[i as usize]]),
+            )
         }));
-        if self.bvh.primitive_count() != self.boxes.len() || self.steps_since_build >= REBUILD_INTERVAL {
+        if self.bvh.primitive_count() != self.boxes.len()
+            || self.steps_since_build >= REBUILD_INTERVAL
+        {
             self.bvh = Bvh::build(&self.boxes);
             self.steps_since_build = 0;
         } else {
@@ -229,7 +257,18 @@ impl ClothContacts {
             .zip(&mut touching)
             .enumerate()
             .with_min_len(128)
-            .map(|(v, (planes, touching))| this.vertex_contacts(v as u32, start, end, [thickness, near, reach], params, outward, planes, touching))
+            .map(|(v, (planes, touching))| {
+                this.vertex_contacts(
+                    v as u32,
+                    start,
+                    end,
+                    [thickness, near, reach],
+                    params,
+                    outward,
+                    planes,
+                    touching,
+                )
+            })
             .collect();
         self.planes = planes;
 
@@ -282,7 +321,9 @@ impl ClothContacts {
                 return;
             }
             let [a1, b1, c1] = t.map(|i| end[i as usize]);
-            let Some(normal) = (b1 - a1).cross(c1 - a1).try_normalize() else { return };
+            let Some(normal) = (b1 - a1).cross(c1 - a1).try_normalize() else {
+                return;
+            };
             let (closest, _) = closest_point_on_triangle(p1, a1, b1, c1);
             let offset = p1 - closest;
             let distance = offset.length();
@@ -303,14 +344,20 @@ impl ClothContacts {
                 let signed = height * side;
                 let lateral = (distance * distance - height * height).max(0.0).sqrt();
                 if signed < near && signed > -params.layer_reach && lateral < thickness.max(1e-4) {
-                    contact = Some((normal * side, signed, (0.5 * (signed + thickness)).max(0.5 * thickness), signed < 0.0));
+                    contact = Some((
+                        normal * side,
+                        signed,
+                        (0.5 * (signed + thickness)).max(0.5 * thickness),
+                        signed < 0.0,
+                    ));
                 }
             } else {
                 let [a0, b0, c0] = t.map(|i| start[i as usize]);
                 let start_height = (p0 - a0).dot((b0 - a0).cross(c0 - a0));
                 let passed = start_height * height < 0.0
                     && self.boxes[triangle as usize].overlaps(&path)
-                    && vertex_triangle_impact([p0, p1], [a0, a1], [b0, b1], [c0, c1], 1e-5).is_some();
+                    && vertex_triangle_impact([p0, p1], [a0, a1], [b0, b1], [c0, c1], 1e-5)
+                        .is_some();
                 if passed {
                     // Back to the side it came from.
                     let side = start_height.signum();
@@ -320,18 +367,26 @@ impl ClothContacts {
                     // same obstacle, say): no direction to read off, so
                     // the side it came from decides.
                     if start_height != 0.0 {
-                        contact = Some((normal * start_height.signum(), 0.0, 0.5 * thickness, true));
+                        contact =
+                            Some((normal * start_height.signum(), 0.0, 0.5 * thickness, true));
                     }
                 } else if distance < near {
                     // Resting (closer than the thickness: pushed apart) or
                     // speculative (further: may close half of the spare
                     // distance). Along the true direction, which is not
                     // the face normal next to an edge.
-                    contact = Some((offset / distance, distance, 0.5 * (distance + thickness), false));
+                    contact = Some((
+                        offset / distance,
+                        distance,
+                        0.5 * (distance + thickness),
+                        false,
+                    ));
                 }
             }
 
-            let Some((allowed, signed, target, move_now)) = contact else { return };
+            let Some((allowed, signed, target, move_now)) = contact else {
+                return;
+            };
             let violation = target - signed;
             *touching |= violation > 0.0;
             crossed_any |= move_now;
@@ -339,7 +394,10 @@ impl ClothContacts {
                 fix = Some((violation, p1 + allowed * violation));
             }
             // allowed · (x − closest) ≥ target
-            let plane = ContactPlane { normal: allowed.to_array(), offset: -allowed.dot(closest) - target };
+            let plane = ContactPlane {
+                normal: allowed.to_array(),
+                offset: -allowed.dot(closest) - target,
+            };
             if violation > kept[0] {
                 kept[1] = kept[0];
                 planes[1] = planes[0];
@@ -363,14 +421,18 @@ mod tests {
     /// that vertices face triangle interiors.
     fn two_sheets(gap: f32) -> (Vec<Vec3A>, Vec<[u32; 3]>) {
         let square = |z: f32, shift: f32| {
-            [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(x, y)| Vec3A::new(x + shift, y + 0.5 * shift, z))
+            [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+                .map(|(x, y)| Vec3A::new(x + shift, y + 0.5 * shift, z))
         };
         let positions = [square(0.0, 0.0), square(gap, 0.3)].concat();
         (positions, vec![[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]])
     }
 
     fn params() -> ContactParams {
-        ContactParams { thickness: 0.05, layer_reach: 0.3 }
+        ContactParams {
+            thickness: 0.05,
+            layer_reach: 0.3,
+        }
     }
 
     #[test]
@@ -402,7 +464,11 @@ mod tests {
         let mut contacts = ClothContacts::new(triangles, vec![0; 8], &[], &start);
         let stats = contacts.detect(&start, &mut positions, &params(), None);
         assert!(stats.crossings >= 1);
-        assert!(positions[4].z > 0.0, "vertex 4 is back above the lower sheet: {}", positions[4].z);
+        assert!(
+            positions[4].z > 0.0,
+            "vertex 4 is back above the lower sheet: {}",
+            positions[4].z
+        );
         assert!(contacts.planes()[4][0].normal[2] > 0.99);
     }
 
@@ -413,7 +479,10 @@ mod tests {
         // Sew every vertex of the upper sheet to the lower sheet.
         let stitches: Vec<(u32, u32)> = (0..4).map(|i| (i, i + 4)).collect();
         let mut contacts = ClothContacts::new(triangles, vec![0; 8], &stitches, &positions);
-        assert_eq!(contacts.detect(&start, &mut positions, &params(), None), ContactStats::default());
+        assert_eq!(
+            contacts.detect(&start, &mut positions, &params(), None),
+            ContactStats::default()
+        );
     }
 
     #[test]
@@ -427,7 +496,11 @@ mod tests {
         let mut contacts = ClothContacts::new(triangles.clone(), layers.clone(), &[], &positions);
         let stats = contacts.detect(&start, &mut positions, &params(), Some(&outward));
         assert!(stats.crossings >= 1);
-        assert!(positions[4].z > 0.0, "jacket vertex is outside the shirt: {}", positions[4].z);
+        assert!(
+            positions[4].z > 0.0,
+            "jacket vertex is outside the shirt: {}",
+            positions[4].z
+        );
         // The shirt vertex below the jacket is pushed inwards.
         assert!(contacts.planes()[2][0].normal[2] < -0.99);
 

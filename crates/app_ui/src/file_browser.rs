@@ -41,7 +41,11 @@ impl FileFilter {
         if self.extensions.is_empty() || self.extensions.iter().any(|e| e == "*") {
             return true;
         }
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
         self.extensions.iter().any(|e| e == &ext)
     }
 }
@@ -159,7 +163,10 @@ impl FileBrowserState {
         self.mode = FileBrowserMode::OpenFile;
         self.target_id = "avatar_import".to_owned();
         self.filters = vec![
-            FileFilter::new("Avatar 3D (*.obj, *.gltf, *.glb, *.fbx)", &["obj", "gltf", "glb", "fbx"]),
+            FileFilter::new(
+                "Avatar 3D (*.obj, *.gltf, *.glb, *.fbx)",
+                &["obj", "gltf", "glb", "fbx"],
+            ),
             FileFilter::new("Wavefront OBJ (*.obj)", &["obj"]),
             FileFilter::new("glTF 2.0 (*.gltf, *.glb)", &["gltf", "glb"]),
             FileFilter::new("Autodesk FBX (*.fbx)", &["fbx"]),
@@ -243,7 +250,10 @@ impl FileBrowserState {
 
         let read_res = std::fs::read_dir(&self.current_dir);
         let Ok(read_dir) = read_res else {
-            self.error_message = Some(format!("Cannot open directory: {}", self.current_dir.display()));
+            self.error_message = Some(format!(
+                "Cannot open directory: {}",
+                self.current_dir.display()
+            ));
             return;
         };
 
@@ -291,7 +301,11 @@ impl FileBrowserState {
         self.entries.sort_by(|a, b| {
             // Folders always precede files
             if a.is_dir != b.is_dir {
-                return if a.is_dir { Ordering::Less } else { Ordering::Greater };
+                return if a.is_dir {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                };
             }
 
             let cmp = match col {
@@ -299,7 +313,11 @@ impl FileBrowserState {
                 SortColumn::Size => a.size_bytes.cmp(&b.size_bytes),
             };
 
-            if dir == SortDirection::Ascending { cmp } else { cmp.reverse() }
+            if dir == SortDirection::Ascending {
+                cmp
+            } else {
+                cmp.reverse()
+            }
         });
     }
 
@@ -339,7 +357,11 @@ fn detect_bookmarks() -> Vec<Bookmark> {
     let mut list = Vec::new();
 
     if let Ok(cur) = std::env::current_dir() {
-        list.push(Bookmark { label: "Project".to_owned(), icon: "📂", path: cur });
+        list.push(Bookmark {
+            label: "Project".to_owned(),
+            icon: "📂",
+            path: cur,
+        });
     }
 
     let home = std::env::var_os("HOME")
@@ -347,19 +369,35 @@ fn detect_bookmarks() -> Vec<Bookmark> {
         .map(PathBuf::from);
 
     if let Some(home_path) = home {
-        list.push(Bookmark { label: "Home".to_owned(), icon: "🏠", path: home_path.clone() });
+        list.push(Bookmark {
+            label: "Home".to_owned(),
+            icon: "🏠",
+            path: home_path.clone(),
+        });
 
         let docs = home_path.join("Documents");
         if docs.is_dir() {
-            list.push(Bookmark { label: "Documents".to_owned(), icon: "📄", path: docs });
+            list.push(Bookmark {
+                label: "Documents".to_owned(),
+                icon: "📄",
+                path: docs,
+            });
         }
         let downloads = home_path.join("Downloads");
         if downloads.is_dir() {
-            list.push(Bookmark { label: "Downloads".to_owned(), icon: "📥", path: downloads });
+            list.push(Bookmark {
+                label: "Downloads".to_owned(),
+                icon: "📥",
+                path: downloads,
+            });
         }
         let desktop = home_path.join("Desktop");
         if desktop.is_dir() {
-            list.push(Bookmark { label: "Desktop".to_owned(), icon: "🖥", path: desktop });
+            list.push(Bookmark {
+                label: "Desktop".to_owned(),
+                icon: "🖥",
+                path: desktop,
+            });
         }
     }
 
@@ -396,15 +434,27 @@ fn detect_drives() -> Vec<Bookmark> {
         });
         let media = PathBuf::from("/media");
         if media.is_dir() {
-            drives.push(Bookmark { label: "Media (/media)".to_owned(), icon: "💾", path: media });
+            drives.push(Bookmark {
+                label: "Media (/media)".to_owned(),
+                icon: "💾",
+                path: media,
+            });
         }
         let mnt = PathBuf::from("/mnt");
         if mnt.is_dir() {
-            drives.push(Bookmark { label: "Mounts (/mnt)".to_owned(), icon: "💾", path: mnt });
+            drives.push(Bookmark {
+                label: "Mounts (/mnt)".to_owned(),
+                icon: "💾",
+                path: mnt,
+            });
         }
         let volumes = PathBuf::from("/Volumes");
         if volumes.is_dir() {
-            drives.push(Bookmark { label: "Volumes".to_owned(), icon: "💾", path: volumes });
+            drives.push(Bookmark {
+                label: "Volumes".to_owned(),
+                icon: "💾",
+                path: volumes,
+            });
         }
     }
 
@@ -452,13 +502,25 @@ pub fn show(ctx: &egui::Context, state: &mut FileBrowserState) {
         .show(ctx, |ui| {
             // --- Top Navigation Toolbar ---
             ui.horizontal(|ui| {
-                if ui.add_enabled(state.can_go_back(), egui::Button::new("⬅")).on_hover_text("Back").clicked() {
+                if ui
+                    .add_enabled(state.can_go_back(), egui::Button::new("⬅"))
+                    .on_hover_text("Back")
+                    .clicked()
+                {
                     state.go_back();
                 }
-                if ui.add_enabled(state.can_go_forward(), egui::Button::new("➡")).on_hover_text("Forward").clicked() {
+                if ui
+                    .add_enabled(state.can_go_forward(), egui::Button::new("➡"))
+                    .on_hover_text("Forward")
+                    .clicked()
+                {
                     state.go_forward();
                 }
-                if ui.button("⬆ Up").on_hover_text("Go to parent directory").clicked() {
+                if ui
+                    .button("⬆ Up")
+                    .on_hover_text("Go to parent directory")
+                    .clicked()
+                {
                     state.go_up();
                 }
                 if ui.button("🔃").on_hover_text("Refresh").clicked() {
@@ -472,7 +534,11 @@ pub fn show(ctx: &egui::Context, state: &mut FileBrowserState) {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.checkbox(&mut state.show_hidden, "Hidden");
-                    let search = ui.add(egui::TextEdit::singleline(&mut state.search_query).hint_text("🔍 Search...").desired_width(120.0));
+                    let search = ui.add(
+                        egui::TextEdit::singleline(&mut state.search_query)
+                            .hint_text("🔍 Search...")
+                            .desired_width(120.0),
+                    );
                     if search.changed() {
                         // filter is handled in render
                     }
@@ -520,109 +586,154 @@ pub fn show(ctx: &egui::Context, state: &mut FileBrowserState) {
                 ui.separator();
 
                 // File Table
-                egui::ScrollArea::vertical().max_height(total_height).show(ui, |ui| {
-                    if let Some(err) = &state.error_message {
-                        ui.colored_label(egui::Color32::from_rgb(240, 110, 100), err);
-                        return;
-                    }
+                egui::ScrollArea::vertical()
+                    .max_height(total_height)
+                    .show(ui, |ui| {
+                        if let Some(err) = &state.error_message {
+                            ui.colored_label(egui::Color32::from_rgb(240, 110, 100), err);
+                            return;
+                        }
 
-                    let query = state.search_query.trim().to_lowercase();
-                    let mut navigate_to_folder = None;
-                    let mut file_double_clicked = false;
+                        let query = state.search_query.trim().to_lowercase();
+                        let mut navigate_to_folder = None;
+                        let mut file_double_clicked = false;
 
-                    egui::Grid::new("file_browser_grid")
-                        .num_columns(3)
-                        .striped(true)
-                        .spacing([12.0, 4.0])
-                        .min_col_width(80.0)
-                        .show(ui, |ui| {
-                            // Column Headers with Sorting
-                            ui.horizontal(|ui| {
-                                let sort_indicator = if state.sort_column == SortColumn::Name {
-                                    if state.sort_direction == SortDirection::Ascending { " ⏶" } else { " ⏷" }
-                                } else { "" };
-                                if ui.selectable_label(state.sort_column == SortColumn::Name, format!("Name{sort_indicator}")).clicked() {
-                                    if state.sort_column == SortColumn::Name {
-                                        state.sort_direction = match state.sort_direction {
-                                            SortDirection::Ascending => SortDirection::Descending,
-                                            SortDirection::Descending => SortDirection::Ascending,
-                                        };
+                        egui::Grid::new("file_browser_grid")
+                            .num_columns(3)
+                            .striped(true)
+                            .spacing([12.0, 4.0])
+                            .min_col_width(80.0)
+                            .show(ui, |ui| {
+                                // Column Headers with Sorting
+                                ui.horizontal(|ui| {
+                                    let sort_indicator = if state.sort_column == SortColumn::Name {
+                                        if state.sort_direction == SortDirection::Ascending {
+                                            " ⏶"
+                                        } else {
+                                            " ⏷"
+                                        }
                                     } else {
-                                        state.sort_column = SortColumn::Name;
-                                        state.sort_direction = SortDirection::Ascending;
+                                        ""
+                                    };
+                                    if ui
+                                        .selectable_label(
+                                            state.sort_column == SortColumn::Name,
+                                            format!("Name{sort_indicator}"),
+                                        )
+                                        .clicked()
+                                    {
+                                        if state.sort_column == SortColumn::Name {
+                                            state.sort_direction = match state.sort_direction {
+                                                SortDirection::Ascending => {
+                                                    SortDirection::Descending
+                                                }
+                                                SortDirection::Descending => {
+                                                    SortDirection::Ascending
+                                                }
+                                            };
+                                        } else {
+                                            state.sort_column = SortColumn::Name;
+                                            state.sort_direction = SortDirection::Ascending;
+                                        }
+                                        state.sort_entries();
                                     }
-                                    state.sort_entries();
-                                }
-                            });
+                                });
 
-                            ui.horizontal(|ui| {
-                                let sort_indicator = if state.sort_column == SortColumn::Size {
-                                    if state.sort_direction == SortDirection::Ascending { " ⏶" } else { " ⏷" }
-                                } else { "" };
-                                if ui.selectable_label(state.sort_column == SortColumn::Size, format!("Size{sort_indicator}")).clicked() {
-                                    if state.sort_column == SortColumn::Size {
-                                        state.sort_direction = match state.sort_direction {
-                                            SortDirection::Ascending => SortDirection::Descending,
-                                            SortDirection::Descending => SortDirection::Ascending,
-                                        };
+                                ui.horizontal(|ui| {
+                                    let sort_indicator = if state.sort_column == SortColumn::Size {
+                                        if state.sort_direction == SortDirection::Ascending {
+                                            " ⏶"
+                                        } else {
+                                            " ⏷"
+                                        }
                                     } else {
-                                        state.sort_column = SortColumn::Size;
-                                        state.sort_direction = SortDirection::Ascending;
+                                        ""
+                                    };
+                                    if ui
+                                        .selectable_label(
+                                            state.sort_column == SortColumn::Size,
+                                            format!("Size{sort_indicator}"),
+                                        )
+                                        .clicked()
+                                    {
+                                        if state.sort_column == SortColumn::Size {
+                                            state.sort_direction = match state.sort_direction {
+                                                SortDirection::Ascending => {
+                                                    SortDirection::Descending
+                                                }
+                                                SortDirection::Descending => {
+                                                    SortDirection::Ascending
+                                                }
+                                            };
+                                        } else {
+                                            state.sort_column = SortColumn::Size;
+                                            state.sort_direction = SortDirection::Ascending;
+                                        }
+                                        state.sort_entries();
                                     }
-                                    state.sort_entries();
-                                }
-                            });
+                                });
 
-                            ui.weak("Type");
-                            ui.end_row();
-
-                            for entry in &state.entries {
-                                if !query.is_empty() && !entry.name.to_lowercase().contains(&query) {
-                                    continue;
-                                }
-
-                                let is_selected = state.selected_file.as_ref() == Some(&entry.path);
-                                let icon = if entry.is_dir { "📁" } else { get_file_icon(&entry.name) };
-                                let display_text = format!("{icon} {}", entry.name);
-
-                                let label_resp = ui.selectable_label(is_selected, display_text);
-                                if label_resp.clicked() {
-                                    if entry.is_dir {
-                                        // single click selects or prepares
-                                    } else {
-                                        state.selected_file = Some(entry.path.clone());
-                                        state.file_name_input = entry.name.clone();
-                                    }
-                                }
-                                if label_resp.double_clicked() {
-                                    if entry.is_dir {
-                                        navigate_to_folder = Some(entry.path.clone());
-                                    } else {
-                                        state.selected_file = Some(entry.path.clone());
-                                        state.file_name_input = entry.name.clone();
-                                        file_double_clicked = true;
-                                    }
-                                }
-
-                                if entry.is_dir {
-                                    ui.weak("—");
-                                    ui.weak("Folder");
-                                } else {
-                                    ui.label(format_size(entry.size_bytes));
-                                    let ext = entry.path.extension().and_then(|e| e.to_str()).unwrap_or("file");
-                                    ui.weak(ext.to_ascii_uppercase());
-                                }
+                                ui.weak("Type");
                                 ui.end_row();
-                            }
-                        });
 
-                    if let Some(folder) = navigate_to_folder {
-                        state.navigate_to(folder);
-                    }
-                    if file_double_clicked {
-                        state.accept_selection();
-                    }
-                });
+                                for entry in &state.entries {
+                                    if !query.is_empty()
+                                        && !entry.name.to_lowercase().contains(&query)
+                                    {
+                                        continue;
+                                    }
+
+                                    let is_selected =
+                                        state.selected_file.as_ref() == Some(&entry.path);
+                                    let icon = if entry.is_dir {
+                                        "📁"
+                                    } else {
+                                        get_file_icon(&entry.name)
+                                    };
+                                    let display_text = format!("{icon} {}", entry.name);
+
+                                    let label_resp = ui.selectable_label(is_selected, display_text);
+                                    if label_resp.clicked() {
+                                        if entry.is_dir {
+                                            // single click selects or prepares
+                                        } else {
+                                            state.selected_file = Some(entry.path.clone());
+                                            state.file_name_input = entry.name.clone();
+                                        }
+                                    }
+                                    if label_resp.double_clicked() {
+                                        if entry.is_dir {
+                                            navigate_to_folder = Some(entry.path.clone());
+                                        } else {
+                                            state.selected_file = Some(entry.path.clone());
+                                            state.file_name_input = entry.name.clone();
+                                            file_double_clicked = true;
+                                        }
+                                    }
+
+                                    if entry.is_dir {
+                                        ui.weak("—");
+                                        ui.weak("Folder");
+                                    } else {
+                                        ui.label(format_size(entry.size_bytes));
+                                        let ext = entry
+                                            .path
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .unwrap_or("file");
+                                        ui.weak(ext.to_ascii_uppercase());
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+
+                        if let Some(folder) = navigate_to_folder {
+                            state.navigate_to(folder);
+                        }
+                        if file_double_clicked {
+                            state.accept_selection();
+                        }
+                    });
             });
 
             ui.separator();
@@ -630,16 +741,25 @@ pub fn show(ctx: &egui::Context, state: &mut FileBrowserState) {
             // --- Bottom Bar: Filename input, Filter combo, Open/Save & Cancel ---
             ui.horizontal(|ui| {
                 ui.label("File:");
-                ui.add(egui::TextEdit::singleline(&mut state.file_name_input).desired_width(ui.available_width() - 250.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.file_name_input)
+                        .desired_width(ui.available_width() - 250.0),
+                );
 
                 if !state.filters.is_empty() {
                     let mut filter_changed = false;
-                    let current_filter = state.filters.get(state.filter_index).map_or("All files", |f| &f.label);
+                    let current_filter = state
+                        .filters
+                        .get(state.filter_index)
+                        .map_or("All files", |f| &f.label);
                     egui::ComboBox::from_id_salt("file_browser_filter")
                         .selected_text(current_filter)
                         .show_ui(ui, |ui| {
                             for (idx, filter) in state.filters.iter().enumerate() {
-                                if ui.selectable_value(&mut state.filter_index, idx, &filter.label).clicked() {
+                                if ui
+                                    .selectable_value(&mut state.filter_index, idx, &filter.label)
+                                    .clicked()
+                                {
                                     filter_changed = true;
                                 }
                             }
@@ -659,7 +779,10 @@ pub fn show(ctx: &egui::Context, state: &mut FileBrowserState) {
                     FileBrowserMode::SaveFile => !state.file_name_input.trim().is_empty(),
                 };
 
-                if ui.add_enabled(can_accept, egui::Button::new(btn_text)).clicked() {
+                if ui
+                    .add_enabled(can_accept, egui::Button::new(btn_text))
+                    .clicked()
+                {
                     state.accept_selection();
                 }
 
@@ -740,7 +863,10 @@ mod tests {
     #[test]
     fn bookmarks_and_drives_are_detected() {
         let bms = detect_bookmarks();
-        assert!(!bms.is_empty(), "Current project should be detected as a bookmark");
+        assert!(
+            !bms.is_empty(),
+            "Current project should be detected as a bookmark"
+        );
 
         let drives = detect_drives();
         assert!(!drives.is_empty(), "Root drive should be detected");

@@ -20,7 +20,12 @@ use crate::geometry::{CubicBezier, Curve, distance_to_segment};
 /// Greedy: every cubic reaches as far along the points as it can while
 /// still fitting (found by bisection), which comes close to the fewest
 /// pieces. Neighbouring cubics share their joint and its tangent.
-pub fn fit_cubics(points: &[Vec2], start_tangent: Vec2, end_tangent: Vec2, tolerance: f32) -> Vec<CubicBezier> {
+pub fn fit_cubics(
+    points: &[Vec2],
+    start_tangent: Vec2,
+    end_tangent: Vec2,
+    tolerance: f32,
+) -> Vec<CubicBezier> {
     let mut out = Vec::new();
     let n = points.len();
     if n < 2 {
@@ -32,7 +37,9 @@ pub fn fit_cubics(points: &[Vec2], start_tangent: Vec2, end_tangent: Vec2, toler
         if i + 1 >= n {
             end_tangent
         } else {
-            (points[i - 1] - points[i + 1]).try_normalize().unwrap_or_else(|| (points[i - 1] - points[i]).normalize_or_zero())
+            (points[i - 1] - points[i + 1])
+                .try_normalize()
+                .unwrap_or_else(|| (points[i - 1] - points[i]).normalize_or_zero())
         }
     };
     let (mut start, mut leaving) = (0, start_tangent);
@@ -48,12 +55,18 @@ pub fn fit_cubics(points: &[Vec2], start_tangent: Vec2, end_tangent: Vec2, toler
                 let (mut good, mut bad) = (start + 1, n - 1);
                 while bad - good > 1 {
                     let middle = (good + bad) / 2;
-                    if fit(middle).is_some() { good = middle } else { bad = middle }
+                    if fit(middle).is_some() {
+                        good = middle
+                    } else {
+                        bad = middle
+                    }
                 }
                 good
             }
         };
-        out.push(fit(end).unwrap_or_else(|| straight(points[start], points[end], leaving, back(end))));
+        out.push(
+            fit(end).unwrap_or_else(|| straight(points[start], points[end], leaving, back(end))),
+        );
         leaving = -back(end);
         start = end;
     }
@@ -63,13 +76,22 @@ pub fn fit_cubics(points: &[Vec2], start_tangent: Vec2, end_tangent: Vec2, toler
 /// Whether every point lies within `tolerance` of the chord from the first
 /// to the last point.
 pub fn is_straight(points: &[Vec2], tolerance: f32) -> bool {
-    let (Some(&a), Some(&b)) = (points.first(), points.last()) else { return true };
-    points.iter().all(|&p| distance_to_segment(p, a, b) <= tolerance)
+    let (Some(&a), Some(&b)) = (points.first(), points.last()) else {
+        return true;
+    };
+    points
+        .iter()
+        .all(|&p| distance_to_segment(p, a, b) <= tolerance)
 }
 
 fn straight(first: Vec2, last: Vec2, t1: Vec2, t2: Vec2) -> CubicBezier {
     let third = first.distance(last) / 3.0;
-    CubicBezier { p0: first, p1: first + t1 * third, p2: last + t2 * third, p3: last }
+    CubicBezier {
+        p0: first,
+        p1: first + t1 * third,
+        p2: last + t2 * third,
+        p3: last,
+    }
 }
 
 /// One cubic through the run, if one fits within `tolerance`.
@@ -144,13 +166,24 @@ fn generate(points: &[Vec2], parameters: &[f32], t1: Vec2, t2: Vec2) -> CubicBez
         alpha1 = chord / 3.0;
         alpha2 = chord / 3.0;
     }
-    CubicBezier { p0: first, p1: first + t1 * alpha1, p2: last + t2 * alpha2, p3: last }
+    CubicBezier {
+        p0: first,
+        p1: first + t1 * alpha1,
+        p2: last + t2 * alpha2,
+        p3: last,
+    }
 }
 
 /// Largest distance of a point from the curve at its parameter, and where.
 fn max_error(points: &[Vec2], parameters: &[f32], curve: &CubicBezier) -> (f32, usize) {
     let mut worst = (0.0f32, points.len() / 2);
-    for (i, (&p, &t)) in points.iter().zip(parameters).enumerate().skip(1).take(points.len().saturating_sub(2)) {
+    for (i, (&p, &t)) in points
+        .iter()
+        .zip(parameters)
+        .enumerate()
+        .skip(1)
+        .take(points.len().saturating_sub(2))
+    {
         let distance = curve.eval(t).distance(p);
         if distance > worst.0 {
             worst = (distance, i);
@@ -165,7 +198,8 @@ fn reparameterize(points: &[Vec2], parameters: &mut [f32], curve: &CubicBezier) 
         let d = curve.eval(*t) - *p;
         let first = curve.tangent(*t);
         let s = 1.0 - *t;
-        let second = (curve.p2 - 2.0 * curve.p1 + curve.p0) * (6.0 * s) + (curve.p3 - 2.0 * curve.p2 + curve.p1) * (6.0 * *t);
+        let second = (curve.p2 - 2.0 * curve.p1 + curve.p0) * (6.0 * s)
+            + (curve.p3 - 2.0 * curve.p2 + curve.p1) * (6.0 * *t);
         let denominator = first.dot(first) + d.dot(second);
         if denominator.abs() > 1e-12 {
             *t = (*t - d.dot(first) / denominator).clamp(0.0, 1.0);
@@ -188,7 +222,10 @@ mod tests {
 
     fn worst_distance(points: &[Vec2], curves: &[CubicBezier]) -> f32 {
         let flat: Vec<Vec2> = curves.iter().flat_map(|c| c.flatten(0.01)).collect();
-        points.iter().map(|&p| crate::geometry::distance_to_polygon(p, &flat)).fold(0.0, f32::max)
+        points
+            .iter()
+            .map(|&p| crate::geometry::distance_to_polygon(p, &flat))
+            .fold(0.0, f32::max)
     }
 
     #[test]
@@ -203,12 +240,21 @@ mod tests {
     fn an_s_curve_splits_with_matching_tangents() {
         let mut points = arc(48, 100.0, 120.0);
         let joint = *points.last().unwrap();
-        let mirrored: Vec<Vec2> = arc(48, 100.0, 120.0).iter().map(|p| 2.0 * joint - *p).rev().skip(1).collect();
+        let mirrored: Vec<Vec2> = arc(48, 100.0, 120.0)
+            .iter()
+            .map(|p| 2.0 * joint - *p)
+            .rev()
+            .skip(1)
+            .collect();
         points.extend(mirrored);
         let start = (points[1] - points[0]).normalize();
         let end = (points[points.len() - 2] - points[points.len() - 1]).normalize();
         let curves = fit_cubics(&points, start, end, 0.2);
-        assert!(curves.len() >= 2 && curves.len() <= 4, "{} cubics", curves.len());
+        assert!(
+            curves.len() >= 2 && curves.len() <= 4,
+            "{} cubics",
+            curves.len()
+        );
         // The flattened comparison curve adds its own 0.01 mm.
         assert!(worst_distance(&points, &curves) < 0.21);
         for pair in curves.windows(2) {
@@ -221,7 +267,13 @@ mod tests {
 
     #[test]
     fn straightness_is_judged_against_the_chord() {
-        assert!(is_straight(&[Vec2::ZERO, Vec2::new(50.0, 0.05), Vec2::new(100.0, 0.0)], 0.1));
-        assert!(!is_straight(&[Vec2::ZERO, Vec2::new(50.0, 2.0), Vec2::new(100.0, 0.0)], 0.1));
+        assert!(is_straight(
+            &[Vec2::ZERO, Vec2::new(50.0, 0.05), Vec2::new(100.0, 0.0)],
+            0.1
+        ));
+        assert!(!is_straight(
+            &[Vec2::ZERO, Vec2::new(50.0, 2.0), Vec2::new(100.0, 0.0)],
+            0.1
+        ));
     }
 }

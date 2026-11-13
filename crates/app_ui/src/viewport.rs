@@ -37,7 +37,8 @@ pub struct ViewportInput {
 
 /// Fills the available space with `texture` and collects the input on it.
 pub fn show(ui: &mut egui::Ui, texture: egui::TextureId, hint: &str) -> ViewportInput {
-    let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+    let (rect, response) =
+        ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
     let scale = ui.pixels_per_point();
     let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     ui.painter().image(texture, rect, uv, egui::Color32::WHITE);
@@ -58,15 +59,27 @@ pub fn show(ui: &mut egui::Ui, texture: egui::TextureId, hint: &str) -> Viewport
     let hovered = response.contains_pointer();
     let any_drag = response.dragged() || response.drag_stopped();
     let (zoom, press_origin, shift) = ui.input(|input| {
-        let zoom = if hovered { input.zoom_delta() * (input.smooth_scroll_delta.y * 0.0025).exp() } else { 1.0 };
+        let zoom = if hovered {
+            input.zoom_delta() * (input.smooth_scroll_delta.y * 0.0025).exp()
+        } else {
+            1.0
+        };
         (zoom, input.pointer.press_origin(), input.modifiers.shift)
     });
 
     ViewportInput {
-        size: [(rect.width() * scale).round().max(1.0) as u32, (rect.height() * scale).round().max(1.0) as u32],
+        size: [
+            (rect.width() * scale).round().max(1.0) as u32,
+            (rect.height() * scale).round().max(1.0) as u32,
+        ],
         hovered,
-        pointer: response.hover_pos().or(response.interact_pointer_pos()).map(local),
-        press_origin: press_origin.filter(|_| any_drag || response.is_pointer_button_down_on()).map(local),
+        pointer: response
+            .hover_pos()
+            .or(response.interact_pointer_pos())
+            .map(local),
+        press_origin: press_origin
+            .filter(|_| any_drag || response.is_pointer_button_down_on())
+            .map(local),
         drag_delta: Vec2::new(response.drag_delta().x, response.drag_delta().y) * scale,
         primary: drag(egui::PointerButton::Primary),
         secondary: drag(egui::PointerButton::Secondary),

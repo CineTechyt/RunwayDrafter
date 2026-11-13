@@ -60,7 +60,10 @@ impl CanvasRenderer {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("canvas2d globals"),
             layout: &layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            }],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("canvas2d pipeline layout"),
@@ -78,7 +81,10 @@ impl CanvasRenderer {
             },
             primitive: wgpu::PrimitiveState::default(), // triangle list, no culling
             depth_stencil: None,
-            multisample: wgpu::MultisampleState { count: RenderTarget::SAMPLE_COUNT, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: RenderTarget::SAMPLE_COUNT,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
@@ -114,10 +120,17 @@ impl CanvasRenderer {
     /// Uploads this frame's geometry and camera.
     pub fn prepare(&mut self, gpu: &GpuContext, batch: &CanvasBatch, camera: &Camera2D) {
         let view_proj: Mat4 = camera.view_proj(self.viewport());
-        gpu.queue
-            .write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals { view_proj: view_proj.to_cols_array_2d() }));
-        self.vertices.write(gpu, bytemuck::cast_slice(&batch.vertices));
-        self.indices.write(gpu, bytemuck::cast_slice(&batch.indices));
+        gpu.queue.write_buffer(
+            &self.globals,
+            0,
+            bytemuck::bytes_of(&Globals {
+                view_proj: view_proj.to_cols_array_2d(),
+            }),
+        );
+        self.vertices
+            .write(gpu, bytemuck::cast_slice(&batch.vertices));
+        self.indices
+            .write(gpu, bytemuck::cast_slice(&batch.indices));
         self.index_count = batch.indices.len() as u32;
     }
 }

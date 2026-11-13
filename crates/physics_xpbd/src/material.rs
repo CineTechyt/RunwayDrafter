@@ -41,7 +41,8 @@ impl FabricSi {
             // slider describes a fabric 0.6 mm thick; thicker cloth is
             // harder to bend, by the 1.5th power of its thickness (a solid
             // plate goes by the cube; woven yarns slide on each other).
-            bending: log_scale(physics.bending, 1e-6, 3e-4) * (physics.thickness.max(0.05) / 0.6).powf(1.5),
+            bending: log_scale(physics.bending, 1e-6, 3e-4)
+                * (physics.thickness.max(0.05) / 0.6).powf(1.5),
         }
     }
 }

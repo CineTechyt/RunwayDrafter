@@ -64,17 +64,37 @@ impl Row {
     /// something else.
     #[inline]
     pub fn fold_limit(&self) -> f32 {
-        if self.flags & ROW_SEAM != 0 { 0.0 } else { self.fold_limit }
+        if self.flags & ROW_SEAM != 0 {
+            0.0
+        } else {
+            self.fold_limit
+        }
     }
 }
 
 impl Element {
     fn new(particles: [u32; 4]) -> Self {
-        Self { particles, rows: [Row::zeroed(); 4] }
+        Self {
+            particles,
+            rows: [Row::zeroed(); 4],
+        }
     }
 
-    fn with_row(mut self, slot: usize, weights: [f32; 4], rest: f32, compliance: f32, flags: u32) -> Self {
-        self.rows[slot] = Row { weights, rest, compliance, flags: flags | ROW_ACTIVE, fold_limit: 0.0 };
+    fn with_row(
+        mut self,
+        slot: usize,
+        weights: [f32; 4],
+        rest: f32,
+        compliance: f32,
+        flags: u32,
+    ) -> Self {
+        self.rows[slot] = Row {
+            weights,
+            rest,
+            compliance,
+            flags: flags | ROW_ACTIVE,
+            fold_limit: 0.0,
+        };
         self
     }
 }
@@ -104,8 +124,13 @@ impl Model {
         let mut model = Model::default();
 
         for span in &mesh.pieces {
-            let Some(piece) = document.piece(span.piece) else { continue };
-            let fabric = document.fabric(piece.fabric).map(|f| f.physics).unwrap_or_default();
+            let Some(piece) = document.piece(span.piece) else {
+                continue;
+            };
+            let fabric = document
+                .fabric(piece.fabric)
+                .map(|f| f.physics)
+                .unwrap_or_default();
             let fabric = FabricSi::from_physics(&fabric);
             // Material frame: V along the grainline (warp), U across (weft).
             let warp = Vec2::from_angle(piece.grainline.angle);
@@ -151,13 +176,22 @@ impl Model {
                     let q1 = inverse[0][0] * d.x + inverse[0][1] * d.y;
                     let q2 = inverse[1][0] * d.x + inverse[1][1] * d.y;
                     // Energy ½·k·A·C² ⇒ compliance 1/(k·A).
-                    element = element.with_row(slot, [-q1 - q2, q1, q2, 0.0], 1.0, 1.0 / (stiffness * area), 0);
+                    element = element.with_row(
+                        slot,
+                        [-q1 - q2, q1, q2, 0.0],
+                        1.0,
+                        1.0 / (stiffness * area),
+                        0,
+                    );
                 }
                 elements.push(element);
                 model.strain_triangles += 1;
 
                 for (a, b, opposite) in [(i0, i1, i2), (i1, i2, i0), (i2, i0, i1)] {
-                    wings.entry((a.min(b), a.max(b))).or_default().push(opposite);
+                    wings
+                        .entry((a.min(b), a.max(b)))
+                        .or_default()
+                        .push(opposite);
                 }
             }
 
@@ -180,7 +214,8 @@ impl Model {
                 }
                 let weights = [c03 + c04, c01 + c02, -c01 - c03, -c02 - c04];
                 let compliance = areas / (3.0 * fabric.bending);
-                let mut hinge = Element::new([i0, i1, i2, i3]).with_row(0, weights, 0.0, compliance, 0);
+                let mut hinge =
+                    Element::new([i0, i1, i2, i3]).with_row(0, weights, 0.0, compliance, 0);
                 // Folding one wing by an angle a about the shared edge moves
                 // its far vertex by 2·h·sin(a/2), h being its distance from
                 // the edge; at 60° that is h.
@@ -203,16 +238,28 @@ impl Model {
             // A button holds its buttonhole a fabric thickness above it:
             // pulled onto the button itself, the two layers would be drawn
             // through each other there.
-            let closed = if stitch.seam == topology_sync::Stitch::FASTENING { FASTENING_GAP } else { 0.0 };
-            let mut element =
-                Element::new([stitch.a, stitch.b, INVALID, INVALID]).with_row(0, [1.0, -1.0, 0.0, 0.0], gap.max(closed), SEAM_COMPLIANCE, ROW_SEAM);
+            let closed = if stitch.seam == topology_sync::Stitch::FASTENING {
+                FASTENING_GAP
+            } else {
+                0.0
+            };
+            let mut element = Element::new([stitch.a, stitch.b, INVALID, INVALID]).with_row(
+                0,
+                [1.0, -1.0, 0.0, 0.0],
+                gap.max(closed),
+                SEAM_COMPLIANCE,
+                ROW_SEAM,
+            );
             element.rows[0].fold_limit = closed;
             elements.push(element);
             model.stitches += 1;
         }
 
         model.mass = masses.iter().sum();
-        model.inverse_mass = masses.iter().map(|&m| if m > 0.0 { 1.0 / m } else { 0.0 }).collect();
+        model.inverse_mass = masses
+            .iter()
+            .map(|&m| if m > 0.0 { 1.0 / m } else { 0.0 })
+            .collect();
         // Stitches are coloured separately and solved last in every sweep:
         // whatever the fabric constraints did, the seams end up closed.
         let stitches = elements.split_off(first_stitch);
@@ -220,7 +267,11 @@ impl Model {
         let (stitch_elements, stitch_colours) = colour(stitches, particle_count);
         let offset = model.elements.len() as u32;
         model.elements.extend(stitch_elements);
-        model.colours.extend(stitch_colours.into_iter().map(|r| r.start + offset..r.end + offset));
+        model.colours.extend(
+            stitch_colours
+                .into_iter()
+                .map(|r| r.start + offset..r.end + offset),
+        );
         model
     }
 }
@@ -236,7 +287,9 @@ fn colour(elements: Vec<Element>, particle_count: usize) -> (Vec<Element>, Vec<R
 
     for (index, element) in elements.iter().enumerate() {
         let particles = element.particles.iter().filter(|&&p| p != INVALID);
-        let taken = particles.clone().fold(0u128, |mask, &p| mask | used[p as usize]);
+        let taken = particles
+            .clone()
+            .fold(0u128, |mask, &p| mask | used[p as usize]);
         let colour = (!taken).trailing_zeros();
         if colour >= MAX_SHARED {
             // Pathological valence: solve this element on its own.
@@ -299,7 +352,11 @@ mod tests {
         }
         // Two ~0.3 m² panels at 180 g/m²: roughly 100 g.
         assert!((0.08..0.14).contains(&model.mass), "{}", model.mass);
-        assert!((model.mass - expected).abs() < 0.01 * expected, "{} vs {expected}", model.mass);
+        assert!(
+            (model.mass - expected).abs() < 0.01 * expected,
+            "{} vs {expected}",
+            model.mass
+        );
         assert!(model.inverse_mass.iter().all(|&w| w > 0.0 && w.is_finite()));
     }
 
@@ -307,8 +364,14 @@ mod tests {
     fn colours_never_share_a_particle() {
         let (document, topology) = demo();
         let model = Model::build(topology.mesh(), &document);
-        assert_eq!(model.colours.iter().map(|r| r.len()).sum::<usize>(), model.elements.len());
-        assert_eq!(model.elements.len(), model.strain_triangles + model.bending_hinges + model.stitches);
+        assert_eq!(
+            model.colours.iter().map(|r| r.len()).sum::<usize>(),
+            model.elements.len()
+        );
+        assert_eq!(
+            model.elements.len(),
+            model.strain_triangles + model.bending_hinges + model.stitches
+        );
         for range in &model.colours {
             let mut seen = std::collections::HashSet::new();
             for element in &model.elements[range.start as usize..range.end as usize] {
@@ -326,12 +389,22 @@ mod tests {
         let mesh = topology.mesh();
         let model = Model::build(mesh, &document);
         for element in &model.elements {
-            for row in element.rows.iter().filter(|r| r.flags & ROW_ACTIVE != 0 && r.flags & ROW_SEAM == 0) {
-                let sum = (0..4).filter(|&k| element.particles[k] != INVALID).fold(cad_core::glam::Vec3::ZERO, |acc, k| {
-                    acc + mesh.positions[element.particles[k] as usize] * row.weights[k]
-                });
+            for row in element
+                .rows
+                .iter()
+                .filter(|r| r.flags & ROW_ACTIVE != 0 && r.flags & ROW_SEAM == 0)
+            {
+                let sum = (0..4)
+                    .filter(|&k| element.particles[k] != INVALID)
+                    .fold(cad_core::glam::Vec3::ZERO, |acc, k| {
+                        acc + mesh.positions[element.particles[k] as usize] * row.weights[k]
+                    });
                 // Strain rows measure 1 (no stretch), bending rows 0 (flat).
-                assert!((sum.length() - row.rest).abs() < 2e-3, "C = {}", sum.length() - row.rest);
+                assert!(
+                    (sum.length() - row.rest).abs() < 2e-3,
+                    "C = {}",
+                    sum.length() - row.rest
+                );
             }
         }
     }
@@ -343,11 +416,20 @@ mod tests {
         let physics = &mut document.fabric_mut(fabric).unwrap().physics;
         (physics.stretch_weft, physics.stretch_warp, physics.shear) = (0.1, 0.9, 0.2);
         let model = Model::build(topology.mesh(), &document);
-        let front = topology.mesh().span(document.pieces()[0].id).unwrap().vertices.clone();
+        let front = topology
+            .mesh()
+            .span(document.pieces()[0].id)
+            .unwrap()
+            .vertices
+            .clone();
         let strain = model
             .elements
             .iter()
-            .find(|e| e.particles[3] == INVALID && e.particles[2] != INVALID && front.contains(&e.particles[0]))
+            .find(|e| {
+                e.particles[3] == INVALID
+                    && e.particles[2] != INVALID
+                    && front.contains(&e.particles[0])
+            })
             .unwrap();
         let [weft, warp, bias, _] = strain.rows.map(|r| r.compliance);
         assert!(warp < weft, "the warp must be stiffer than the weft");

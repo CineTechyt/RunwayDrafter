@@ -4,7 +4,10 @@
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 
-use avatar::{Appearance, BodyMesh, BodyModel, BodyParams, LookMesh, Measurements, Pose, PoseParams, PosedBody};
+use avatar::{
+    Appearance, BodyMesh, BodyModel, BodyParams, LookMesh, Measurements, Pose, PoseParams,
+    PosedBody,
+};
 use glam::{Affine3A, Vec3};
 use physics_collision::TriangleMesh;
 use topology_sync::DistanceField;
@@ -71,7 +74,11 @@ impl Body {
         let (mesh, transforms) = model.pose_with_transforms(&rest, &pose.to_pose(&model, &rest));
         // The first field is built synchronously so the very first
         // simulation step already collides.
-        let field = Some(Arc::new(avatar::distance_field(&mesh, FIELD_VOXEL, closing)));
+        let field = Some(Arc::new(avatar::distance_field(
+            &mesh,
+            FIELD_VOXEL,
+            closing,
+        )));
         let collider = Some(Arc::new(mesh.collider()));
         Self {
             model,
@@ -136,12 +143,19 @@ impl Body {
 
     /// The body as it stands now, with what took it there from `rest`.
     pub fn posed(&self) -> PosedBody<'_> {
-        PosedBody { rest: &self.rest, posed: &self.mesh, transforms: &self.transforms }
+        PosedBody {
+            rest: &self.rest,
+            posed: &self.mesh,
+            transforms: &self.transforms,
+        }
     }
 
     /// The looks for `appearance`, rebuilt only when it or the shape changed.
     pub fn looks(&mut self, appearance: &Appearance) -> Option<&Looks> {
-        let current = self.looks.as_ref().is_some_and(|l| l.appearance == *appearance && l.shape_version == self.shape_version);
+        let current = self
+            .looks
+            .as_ref()
+            .is_some_and(|l| l.appearance == *appearance && l.shape_version == self.shape_version);
         if !current {
             let head = avatar::Head::find(&self.rest)?;
             let crown = glam::Vec3::new(0.0, head.crown, head.axis_z);
@@ -150,7 +164,10 @@ impl Body {
                 .positions
                 .iter()
                 .enumerate()
-                .min_by(|a, b| a.1.distance_squared(crown).total_cmp(&b.1.distance_squared(crown)))
+                .min_by(|a, b| {
+                    a.1.distance_squared(crown)
+                        .total_cmp(&b.1.distance_squared(crown))
+                })
                 .map_or(0, |(i, _)| i);
             self.looks = Some(Looks {
                 appearance: *appearance,
@@ -173,7 +190,10 @@ impl Body {
     /// How the head has moved from the modelled pose to now: what to apply
     /// to the eyes and hair.
     pub fn head_transform(&self, looks: &Looks) -> glam::Affine3A {
-        self.transforms.get(looks.anchor).copied().unwrap_or(glam::Affine3A::IDENTITY)
+        self.transforms
+            .get(looks.anchor)
+            .copied()
+            .unwrap_or(glam::Affine3A::IDENTITY)
     }
 
     pub fn set_pose(&mut self, pose: PoseParams) {
@@ -190,14 +210,21 @@ impl Body {
     }
 
     fn repose(&mut self) {
-        let pose = self.animated.clone().unwrap_or_else(|| self.pose.to_pose(&self.model, &self.rest));
+        let pose = self
+            .animated
+            .clone()
+            .unwrap_or_else(|| self.pose.to_pose(&self.model, &self.rest));
         (self.mesh, self.transforms) = self.model.pose_with_transforms(&self.rest, &pose);
         self.field_outdated = true;
     }
 
     /// A copy of the body as it stands now, to carry things from later.
     pub fn snapshot(&self) -> BodySnapshot {
-        BodySnapshot { rest: self.rest.clone(), posed: self.mesh.clone(), transforms: self.transforms.clone() }
+        BodySnapshot {
+            rest: self.rest.clone(),
+            posed: self.mesh.clone(),
+            transforms: self.transforms.clone(),
+        }
     }
 
     /// Moves `points` from around the body as it was in `before` to the
@@ -205,8 +232,16 @@ impl Body {
     pub fn carry_from(&self, before: &BodySnapshot, points: &mut [Vec3]) {
         avatar::carry(
             points,
-            PosedBody { rest: &before.rest, posed: &before.posed, transforms: &before.transforms },
-            PosedBody { rest: &self.rest, posed: &self.mesh, transforms: &self.transforms },
+            PosedBody {
+                rest: &before.rest,
+                posed: &before.posed,
+                transforms: &before.transforms,
+            },
+            PosedBody {
+                rest: &self.rest,
+                posed: &self.mesh,
+                transforms: &self.transforms,
+            },
         );
     }
 
@@ -232,7 +267,10 @@ impl Body {
             let (mesh, closing) = (self.mesh.clone(), self.closing);
             std::thread::spawn(move || {
                 // The receiver is gone if the session ended meanwhile.
-                let _ = sender.send((avatar::distance_field(&mesh, FIELD_VOXEL, closing), mesh.collider()));
+                let _ = sender.send((
+                    avatar::distance_field(&mesh, FIELD_VOXEL, closing),
+                    mesh.collider(),
+                ));
             });
             self.pending = Some(receiver);
         }
@@ -258,7 +296,8 @@ pub struct ImportedAvatar {
 
 impl ImportedAvatar {
     pub fn new(imported: io_cad::ImportedMesh, closing: f32) -> Self {
-        let mesh = BodyMesh::from_triangles(imported.positions, imported.normals, imported.triangles);
+        let mesh =
+            BodyMesh::from_triangles(imported.positions, imported.normals, imported.triangles);
         Self {
             measurements: Measurements::rough(&mesh),
             field: Arc::new(avatar::distance_field(&mesh, FIELD_VOXEL, closing)),

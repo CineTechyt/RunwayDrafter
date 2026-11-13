@@ -13,7 +13,9 @@ pub struct SimulationPanel {
 
 impl Default for SimulationPanel {
     fn default() -> Self {
-        Self { custom_distance: SimulationState::MEDIUM_MM }
+        Self {
+            custom_distance: SimulationState::MEDIUM_MM,
+        }
     }
 }
 
@@ -28,14 +30,25 @@ impl Panel for SimulationPanel {
 
         // --- transport --------------------------------------------------------
         ui.horizontal(|ui| {
-            let label = if timeline.playing { "⏸ Pause" } else { "▶ Simulate" };
+            let label = if timeline.playing {
+                "⏸ Pause"
+            } else {
+                "▶ Simulate"
+            };
             if ui.button(label).on_hover_text("Space").clicked() {
                 timeline.toggle();
             }
-            if ui.add_enabled(!timeline.playing, egui::Button::new("⏭ Step")).clicked() {
+            if ui
+                .add_enabled(!timeline.playing, egui::Button::new("⏭ Step"))
+                .clicked()
+            {
                 cx.output.commands.push(UiCommand::StepSimulation);
             }
-            if ui.button("⟲ Reset").on_hover_text("Unsew and put every piece back to its arrangement").clicked() {
+            if ui
+                .button("⟲ Reset")
+                .on_hover_text("Unsew and put every piece back to its arrangement")
+                .clicked()
+            {
                 timeline.stop();
                 cx.output.commands.push(UiCommand::ResetDrape);
             }
@@ -58,14 +71,20 @@ impl Panel for SimulationPanel {
             ui.end_row();
 
             ui.label("Sub-steps");
-            ui.add(egui::Slider::new(&mut sim.settings.substeps, 1..=64)).on_hover_text(
-                "Solver sweeps per simulation step. Too few and the fabric sags like rubber; \
+            ui.add(egui::Slider::new(&mut sim.settings.substeps, 1..=64))
+                .on_hover_text(
+                    "Solver sweeps per simulation step. Too few and the fabric sags like rubber; \
                  finer meshes need more.",
-            );
+                );
             ui.end_row();
 
             ui.label("Gravity");
-            ui.add(egui::DragValue::new(&mut sim.settings.gravity.y).range(-30.0..=0.0).speed(0.05).suffix(" m/s²"));
+            ui.add(
+                egui::DragValue::new(&mut sim.settings.gravity.y)
+                    .range(-30.0..=0.0)
+                    .speed(0.05)
+                    .suffix(" m/s²"),
+            );
             ui.end_row();
 
             ui.label("Damping");
@@ -83,7 +102,15 @@ impl Panel for SimulationPanel {
 
             ui.label("Collision gap");
             let mut millimetres = sim.settings.collision_margin * 1000.0;
-            if ui.add(egui::DragValue::new(&mut millimetres).range(0.5..=20.0).speed(0.1).suffix(" mm")).changed() {
+            if ui
+                .add(
+                    egui::DragValue::new(&mut millimetres)
+                        .range(0.5..=20.0)
+                        .speed(0.1)
+                        .suffix(" mm"),
+                )
+                .changed()
+            {
                 sim.settings.collision_margin = millimetres / 1000.0;
             }
             ui.end_row();
@@ -101,8 +128,14 @@ impl Panel for SimulationPanel {
 
             ui.label("Cloth thickness");
             let mut millimetres = sim.settings.cloth_thickness * 1000.0;
-            let thickness = egui::DragValue::new(&mut millimetres).range(0.5..=10.0).speed(0.05).suffix(" mm");
-            if ui.add_enabled(sim.settings.self_collision, thickness).changed() {
+            let thickness = egui::DragValue::new(&mut millimetres)
+                .range(0.5..=10.0)
+                .speed(0.05)
+                .suffix(" mm");
+            if ui
+                .add_enabled(sim.settings.self_collision, thickness)
+                .changed()
+            {
                 sim.settings.cloth_thickness = millimetres / 1000.0;
             }
             ui.end_row();
@@ -124,14 +157,22 @@ impl Panel for SimulationPanel {
                 ("10 mm", SimulationState::MEDIUM_MM),
                 ("Fine 5 mm", SimulationState::FINE_MM),
             ] {
-                if ui.selectable_label(sim.particle_distance == distance, label).clicked() {
+                if ui
+                    .selectable_label(sim.particle_distance == distance, label)
+                    .clicked()
+                {
                     sim.particle_distance = distance;
                 }
             }
         });
         ui.horizontal(|ui| {
             ui.label("Custom");
-            ui.add(egui::DragValue::new(&mut self.custom_distance).range(3.0..=100.0).speed(0.25).suffix(" mm"));
+            ui.add(
+                egui::DragValue::new(&mut self.custom_distance)
+                    .range(3.0..=100.0)
+                    .speed(0.25)
+                    .suffix(" mm"),
+            );
             if ui.button("Apply").clicked() {
                 sim.particle_distance = self.custom_distance;
             }
@@ -148,7 +189,14 @@ impl Panel for SimulationPanel {
                 ui.label(value);
                 ui.end_row();
             };
-            row("Running on", if stats.backend.is_empty() { "—".to_owned() } else { stats.backend.to_owned() });
+            row(
+                "Running on",
+                if stats.backend.is_empty() {
+                    "—".to_owned()
+                } else {
+                    stats.backend.to_owned()
+                },
+            );
             row("Step time", format!("{:.2} ms", stats.step_ms));
             row("Particles", stats.particles.to_string());
             row("Strain triangles", stats.strain_triangles.to_string());
@@ -157,8 +205,21 @@ impl Panel for SimulationPanel {
             row("Parallel batches", stats.batches.to_string());
             row("Cloth mass", format!("{:.0} g", stats.mass * 1000.0));
             row("Cloth contacts", stats.cloth_contacts.to_string());
-            row("Pass-throughs caught", format!("{} cloth · {} body", stats.cloth_crossings, stats.body_stops));
-            row("Seams", if stats.seam_gap <= 0.0 { "closed".to_owned() } else { format!("{:.0} % open", stats.seam_gap * 100.0) });
+            row(
+                "Pass-throughs caught",
+                format!(
+                    "{} cloth · {} body",
+                    stats.cloth_crossings, stats.body_stops
+                ),
+            );
+            row(
+                "Seams",
+                if stats.seam_gap <= 0.0 {
+                    "closed".to_owned()
+                } else {
+                    format!("{:.0} % open", stats.seam_gap * 100.0)
+                },
+            );
         });
     }
 }

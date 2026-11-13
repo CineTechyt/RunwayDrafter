@@ -71,7 +71,9 @@ impl Measure {
         match self {
             Measure::Height => "Floor to the top of the head.",
             Measure::Neck => "Smallest girth of the neck.",
-            Measure::Shoulders => "Straight distance between the two shoulder points (the top of each shoulder joint).",
+            Measure::Shoulders => {
+                "Straight distance between the two shoulder points (the top of each shoulder joint)."
+            }
             Measure::Bust => "Largest horizontal girth of the chest below the armpits.",
             Measure::Waist => "Smallest horizontal girth of the torso between chest and hips.",
             Measure::Hips => "Largest horizontal girth around the seat.",
@@ -164,7 +166,9 @@ impl<'a> Slicer<'a> {
     }
 
     fn horizontal(&self, y: f32) -> Vec<Loop> {
-        self.cut(Vec3::new(0.0, y, 0.0), Vec3::Y, |t| y < self.spans[t].0 || y > self.spans[t].1)
+        self.cut(Vec3::new(0.0, y, 0.0), Vec3::Y, |t| {
+            y < self.spans[t].0 || y > self.spans[t].1
+        })
     }
 
     fn plane(&self, origin: Vec3, normal: Vec3) -> Vec<Loop> {
@@ -218,15 +222,25 @@ impl<'a> Slicer<'a> {
         let (u, v) = normal.any_orthonormal_pair();
         let mut groups: HashMap<usize, Vec<Vec3>> = HashMap::new();
         for i in 0..points.len() {
-            groups.entry(find(&mut parent, i)).or_default().push(points[i]);
+            groups
+                .entry(find(&mut parent, i))
+                .or_default()
+                .push(points[i]);
         }
         groups
             .into_values()
             .filter(|group| group.len() >= 3)
             .map(|group| {
                 let centroid = group.iter().sum::<Vec3>() / group.len() as f32;
-                let flat: Vec<Vec2> = group.iter().map(|p| Vec2::new(p.dot(u), p.dot(v))).collect();
-                Loop { centroid, girth: hull_perimeter(flat), reach: group.iter().map(|p| p.x.abs()).fold(0.0, f32::max) }
+                let flat: Vec<Vec2> = group
+                    .iter()
+                    .map(|p| Vec2::new(p.dot(u), p.dot(v)))
+                    .collect();
+                Loop {
+                    centroid,
+                    girth: hull_perimeter(flat),
+                    reach: group.iter().map(|p| p.x.abs()).fold(0.0, f32::max),
+                }
             })
             .collect()
     }
@@ -256,16 +270,25 @@ fn hull_perimeter(mut points: Vec<Vec2>) -> f32 {
     let mut hull: Vec<Vec2> = Vec::with_capacity(points.len() * 2);
     for pass in 0..2 {
         let start = hull.len();
-        let ordered: Box<dyn Iterator<Item = &Vec2>> = if pass == 0 { Box::new(points.iter()) } else { Box::new(points.iter().rev()) };
+        let ordered: Box<dyn Iterator<Item = &Vec2>> = if pass == 0 {
+            Box::new(points.iter())
+        } else {
+            Box::new(points.iter().rev())
+        };
         for &p in ordered {
-            while hull.len() >= start + 2 && (hull[hull.len() - 1] - hull[hull.len() - 2]).perp_dot(p - hull[hull.len() - 1]) <= 0.0 {
+            while hull.len() >= start + 2
+                && (hull[hull.len() - 1] - hull[hull.len() - 2]).perp_dot(p - hull[hull.len() - 1])
+                    <= 0.0
+            {
                 hull.pop();
             }
             hull.push(p);
         }
         hull.pop();
     }
-    (0..hull.len()).map(|i| hull[i].distance(hull[(i + 1) % hull.len()])).sum()
+    (0..hull.len())
+        .map(|i| hull[i].distance(hull[(i + 1) % hull.len()]))
+        .sum()
 }
 
 /// Evenly spaced samples of `from..=to`.
@@ -284,7 +307,12 @@ fn extreme(samples: impl Iterator<Item = (f32, Option<Loop>)>, sign: f32) -> Opt
 /// Lowest height at which the arms are joined to the torso.
 fn armpit_level(slicer: &Slicer<'_>, height: f32) -> f32 {
     steps(0.60 * height, 0.90 * height, 0.004)
-        .find(|&y| !slicer.horizontal(y).iter().any(|l| l.centroid.x.abs() > 0.12 && l.girth > 0.1))
+        .find(|&y| {
+            !slicer
+                .horizontal(y)
+                .iter()
+                .any(|l| l.centroid.x.abs() > 0.12 && l.girth > 0.1)
+        })
         .unwrap_or(0.75 * height)
 }
 
@@ -293,12 +321,16 @@ fn armpit_level(slicer: &Slicer<'_>, height: f32) -> f32 {
 /// the body's right (-x), index 1 its left (+x).
 pub(crate) fn find_shoulder_points(model: &BodyModel, mesh: &BodyMesh) -> [u32; 2] {
     ["upperarm01.R", "upperarm01.L"].map(|bone| {
-        let Some(joint) = model.bone(bone).map(|i| mesh.joints[i].head) else { return 0 };
+        let Some(joint) = model.bone(bone).map(|i| mesh.joints[i].head) else {
+            return 0;
+        };
         let above = Vec3::new(joint.x + 0.015 * joint.x.signum(), joint.y, joint.z);
         mesh.positions
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.y > joint.y && Vec2::new(p.x - above.x, p.z - above.z).length() < 0.02)
+            .filter(|(_, p)| {
+                p.y > joint.y && Vec2::new(p.x - above.x, p.z - above.z).length() < 0.02
+            })
             .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
             .map_or(0, |(i, _)| i as u32)
     })
@@ -319,26 +351,42 @@ pub fn measure(model: &BodyModel, mesh: &BodyMesh) -> Measurements {
 
     // --- legs ---------------------------------------------------------------
     // The crotch is the lowest point on the body's centre line.
-    let crotch = positions.iter().filter(|p| p.x.abs() < 0.004 && p.y > 0.2 * height).map(|p| p.y).fold(height, f32::min);
+    let crotch = positions
+        .iter()
+        .filter(|p| p.x.abs() < 0.004 && p.y > 0.2 * height)
+        .map(|p| p.y)
+        .fold(height, f32::min);
     set(Measure::Inseam, crotch);
     if let Some(l) = slicer.leg(crotch - 0.02) {
         set(Measure::Thigh, l.girth);
     }
-    if let Some((_, l)) = extreme(steps(0.14 * height, 0.27 * height, 0.006).map(|y| (y, slicer.leg(y))), 1.0) {
+    if let Some((_, l)) = extreme(
+        steps(0.14 * height, 0.27 * height, 0.006).map(|y| (y, slicer.leg(y))),
+        1.0,
+    ) {
         set(Measure::Calf, l.girth);
     }
-    if let Some((_, l)) = extreme(steps(0.03 * height, 0.09 * height, 0.004).map(|y| (y, slicer.leg(y))), -1.0) {
+    if let Some((_, l)) = extreme(
+        steps(0.03 * height, 0.09 * height, 0.004).map(|y| (y, slicer.leg(y))),
+        -1.0,
+    ) {
         set(Measure::Ankle, l.girth);
     }
 
     // --- torso ----------------------------------------------------------------
     let armpit = armpit_level(&slicer, height);
-    let torso = |from: f32, to: f32, sign: f32| extreme(steps(from, to, 0.006).map(|y| (y, slicer.torso(y))), sign);
+    let torso = |from: f32, to: f32, sign: f32| {
+        extreme(steps(from, to, 0.006).map(|y| (y, slicer.torso(y))), sign)
+    };
     let hips = torso(crotch + 0.01, crotch + 0.14 * height, 1.0);
     let bust = torso(armpit - 0.11 * height, armpit - 0.006, 1.0);
     let hip_level = hips.map_or(crotch + 0.08 * height, |h| h.0);
     let bust_level = bust.map_or(armpit - 0.05 * height, |b| b.0);
-    let waist = torso(hip_level + 0.05 * height, (bust_level - 0.04 * height).max(hip_level + 0.06 * height), -1.0);
+    let waist = torso(
+        hip_level + 0.05 * height,
+        (bust_level - 0.04 * height).max(hip_level + 0.06 * height),
+        -1.0,
+    );
     if let Some((_, l)) = hips {
         set(Measure::Hips, l.girth);
     }
@@ -360,8 +408,15 @@ pub fn measure(model: &BodyModel, mesh: &BodyMesh) -> Measurements {
     // The arm is measured along the skeleton: girths are cut perpendicular
     // to the bone, lengths follow the joints.
     let joint = |name: &str| model.bone(name).map(|i| mesh.joints[i].head);
-    if let (Some(shoulder), Some(elbow), Some(wrist)) = (joint("upperarm01.L"), joint("lowerarm01.L"), joint("wrist.L")) {
-        set(Measure::ArmLength, right.distance(elbow) + elbow.distance(wrist));
+    if let (Some(shoulder), Some(elbow), Some(wrist)) = (
+        joint("upperarm01.L"),
+        joint("lowerarm01.L"),
+        joint("wrist.L"),
+    ) {
+        set(
+            Measure::ArmLength,
+            right.distance(elbow) + elbow.distance(wrist),
+        );
         let around = |from: Vec3, to: Vec3, range: (f32, f32), sign: f32| {
             let (axis, length) = ((to - from).normalize_or(Vec3::NEG_Y), from.distance(to));
             let cut = |t: f32| {
@@ -372,9 +427,16 @@ pub fn measure(model: &BodyModel, mesh: &BodyMesh) -> Measurements {
                     // Skip fingers on one side and cuts that clip the torso
                     // on the other.
                     .filter(|l| l.girth > 0.08 && l.girth < 0.6)
-                    .min_by(|a, b| a.centroid.distance(on_axis).total_cmp(&b.centroid.distance(on_axis)))
+                    .min_by(|a, b| {
+                        a.centroid
+                            .distance(on_axis)
+                            .total_cmp(&b.centroid.distance(on_axis))
+                    })
             };
-            extreme(steps(range.0 * length, range.1 * length, length / 60.0).map(|t| (t, cut(t))), sign)
+            extreme(
+                steps(range.0 * length, range.1 * length, length / 60.0).map(|t| (t, cut(t))),
+                sign,
+            )
         };
         if let Some((_, l)) = around(shoulder, elbow, (0.35, 0.65), 1.0) {
             set(Measure::UpperArm, l.girth);
@@ -394,7 +456,12 @@ pub fn measure(model: &BodyModel, mesh: &BodyMesh) -> Measurements {
         })
         .sum();
     m.weight_kg = volume.abs() * 1000.0;
-    (m.bust_level, m.waist_level, m.hip_level, m.armpit_level) = (bust_level, waist.map_or(0.0, |w| w.0), hip_level, armpit);
-    m.torso_half_width = [hips, bust, waist].iter().flatten().map(|(_, l)| l.reach).fold(0.0, f32::max);
+    (m.bust_level, m.waist_level, m.hip_level, m.armpit_level) =
+        (bust_level, waist.map_or(0.0, |w| w.0), hip_level, armpit);
+    m.torso_half_width = [hips, bust, waist]
+        .iter()
+        .flatten()
+        .map(|(_, l)| l.reach)
+        .fold(0.0, f32::max);
     m
 }

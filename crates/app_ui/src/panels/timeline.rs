@@ -14,15 +14,27 @@ impl Panel for TimelinePanel {
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
         let timeline = &mut cx.editor.timeline;
         ui.horizontal(|ui| {
-            if ui.button("⏮").on_hover_text("Rewind and reset the drape").clicked() {
+            if ui
+                .button("⏮")
+                .on_hover_text("Rewind and reset the drape")
+                .clicked()
+            {
                 timeline.stop();
                 cx.output.commands.push(UiCommand::ResetDrape);
             }
-            let (icon, tip) = if timeline.playing { ("⏸", "Pause (Space)") } else { ("▶", "Play (Space)") };
+            let (icon, tip) = if timeline.playing {
+                ("⏸", "Pause (Space)")
+            } else {
+                ("▶", "Play (Space)")
+            };
             if ui.button(icon).on_hover_text(tip).clicked() {
                 timeline.toggle();
             }
-            if ui.add_enabled(!timeline.playing, egui::Button::new("⏭")).on_hover_text("Step one frame").clicked() {
+            if ui
+                .add_enabled(!timeline.playing, egui::Button::new("⏭"))
+                .on_hover_text("Step one frame")
+                .clicked()
+            {
                 cx.output.commands.push(UiCommand::StepSimulation);
             }
             ui.separator();
@@ -33,7 +45,12 @@ impl Panel for TimelinePanel {
             ui.add(egui::DragValue::new(&mut timeline.end_frame).range(1..=100_000));
             ui.separator();
             ui.label("Rate");
-            ui.add(egui::DragValue::new(&mut timeline.fps).range(1.0..=240.0).speed(0.5).suffix(" fps"));
+            ui.add(
+                egui::DragValue::new(&mut timeline.fps)
+                    .range(1.0..=240.0)
+                    .speed(0.5)
+                    .suffix(" fps"),
+            );
             ui.checkbox(&mut timeline.looping, "Loop");
             ui.separator();
             ui.label("Sub-steps");

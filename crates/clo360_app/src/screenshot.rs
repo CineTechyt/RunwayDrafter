@@ -27,12 +27,17 @@
 //!   available, else cpu). Garment animation is always baked with contact.
 //! * `--bake-seconds N` — limit a garment bake to the first N seconds; useful
 //!   for inspecting a particular early animation pose.
+//! * `--fabric denim|corduroy` — apply a close-up material preset for visual
+//!   shader checks.
 
 use std::path::PathBuf;
 
 use anyhow::Context as _;
 use app_ui::{AppUi, CanvasTool, UiCommand, ViewportTextures};
-use gfx_render::{CanvasBatch, CanvasRenderer, GpuContext, MeshData, SceneRenderer, SurfaceMaterial, ViewportRenderer};
+use gfx_render::{
+    CanvasBatch, CanvasRenderer, GpuContext, MeshData, SceneRenderer, SurfaceMaterial,
+    ViewportRenderer,
+};
 use glam::Vec3;
 use physics_xpbd::XpbdSolver;
 use topology_sync::{ClothSolver, SolverBackend, TopologySync};
@@ -62,6 +67,7 @@ struct Options {
     times: Vec<f32>,
     bake_seconds: Option<f32>,
     solver: Option<SolverBackend>,
+    fabric: Option<cad_core::FabricPattern>,
 }
 
 /// `R,G,B` in sRGB 0–255 as linear RGB.
@@ -73,13 +79,20 @@ fn srgb(text: &str) -> anyhow::Result<[f32; 3]> {
 }
 
 fn options(args: &[String]) -> anyhow::Result<Options> {
-    let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|at| args.get(at + 1)).cloned();
+    let value = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|at| args.get(at + 1))
+            .cloned()
+    };
     let size = value("--size").map_or(Ok([1600, 1000]), |s| {
         let (w, h) = s.split_once('x').context("--size takes WIDTHxHEIGHT")?;
         anyhow::Ok([w.parse()?, h.parse()?])
     })?;
     Ok(Options {
-        out: value("--screenshot").context("--screenshot takes an output file")?.into(),
+        out: value("--screenshot")
+            .context("--screenshot takes an output file")?
+            .into(),
         size,
         pattern: value("--pattern").map(PathBuf::from),
         tool: match value("--tool").as_deref() {
@@ -92,7 +105,11 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
         commands: [
             value("--open").map(|path| UiCommand::OpenProject(path.into())),
             value("--new").map(|name| {
-                UiCommand::NewProject(if name == "waistcoat" { app_ui::Sample::Waistcoat } else { app_ui::Sample::SleevelessTop })
+                UiCommand::NewProject(if name == "waistcoat" {
+                    app_ui::Sample::Waistcoat
+                } else {
+                    app_ui::Sample::SleevelessTop
+                })
             }),
         ]
         .into_iter()
@@ -101,13 +118,24 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
         play: args.iter().any(|a| a == "--play"),
         hair: value("--hair")
             .map(|text| {
-                let (text, fringe) = text.strip_suffix("+fringe").map_or((text.as_str(), false), |t| (t, true));
-                let (name, length) = text.split_once(',').map_or((text, None), |(n, l)| (n, Some(l)));
+                let (text, fringe) = text
+                    .strip_suffix("+fringe")
+                    .map_or((text.as_str(), false), |t| (t, true));
+                let (name, length) = text
+                    .split_once(',')
+                    .map_or((text, None), |(n, l)| (n, Some(l)));
                 let style = avatar::HairStyle::ALL
                     .into_iter()
                     .find(|s| format!("{s:?}").eq_ignore_ascii_case(name))
                     .with_context(|| format!("unknown hair style {name}"))?;
-                anyhow::Ok((style, length.map(|l| l.parse::<f32>()).transpose()?.map(|cm| cm / 100.0), fringe))
+                anyhow::Ok((
+                    style,
+                    length
+                        .map(|l| l.parse::<f32>())
+                        .transpose()?
+                        .map(|cm| cm / 100.0),
+                    fringe,
+                ))
             })
             .transpose()?,
         skin: value("--skin").map(|t| srgb(&t)).transpose()?,
@@ -120,7 +148,9 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
             })
             .transpose()?,
         avatar_window: args.iter().any(|a| a == "--avatar-window"),
-        times: value("--at").map(|t| t.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default(),
+        times: value("--at")
+            .map(|t| t.split(',').filter_map(|v| v.parse().ok()).collect())
+            .unwrap_or_default(),
         animation: value("--animate")
             .map(|name| {
                 let motion = match name.as_str() {
@@ -131,7 +161,12 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
                     "yoga" => avatar::Motion::Yoga,
                     other => anyhow::bail!("unknown animation {other}"),
                 };
-                Ok((motion, value("--at").and_then(|t| t.split(',').next()?.parse().ok()).unwrap_or(0.0)))
+                Ok((
+                    motion,
+                    value("--at")
+                        .and_then(|t| t.split(',').next()?.parse().ok())
+                        .unwrap_or(0.0),
+                ))
             })
             .transpose()?,
         bake_seconds: value("--bake-seconds").map(|v| v.parse()).transpose()?,
@@ -141,6 +176,12 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
             Some("cpu") => Some(SolverBackend::Cpu),
             Some("gpu") => Some(SolverBackend::Gpu),
             Some(other) => anyhow::bail!("unknown solver {other:?} (contact, cpu or gpu)"),
+        },
+        fabric: match value("--fabric").as_deref() {
+            None => None,
+            Some("denim") => Some(cad_core::FabricPattern::Denim),
+            Some("corduroy") => Some(cad_core::FabricPattern::Corduroy),
+            Some(other) => anyhow::bail!("unknown fabric {other:?} (denim or corduroy)"),
         },
     })
 }
@@ -155,12 +196,21 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     // --- the same set-up as the window -------------------------------------
     let egui_ctx = egui::Context::default();
     egui_ctx.set_theme(egui::Theme::Dark);
-    let mut egui_renderer = egui_wgpu::Renderer::new(&gpu.device, FORMAT, egui_wgpu::RendererOptions::default());
+    let mut egui_renderer =
+        egui_wgpu::Renderer::new(&gpu.device, FORMAT, egui_wgpu::RendererOptions::default());
     let mut canvas = CanvasRenderer::new(&gpu, [16, 16]);
     let mut scene = SceneRenderer::new(&gpu, [16, 16]);
     let mut floor = MeshData::default();
     floor.add_ground(Vec3::ZERO, 4.0);
-    scene.add_static(&gpu, &floor, SurfaceMaterial { base_color: [0.10, 0.105, 0.115], roughness: 0.9, ..Default::default() });
+    scene.add_static(
+        &gpu,
+        &floor,
+        SurfaceMaterial {
+            base_color: [0.10, 0.105, 0.115],
+            roughness: 0.9,
+            ..Default::default()
+        },
+    );
     let filter = wgpu::FilterMode::Linear;
     let textures = ViewportTextures {
         canvas: egui_renderer.register_native_texture(&gpu.device, canvas.target().view(), filter),
@@ -170,16 +220,27 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         .and_then(|path| ::avatar::BodyModel::load(path).ok())
         .map(|model| {
             let closing = crate::session::closing_radius(app_ui::SimulationState::DRAFT_MM);
-            let params = if args.iter().any(|a| a == "--man") { ::avatar::BodyParams::male() } else { ::avatar::BodyParams::female() };
+            let params = if args.iter().any(|a| a == "--man") {
+                ::avatar::BodyParams::male()
+            } else {
+                ::avatar::BodyParams::female()
+            };
             Body::new(model, params, ::avatar::PoseParams::default(), closing)
         });
-    let solver: Box<dyn ClothSolver> =
-        if gpu.supports_compute { Box::new(XpbdSolver::with_gpu(gpu.device.clone(), gpu.queue.clone())) } else { Box::new(XpbdSolver::new()) };
+    let solver: Box<dyn ClothSolver> = if gpu.supports_compute {
+        Box::new(XpbdSolver::with_gpu(gpu.device.clone(), gpu.queue.clone()))
+    } else {
+        Box::new(XpbdSolver::new())
+    };
     let mut session = Session::new(Some(solver), body, Vec::new());
     session.garment_bake_duration = options.bake_seconds;
     session.editor.simulation.gpu_available = gpu.supports_compute;
     // As in the app: a real-time solver for the live view.
-    session.editor.simulation.settings.backend = if gpu.supports_compute { SolverBackend::Gpu } else { SolverBackend::Cpu };
+    session.editor.simulation.settings.backend = if gpu.supports_compute {
+        SolverBackend::Gpu
+    } else {
+        SolverBackend::Cpu
+    };
     if let Some(solver) = options.solver {
         session.editor.simulation.settings.backend = solver;
     }
@@ -202,7 +263,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut garment_started = std::time::Instant::now();
     if let Some((motion, time)) = options.animation.filter(|_| !simulate_garment) {
         let playing = args.iter().any(|a| a == "--play-animation");
-        session.editor.avatar.animation = app_ui::AnimationState { motion: Some(motion), playing, time, ..Default::default() };
+        session.editor.avatar.animation = app_ui::AnimationState {
+            motion: Some(motion),
+            playing,
+            time,
+            ..Default::default()
+        };
     }
     if let Some(colour) = options.hair_colour {
         looks.hair.color = colour;
@@ -230,7 +296,11 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let [width, height] = options.size;
     let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("screenshot"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -245,12 +315,20 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut shot_index = 0;
     let (mut jitter, mut jitter_previous): (Vec<f32>, Option<Vec<glam::Vec3>>) = (Vec::new(), None);
     let mut ready_since: Option<u32> = None;
+    let mut fabric_applied = options.fabric.is_none();
     loop {
         // Once the import has run (and its piece names are in), make it the
         // project, then set up the requested state.
-        if !pattern_applied && !session.busy() && session.editor.pattern_import.pattern.is_some() && frame > 1 {
+        if !pattern_applied
+            && !session.busy()
+            && session.editor.pattern_import.pattern.is_some()
+            && frame > 1
+        {
             let pattern = session.editor.pattern_import.pattern.clone().unwrap();
-            pending.push(UiCommand::ApplyImportedPattern { pattern: Box::new(pattern), replace_project: true });
+            pending.push(UiCommand::ApplyImportedPattern {
+                pattern: Box::new(pattern),
+                replace_project: true,
+            });
             pending.push(UiCommand::TidyLayout);
             pattern_applied = true;
         }
@@ -260,7 +338,10 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         }
 
         let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width as f32, height as f32),
+            )),
             ..Default::default()
         };
         let mut ui_output = None;
@@ -269,15 +350,20 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             // CLO360_GLYPHS="…": shows those characters, to see which ones
             // the interface fonts can draw.
             if let Ok(glyphs) = std::env::var("CLO360_GLYPHS") {
-                egui::Window::new("Glyphs").default_pos([300.0, 200.0]).show(root.ctx(), |ui| {
-                    for chunk in glyphs.chars().collect::<Vec<_>>().chunks(8) {
-                        ui.horizontal(|ui| {
-                            for c in chunk {
-                                ui.label(egui::RichText::new(format!("{c} {:04X}", *c as u32)).size(18.0));
-                            }
-                        });
-                    }
-                });
+                egui::Window::new("Glyphs")
+                    .default_pos([300.0, 200.0])
+                    .show(root.ctx(), |ui| {
+                        for chunk in glyphs.chars().collect::<Vec<_>>().chunks(8) {
+                            ui.horizontal(|ui| {
+                                for c in chunk {
+                                    ui.label(
+                                        egui::RichText::new(format!("{c} {:04X}", *c as u32))
+                                            .size(18.0),
+                                    );
+                                }
+                            });
+                        }
+                    });
             }
         });
         for (id, deltas) in full_output.textures_delta.set.drain() {
@@ -290,8 +376,40 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         ui_output.commands.append(&mut pending);
         let inputs = (ui_output.canvas, ui_output.scene);
         session.update(ui_output, 1.0 / 30.0);
+        if !fabric_applied && frame > 1 && !session.busy() {
+            if let Some(pattern) = options.fabric {
+                if let Some(id) = session.document.fabrics().first().map(|fabric| fabric.id) {
+                    if let Some(fabric) = session.document.fabric_mut(id) {
+                        fabric.pattern = pattern;
+                        fabric.base_color = match pattern {
+                            cad_core::FabricPattern::Denim => [0.035, 0.10, 0.28],
+                            cad_core::FabricPattern::Corduroy => [0.33, 0.12, 0.045],
+                            _ => fabric.base_color,
+                        };
+                        fabric.weave_strength = 0.7;
+                        fabric.wash = if pattern == cad_core::FabricPattern::Denim {
+                            0.35
+                        } else {
+                            0.0
+                        };
+                        fabric.pattern_scale = 1.0;
+                        fabric.relief = if pattern == cad_core::FabricPattern::Corduroy {
+                            1.0
+                        } else {
+                            0.35
+                        };
+                    }
+                    session.document.touch();
+                }
+            }
+            fabric_applied = true;
+        }
 
-        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("screenshot frame") });
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("screenshot frame"),
+            });
         crate::app::draw_viewports(
             &gpu,
             &mut session,
@@ -305,8 +423,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             &mut encoder,
         );
         let jobs = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [width, height], pixels_per_point: full_output.pixels_per_point };
-        let extra = egui_renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &jobs, &screen);
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [width, height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+        let extra =
+            egui_renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &jobs, &screen);
         {
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -315,7 +437,10 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                         view: &view,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     ..Default::default()
                 })
@@ -325,13 +450,18 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         for id in &freed {
             egui_renderer.free_texture(id);
         }
-        gpu.queue.submit(extra.into_iter().chain([encoder.finish()]));
+        gpu.queue
+            .submit(extra.into_iter().chain([encoder.finish()]));
 
         // CLO360_JITTER=1: how much the cloth still moves once settled.
         if std::env::var_os("CLO360_JITTER").is_some() {
             let positions = session.topology.mesh().positions.clone();
             if let Some(previous) = &jitter_previous {
-                let moved = positions.iter().zip(previous).map(|(a, b): (&glam::Vec3, &glam::Vec3)| a.distance(*b)).fold(0.0f32, f32::max);
+                let moved = positions
+                    .iter()
+                    .zip(previous)
+                    .map(|(a, b): (&glam::Vec3, &glam::Vec3)| a.distance(*b))
+                    .fold(0.0f32, f32::max);
                 jitter.push(moved);
             }
             jitter_previous = Some(positions);
@@ -351,11 +481,23 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             ready_since = Some(frame);
         }
         let drape_done = !session.editor.timeline.playing && session.is_draped();
-        if simulate_garment && garment_stage < 2 && ready_since.is_some_and(|since| frame - since >= options.frames) && (garment_stage > 0 || drape_done) {
+        if simulate_garment
+            && garment_stage < 2
+            && ready_since.is_some_and(|since| frame - since >= options.frames)
+            && (garment_stage > 0 || drape_done)
+        {
             if garment_stage == 0 {
-                println!("garment draped after {} frames; simulating it through the animation", frame);
+                println!(
+                    "garment draped after {} frames; simulating it through the animation",
+                    frame
+                );
                 if let Some((motion, time)) = options.animation {
-                    session.editor.avatar.animation = app_ui::AnimationState { motion: Some(motion), playing: false, time, ..Default::default() };
+                    session.editor.avatar.animation = app_ui::AnimationState {
+                        motion: Some(motion),
+                        playing: false,
+                        time,
+                        ..Default::default()
+                    };
                     if !preview_garment {
                         pending.push(UiCommand::SimulateGarmentMotion);
                     }
@@ -364,23 +506,32 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 garment_stage = if preview_garment { 2 } else { 1 };
                 ready_since = Some(frame);
                 shot_index = 0;
-            } else if matches!(session.editor.avatar.animation.garment, app_ui::GarmentStatus::Carried | app_ui::GarmentStatus::NotWorn)
-                && garment_started.elapsed().as_secs_f32() > 2.0
+            } else if matches!(
+                session.editor.avatar.animation.garment,
+                app_ui::GarmentStatus::Carried | app_ui::GarmentStatus::NotWorn
+            ) && garment_started.elapsed().as_secs_f32() > 2.0
             {
                 anyhow::bail!("the garment simulation did not start (is the garment draped?)");
             } else if session.editor.avatar.animation.garment == app_ui::GarmentStatus::Unreliable {
-                println!("garment simulation rejected as unreliable after {:.1} s; showing it carried", garment_started.elapsed().as_secs_f32());
+                println!(
+                    "garment simulation rejected as unreliable after {:.1} s; showing it carried",
+                    garment_started.elapsed().as_secs_f32()
+                );
                 garment_stage = 2;
                 ready_since = Some(frame);
                 shot_index = 0;
             } else if session.editor.avatar.animation.garment == app_ui::GarmentStatus::Simulated {
-                println!("garment simulated in {:.1} s", garment_started.elapsed().as_secs_f32());
+                println!(
+                    "garment simulated in {:.1} s",
+                    garment_started.elapsed().as_secs_f32()
+                );
                 garment_stage = 2;
                 ready_since = Some(frame);
                 shot_index = 0;
             } else {
                 if frame % 30 == 0
-                    && let app_ui::GarmentStatus::Simulating(progress) = session.editor.avatar.animation.garment
+                    && let app_ui::GarmentStatus::Simulating(progress) =
+                        session.editor.avatar.animation.garment
                 {
                     println!("garment simulation {:.0}%", progress * 100.0);
                 }
@@ -390,11 +541,22 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             continue;
         }
         // One image per requested time, three frames after setting it.
-        if garment_stage == 2 && options.times.len() > 1 && ready_since.is_some_and(|since| frame - since >= 3) {
+        if garment_stage == 2
+            && options.times.len() > 1
+            && ready_since.is_some_and(|since| frame - since >= 3)
+        {
             let path = options.out.with_file_name(format!(
                 "{}_{shot_index}.{}",
-                options.out.file_stem().and_then(|s| s.to_str()).unwrap_or("shot"),
-                options.out.extension().and_then(|s| s.to_str()).unwrap_or("ppm")
+                options
+                    .out
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("shot"),
+                options
+                    .out
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("ppm")
             ));
             save(&gpu, &target, [width, height], &path)?;
             println!("wrote {}", path.display());
@@ -408,7 +570,13 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             }
         }
         let waiting_for_garment = simulate_garment && garment_stage < 2;
-        if (!waiting_for_garment && ready_since.is_some_and(|since| frame - since >= options.frames.min(if garment_stage == 2 { 3 } else { u32::MAX })))
+        if (!waiting_for_garment
+            && ready_since.is_some_and(|since| {
+                frame - since
+                    >= options
+                        .frames
+                        .min(if garment_stage == 2 { 3 } else { u32::MAX })
+            }))
             || frame > 200_000
         {
             break;
@@ -433,7 +601,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 }
 
 /// Reads the texture back and writes it as binary PPM.
-fn save(gpu: &GpuContext, texture: &wgpu::Texture, [width, height]: [u32; 2], path: &std::path::Path) -> anyhow::Result<()> {
+fn save(
+    gpu: &GpuContext,
+    texture: &wgpu::Texture,
+    [width, height]: [u32; 2],
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
     let row = width * 4;
     let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -442,20 +615,39 @@ fn save(gpu: &GpuContext, texture: &wgpu::Texture, [width, height]: [u32; 2], pa
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: None } },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: None,
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
     );
     gpu.queue.submit([encoder.finish()]);
     let slice = buffer.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
-    let data = slice.get_mapped_range().context("read-back buffer not mapped")?;
+    let data = slice
+        .get_mapped_range()
+        .context("read-back buffer not mapped")?;
     let mut bytes = format!("P6\n{width} {height}\n255\n").into_bytes();
     for line in data.chunks_exact(padded as usize) {
-        bytes.extend(line[..row as usize].chunks_exact(4).flat_map(|rgba| &rgba[..3]));
+        bytes.extend(
+            line[..row as usize]
+                .chunks_exact(4)
+                .flat_map(|rgba| &rgba[..3]),
+        );
     }
     std::fs::write(path, bytes)?;
     Ok(())

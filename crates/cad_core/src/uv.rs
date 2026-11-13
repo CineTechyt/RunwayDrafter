@@ -21,7 +21,11 @@ pub struct UvMapping {
 
 impl Default for UvMapping {
     fn default() -> Self {
-        Self { origin: Vec2::ZERO, tile_size: Vec2::splat(100.0), rotation: 0.0 }
+        Self {
+            origin: Vec2::ZERO,
+            tile_size: Vec2::splat(100.0),
+            rotation: 0.0,
+        }
     }
 }
 
@@ -50,7 +54,11 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let m = UvMapping { origin: Vec2::new(10.0, -4.0), tile_size: Vec2::new(50.0, 80.0), rotation: 0.7 };
+        let m = UvMapping {
+            origin: Vec2::new(10.0, -4.0),
+            tile_size: Vec2::new(50.0, 80.0),
+            rotation: 0.7,
+        };
         let p = Vec2::new(123.0, 45.0);
         assert!(m.unmap(m.map(p)).distance(p) < 1e-3);
     }

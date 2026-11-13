@@ -8,12 +8,11 @@ use anyhow::Context as _;
 use app_ui::{AppUi, ViewportInput, ViewportTextures};
 use gfx_render::scene3d::avatar;
 use gfx_render::{
-    CanvasBatch, CanvasRenderer, GpuContext, MeshData, MeshVertex, SceneRenderer, Shading, SurfaceMaterial, ViewportRenderer,
-    canvas2d,
-    preferred_backends,
+    CanvasBatch, CanvasRenderer, GpuContext, MeshData, MeshVertex, SceneRenderer, Shading,
+    SurfaceMaterial, ViewportRenderer, canvas2d, preferred_backends,
 };
-use glam::Vec3;
 use glam::Vec2;
+use glam::Vec3;
 use physics_xpbd::XpbdSolver;
 use topology_sync::{ClothSolver, Collider, SolverBackend, TopologySync};
 use winit::application::ApplicationHandler;
@@ -37,7 +36,12 @@ pub struct App {
 
 impl App {
     pub fn new(autoplay: bool, avatar: Option<std::path::PathBuf>) -> Self {
-        Self { running: None, error: None, autoplay, avatar }
+        Self {
+            running: None,
+            error: None,
+            autoplay,
+            avatar,
+        }
     }
 
     /// The start-up error, if the event loop exited because of one.
@@ -57,7 +61,10 @@ impl ApplicationHandler for App {
         match pollster::block_on(Running::new(event_loop)) {
             Ok(mut running) => {
                 if let Some(path) = self.avatar.take() {
-                    let import = app_ui::UiOutput { commands: vec![app_ui::UiCommand::ImportAvatar(path)], ..Default::default() };
+                    let import = app_ui::UiOutput {
+                        commands: vec![app_ui::UiCommand::ImportAvatar(path)],
+                        ..Default::default()
+                    };
                     running.session.update(import, 0.0);
                     match &running.session.editor.io.status {
                         Some(Ok(message)) => log::info!("{message}"),
@@ -76,8 +83,15 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window: WindowId, event: WindowEvent) {
-        let Some(running) = &mut self.running else { return };
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(running) = &mut self.running else {
+            return;
+        };
 
         // egui sees every event first; viewport input also flows through it,
         // so nothing here needs to know whether egui "consumed" the event.
@@ -118,7 +132,9 @@ impl ApplicationHandler for App {
 
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
         // A `WaitUntil` deadline set by the last frame has passed.
-        if let (winit::event::StartCause::ResumeTimeReached { .. }, Some(running)) = (cause, &self.running) {
+        if let (winit::event::StartCause::ResumeTimeReached { .. }, Some(running)) =
+            (cause, &self.running)
+        {
             running.window.request_redraw();
         }
     }
@@ -137,9 +153,18 @@ pub(crate) fn find_body_model() -> Option<std::path::PathBuf> {
     }
     candidates.push(RELATIVE.into());
     if let Ok(exe) = std::env::current_exe() {
-        candidates.extend(exe.ancestors().skip(1).take(4).map(|dir| dir.join(RELATIVE)));
+        candidates.extend(
+            exe.ancestors()
+                .skip(1)
+                .take(4)
+                .map(|dir| dir.join(RELATIVE)),
+        );
     }
-    candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(RELATIVE));
+    candidates.push(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(RELATIVE),
+    );
     candidates.into_iter().find(|path| path.is_file())
 }
 
@@ -166,17 +191,26 @@ pub(crate) struct Running {
 
 impl Running {
     async fn new(event_loop: &ActiveEventLoop) -> anyhow::Result<Self> {
-        let attributes = Window::default_attributes().with_title("clo360").with_inner_size(LogicalSize::new(1440.0, 900.0));
-        let window = Arc::new(event_loop.create_window(attributes).context("failed to create the window")?);
+        let attributes = Window::default_attributes()
+            .with_title("clo360")
+            .with_inner_size(LogicalSize::new(1440.0, 900.0));
+        let window = Arc::new(
+            event_loop
+                .create_window(attributes)
+                .context("failed to create the window")?,
+        );
 
         // --- GPU ---------------------------------------------------------------
         // The display handle lets the GL fallback create a context on Wayland;
         // `with_env` honours WGPU_BACKEND and friends.
-        let mut descriptor =
-            wgpu::InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle()));
+        let mut descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
+            event_loop.owned_display_handle(),
+        ));
         descriptor.backends = preferred_backends();
         let instance = wgpu::Instance::new(descriptor.with_env());
-        let surface = instance.create_surface(window.clone()).context("failed to create the window surface")?;
+        let surface = instance
+            .create_surface(window.clone())
+            .context("failed to create the window surface")?;
         let (gpu, adapter) = GpuContext::request(&instance, Some(&surface)).await?;
 
         let size = window.inner_size();
@@ -202,8 +236,11 @@ impl Running {
             window.theme(),
             Some(max_texture_side as usize),
         );
-        let mut egui_renderer =
-            egui_wgpu::Renderer::new(&gpu.device, surface_config.format, egui_wgpu::RendererOptions::default());
+        let mut egui_renderer = egui_wgpu::Renderer::new(
+            &gpu.device,
+            surface_config.format,
+            egui_wgpu::RendererOptions::default(),
+        );
 
         // --- viewports ---------------------------------------------------------
         // Real sizes arrive with the first UI frame.
@@ -211,12 +248,28 @@ impl Running {
         let mut scene = SceneRenderer::new(&gpu, [16, 16]);
         let mut floor = MeshData::default();
         floor.add_ground(Vec3::ZERO, 4.0);
-        scene.add_static(&gpu, &floor, SurfaceMaterial { base_color: [0.10, 0.105, 0.115], roughness: 0.9, ..Default::default() });
+        scene.add_static(
+            &gpu,
+            &floor,
+            SurfaceMaterial {
+                base_color: [0.10, 0.105, 0.115],
+                roughness: 0.9,
+                ..Default::default()
+            },
+        );
 
         let filter = wgpu::FilterMode::Linear;
         let textures = ViewportTextures {
-            canvas: egui_renderer.register_native_texture(&gpu.device, canvas.target().view(), filter),
-            scene: egui_renderer.register_native_texture(&gpu.device, scene.target().view(), filter),
+            canvas: egui_renderer.register_native_texture(
+                &gpu.device,
+                canvas.target().view(),
+                filter,
+            ),
+            scene: egui_renderer.register_native_texture(
+                &gpu.device,
+                scene.target().view(),
+                filter,
+            ),
         };
 
         // --- avatar ------------------------------------------------------------
@@ -224,7 +277,12 @@ impl Running {
             Some(path) => match ::avatar::BodyModel::load(&path) {
                 Ok(model) => {
                     let closing = crate::session::closing_radius(app_ui::SimulationState::DRAFT_MM);
-                    Some(Body::new(model, ::avatar::BodyParams::female(), ::avatar::PoseParams::default(), closing))
+                    Some(Body::new(
+                        model,
+                        ::avatar::BodyParams::female(),
+                        ::avatar::PoseParams::default(),
+                        closing,
+                    ))
                 }
                 Err(error) => {
                     log::error!("cannot load {}: {error}", path.display());
@@ -232,7 +290,9 @@ impl Running {
                 }
             },
             None => {
-                log::warn!("assets/avatar/body.bin not found; run tools/bake_avatar.py. Using the placeholder mannequin.");
+                log::warn!(
+                    "assets/avatar/body.bin not found; run tools/bake_avatar.py. Using the placeholder mannequin."
+                );
                 None
             }
         };
@@ -240,10 +300,22 @@ impl Running {
         // whose ellipsoids are also what the cloth collides with.
         let mut colliders = Vec::new();
         if body.is_none() {
-            scene.set_avatar(&gpu, &avatar::mannequin(), SurfaceMaterial { base_color: [0.55, 0.56, 0.60], roughness: 0.55, ..Default::default() });
+            scene.set_avatar(
+                &gpu,
+                &avatar::mannequin(),
+                SurfaceMaterial {
+                    base_color: [0.55, 0.56, 0.60],
+                    roughness: 0.55,
+                    ..Default::default()
+                },
+            );
             colliders = avatar::mannequin_parts()
                 .iter()
-                .map(|part| Collider { center: part.center, radii: part.radii, rotation: part.rotation })
+                .map(|part| Collider {
+                    center: part.center,
+                    radii: part.radii,
+                    rotation: part.rotation,
+                })
                 .collect();
         }
 
@@ -256,12 +328,20 @@ impl Running {
         };
         let mut session = Session::new(Some(solver), body, colliders);
         session.editor.simulation.gpu_available = gpu.supports_compute;
-    // As in the app: a real-time solver for the live view.
-    session.editor.simulation.settings.backend = if gpu.supports_compute { SolverBackend::Gpu } else { SolverBackend::Cpu };
+        // As in the app: a real-time solver for the live view.
+        session.editor.simulation.settings.backend = if gpu.supports_compute {
+            SolverBackend::Gpu
+        } else {
+            SolverBackend::Cpu
+        };
         // The live view must keep up with the frame rate: the explicit
         // solver on the GPU, or on the CPU without compute shaders. (The
         // contact solver bakes animations, and can be picked here too.)
-        session.editor.simulation.settings.backend = if gpu.supports_compute { SolverBackend::Gpu } else { SolverBackend::Cpu };
+        session.editor.simulation.settings.backend = if gpu.supports_compute {
+            SolverBackend::Gpu
+        } else {
+            SolverBackend::Cpu
+        };
         let info = adapter.get_info();
         session.editor.stats.backend = format!("{} · {:?}", info.name, info.backend);
 
@@ -290,7 +370,8 @@ impl Running {
         }
         self.surface_config.width = width.min(self.max_texture_side);
         self.surface_config.height = height.min(self.max_texture_side);
-        self.surface.configure(&self.gpu.device, &self.surface_config);
+        self.surface
+            .configure(&self.gpu.device, &self.surface_config);
     }
 
     /// Runs one frame. Returns how long the UI is happy to wait before the
@@ -305,17 +386,25 @@ impl Running {
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let mut ui_output = None;
         let mut full_output = self.egui_ctx.run_ui(raw_input, |ui| {
-            ui_output = Some(self.ui.show(ui, &mut self.session.document, &mut self.session.editor, self.textures));
+            ui_output = Some(self.ui.show(
+                ui,
+                &mut self.session.document,
+                &mut self.session.editor,
+                self.textures,
+            ));
         });
-        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+        self.egui_state
+            .handle_platform_output(&self.window, full_output.platform_output);
         // egui's texture changes (font atlas etc.) must be applied even if
         // this frame ends up not being presented.
         for (id, deltas) in full_output.textures_delta.set.drain() {
             for delta in &deltas {
-                self.egui_renderer.update_texture(&self.gpu.device, &self.gpu.queue, id, delta);
+                self.egui_renderer
+                    .update_texture(&self.gpu.device, &self.gpu.queue, id, delta);
             }
         }
-        let freed_textures: Vec<egui::TextureId> = full_output.textures_delta.free.drain().collect();
+        let freed_textures: Vec<egui::TextureId> =
+            full_output.textures_delta.free.drain().collect();
         let ui_output = ui_output.unwrap_or_default();
         let (canvas_input, scene_input) = (ui_output.canvas, ui_output.scene);
 
@@ -323,8 +412,12 @@ impl Running {
         self.session.update(ui_output, dt);
 
         // 3. Render the viewports that are on screen into their targets.
-        let mut encoder =
-            self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
 
         draw_viewports(
             &self.gpu,
@@ -341,9 +434,11 @@ impl Running {
 
         // 4. Composite the UI (which samples those targets) onto the window.
         let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.gpu.device, &self.surface_config);
+                self.surface
+                    .configure(&self.gpu.device, &self.surface_config);
                 self.finish_without_presenting(encoder, &freed_textures);
                 return Ok(Duration::ZERO); // try again next frame
             }
@@ -353,16 +448,25 @@ impl Running {
             }
             wgpu::CurrentSurfaceTexture::Validation => anyhow::bail!("surface validation error"),
         };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let pixels_per_point = full_output.pixels_per_point;
-        let paint_jobs = self.egui_ctx.tessellate(full_output.shapes, pixels_per_point);
+        let paint_jobs = self
+            .egui_ctx
+            .tessellate(full_output.shapes, pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.surface_config.width, self.surface_config.height],
             pixels_per_point,
         };
-        let extra_commands =
-            self.egui_renderer.update_buffers(&self.gpu.device, &self.gpu.queue, &mut encoder, &paint_jobs, &screen);
+        let extra_commands = self.egui_renderer.update_buffers(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &mut encoder,
+            &paint_jobs,
+            &screen,
+        );
         {
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -371,7 +475,10 @@ impl Running {
                         view: &view,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     ..Default::default()
                 })
@@ -382,19 +489,31 @@ impl Running {
             self.egui_renderer.free_texture(id);
         }
 
-        self.gpu.queue.submit(extra_commands.into_iter().chain([encoder.finish()]));
+        self.gpu
+            .queue
+            .submit(extra_commands.into_iter().chain([encoder.finish()]));
         self.window.pre_present_notify();
         self.gpu.queue.present(frame);
 
         // 5. When is the next frame due?
-        let egui_delay =
-            full_output.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
-        Ok(if self.session.animating() { Duration::ZERO } else { egui_delay })
+        let egui_delay = full_output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(Duration::MAX, |v| v.repaint_delay);
+        Ok(if self.session.animating() {
+            Duration::ZERO
+        } else {
+            egui_delay
+        })
     }
 
     /// Ends a frame whose surface texture could not be acquired: the viewport
     /// passes are still submitted so queued buffer writes are flushed.
-    fn finish_without_presenting(&mut self, encoder: wgpu::CommandEncoder, freed_textures: &[egui::TextureId]) {
+    fn finish_without_presenting(
+        &mut self,
+        encoder: wgpu::CommandEncoder,
+        freed_textures: &[egui::TextureId],
+    ) {
         self.gpu.queue.submit([encoder.finish()]);
         for id in freed_textures {
             self.egui_renderer.free_texture(id);
@@ -428,13 +547,25 @@ impl Running {
 fn upload_avatar(gpu: &GpuContext, scene: &mut SceneRenderer, session: &mut Session) {
     let appearance = session.editor.avatar.appearance;
     let white = [1.0; 3];
-    let skin_material = SurfaceMaterial { base_color: white, roughness: 0.5, shading: Shading::Skin, ..Default::default() };
+    let skin_material = SurfaceMaterial {
+        base_color: white,
+        roughness: 0.5,
+        shading: Shading::Skin,
+        ..Default::default()
+    };
     // Drawn slightly smaller than it is (CLO calls this the skin offset):
     // the cloth rests a few millimetres off the true skin, and this keeps
     // the last of it from shimmering through.
     let skin_mesh = |body: &::avatar::BodyMesh, colors: &dyn Fn(usize) -> [f32; 3]| MeshData {
         vertices: (0..body.positions.len())
-            .map(|i| MeshVertex::new(body.positions[i] - body.normals[i] * SKIN_INSET, body.normals[i], Vec2::ZERO).with_color(colors(i)))
+            .map(|i| {
+                MeshVertex::new(
+                    body.positions[i] - body.normals[i] * SKIN_INSET,
+                    body.normals[i],
+                    Vec2::ZERO,
+                )
+                .with_color(colors(i))
+            })
             .collect(),
         // The body's own eyes are replaced by coloured eyeballs.
         indices: body.skin().iter().flatten().copied().collect(),
@@ -451,13 +582,19 @@ fn upload_avatar(gpu: &GpuContext, scene: &mut SceneRenderer, session: &mut Sess
             vertices: (0..mesh.positions.len())
                 .map(|i| {
                     let position = head.transform_point3(mesh.positions[i] + offset);
-                    let normal = head.transform_vector3(mesh.normals[i]).normalize_or(Vec3::Y);
-                    MeshVertex::new(position, normal, mesh.uvs[i]).with_color(mesh.colors[i]).with_value(mesh.coverage[i])
+                    let normal = head
+                        .transform_vector3(mesh.normals[i])
+                        .normalize_or(Vec3::Y);
+                    MeshVertex::new(position, normal, mesh.uvs[i])
+                        .with_color(mesh.colors[i])
+                        .with_value(mesh.coverage[i])
                 })
                 .collect(),
             indices: mesh.triangles.iter().flatten().copied().collect(),
         };
-        let skin = skin_mesh(&body.mesh, &|i| looks.skin_colors.get(i).copied().unwrap_or(appearance.skin));
+        let skin = skin_mesh(&body.mesh, &|i| {
+            looks.skin_colors.get(i).copied().unwrap_or(appearance.skin)
+        });
         // Set back with the eyelids around them.
         let eyes = moved(&looks.eyes, Vec3::NEG_Z * SKIN_INSET);
         let hair = moved(&looks.hair, Vec3::ZERO);
@@ -466,8 +603,23 @@ fn upload_avatar(gpu: &GpuContext, scene: &mut SceneRenderer, session: &mut Sess
             gpu,
             &[
                 (&skin, skin_material),
-                (&eyes, SurfaceMaterial { base_color: white, roughness: 0.08, ..Default::default() }),
-                (&hair, SurfaceMaterial { base_color: white, roughness: 0.5, shading: Shading::Hair { root }, ..Default::default() }),
+                (
+                    &eyes,
+                    SurfaceMaterial {
+                        base_color: white,
+                        roughness: 0.08,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    &hair,
+                    SurfaceMaterial {
+                        base_color: white,
+                        roughness: 0.5,
+                        shading: Shading::Hair { root },
+                        ..Default::default()
+                    },
+                ),
             ],
         );
         return;
@@ -494,39 +646,49 @@ pub(crate) fn draw_viewports(
     (canvas_input, scene_input): (Option<ViewportInput>, Option<ViewportInput>),
     encoder: &mut wgpu::CommandEncoder,
 ) {
-        if session.take_avatar_dirty() {
-            upload_avatar(gpu, scene, session);
+    if session.take_avatar_dirty() {
+        upload_avatar(gpu, scene, session);
+    }
+    scene.overlay = session.surface_overlay().0;
+    if session.take_garment_dirty() {
+        let (_, values) = session.surface_overlay();
+        scene.sync_garment(gpu, session.topology.mesh(), values, |piece| {
+            session.fabric_thickness(piece)
+        });
+    }
+    if let Some(input) = canvas_input {
+        Running::fit_target(
+            gpu,
+            egui_renderer,
+            canvas,
+            textures.canvas,
+            &input,
+            max_side,
+        );
+        canvas2d::scene::build(
+            canvas_batch,
+            &session.document,
+            Some(session.topology.mesh()),
+            &session.canvas_camera,
+            canvas.viewport(),
+            &session.canvas_overlay(),
+        );
+        canvas.prepare(gpu, &canvas_batch, &session.canvas_camera);
+        canvas.render(gpu, encoder);
+    }
+    if let Some(input) = scene_input {
+        Running::fit_target(gpu, egui_renderer, scene, textures.scene, &input, max_side);
+        // Buttons ride on the cloth, so they follow it every frame; the
+        // chair of the sitting animation rises out of the floor.
+        let mut props = gfx_render::garment_props(&session.document, &session.topology);
+        if let Some((min, max)) = session.chair() {
+            gfx_render::scene3d::props::chair(&mut props, min, max);
         }
-        scene.overlay = session.surface_overlay().0;
-        if session.take_garment_dirty() {
-            let (_, values) = session.surface_overlay();
-            scene.sync_garment(gpu, session.topology.mesh(), values, |piece| session.fabric_thickness(piece));
-        }
-        if let Some(input) = canvas_input {
-            Running::fit_target(gpu, egui_renderer, canvas, textures.canvas, &input, max_side);
-            canvas2d::scene::build(
-                canvas_batch,
-                &session.document,
-                Some(session.topology.mesh()),
-                &session.canvas_camera,
-                canvas.viewport(),
-                &session.canvas_overlay(),
-            );
-            canvas.prepare(gpu, &canvas_batch, &session.canvas_camera);
-            canvas.render(gpu, encoder);
-        }
-        if let Some(input) = scene_input {
-            Running::fit_target(gpu, egui_renderer, scene, textures.scene, &input, max_side);
-            // Buttons ride on the cloth, so they follow it every frame; the
-            // chair of the sitting animation rises out of the floor.
-            let mut props = gfx_render::garment_props(&session.document, &session.topology);
-            if let Some((min, max)) = session.chair() {
-                gfx_render::scene3d::props::chair(&mut props, min, max);
-            }
-            scene.set_props(gpu, &props);
-            let session = &*session;
-            scene.prepare(gpu, &session.scene_camera, |piece| session.material_of(piece));
-            scene.render(gpu, encoder);
-        }
-
+        scene.set_props(gpu, &props);
+        let session = &*session;
+        scene.prepare(gpu, &session.scene_camera, |piece| {
+            session.material_of(piece)
+        });
+        scene.render(gpu, encoder);
+    }
 }

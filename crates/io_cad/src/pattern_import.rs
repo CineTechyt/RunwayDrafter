@@ -104,10 +104,19 @@ impl RawSubpath {
         for segment in &self.segments {
             match *segment {
                 RawSegment::Line { to } => points.push(to),
-                RawSegment::Quadratic { ctrl, to } => QuadBezier { p0: current, p1: ctrl, p2: to }.flatten_into(tolerance, &mut points),
-                RawSegment::Cubic { ctrl1, ctrl2, to } => {
-                    CubicBezier { p0: current, p1: ctrl1, p2: ctrl2, p3: to }.flatten_into(tolerance, &mut points)
+                RawSegment::Quadratic { ctrl, to } => QuadBezier {
+                    p0: current,
+                    p1: ctrl,
+                    p2: to,
                 }
+                .flatten_into(tolerance, &mut points),
+                RawSegment::Cubic { ctrl1, ctrl2, to } => CubicBezier {
+                    p0: current,
+                    p1: ctrl1,
+                    p2: ctrl2,
+                    p3: to,
+                }
+                .flatten_into(tolerance, &mut points),
             }
             current = segment.end();
         }
@@ -226,7 +235,10 @@ impl RawVectorDrawing {
             if is_closed {
                 // Few segments with smooth curve points, instead of the
                 // dozens of short pieces CAD exports draw curves with.
-                if let Some(outline) = subpath.to_outline().map(|o| o.simplified(SIMPLIFY_TOLERANCE_MM, CORNER_DEGREES)) {
+                if let Some(outline) = subpath
+                    .to_outline()
+                    .map(|o| o.simplified(SIMPLIFY_TOLERANCE_MM, CORNER_DEGREES))
+                {
                     let (min, max) = outline.bounds();
                     let area = outline.signed_area().abs();
                     let diag = min.distance(max);
@@ -387,7 +399,11 @@ impl RawVectorDrawing {
 /// The grain line of a piece: the longest straight drawn line inside it
 /// that spans at least a third of the piece.
 fn find_grainline(polygon: &[Vec2], marks: &[RawSubpath]) -> Option<(Vec2, Vec2)> {
-    let (lo, hi) = polygon.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+    let (lo, hi) = polygon
+        .iter()
+        .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| {
+            (lo.min(p), hi.max(p))
+        });
     let minimum = (hi - lo).max_element() / 3.0;
     marks
         .iter()
@@ -396,7 +412,9 @@ fn find_grainline(polygon: &[Vec2], marks: &[RawSubpath]) -> Option<(Vec2, Vec2)
         .filter(|points| points.len() >= 2 && cad_core::fit::is_straight(points, 0.75))
         .map(|points| (points[0], points[points.len() - 1]))
         .filter(|(a, b)| a.distance(*b) >= minimum)
-        .filter(|(a, b)| geometry::point_in_polygon(*a, polygon) && geometry::point_in_polygon(*b, polygon))
+        .filter(|(a, b)| {
+            geometry::point_in_polygon(*a, polygon) && geometry::point_in_polygon(*b, polygon)
+        })
         .max_by(|x, y| x.0.distance(x.1).total_cmp(&y.0.distance(y.1)))
 }
 
@@ -791,8 +809,15 @@ impl ImportedPieceCandidate {
         let Some((a, b)) = self.grainline else { return };
         let direction = b - a;
         // Either end may come first: keep the angle in [0, π).
-        let angle = direction.y.atan2(direction.x).rem_euclid(std::f32::consts::PI);
-        piece.grainline = cad_core::Grainline { origin: (a + b) * 0.5, angle, length: direction.length() };
+        let angle = direction
+            .y
+            .atan2(direction.x)
+            .rem_euclid(std::f32::consts::PI);
+        piece.grainline = cad_core::Grainline {
+            origin: (a + b) * 0.5,
+            angle,
+            length: direction.length(),
+        };
         piece.uv = cad_core::UvMapping::aligned_to_grain(&piece.grainline);
     }
 }

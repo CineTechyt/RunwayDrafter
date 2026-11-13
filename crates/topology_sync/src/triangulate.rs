@@ -22,7 +22,10 @@ pub struct MeshingParams {
 
 impl Default for MeshingParams {
     fn default() -> Self {
-        Self { particle_distance: 20.0, tolerance: 0.05 }
+        Self {
+            particle_distance: 20.0,
+            tolerance: 0.05,
+        }
     }
 }
 
@@ -46,7 +49,11 @@ pub struct PieceMesh {
 
 /// Arc length of every edge of a piece.
 pub fn edge_lengths(piece: &PatternPiece, params: &MeshingParams) -> Vec<f32> {
-    piece.outline.curves().map(|c| c.length(params.tolerance)).collect()
+    piece
+        .outline
+        .curves()
+        .map(|c| c.length(params.tolerance))
+        .collect()
 }
 
 /// Meshes `piece`. `subdivisions[e]` is the number of mesh edges along pattern
@@ -68,9 +75,15 @@ pub fn mesh_piece(piece: &PatternPiece, subdivisions: &[u32], params: &MeshingPa
         for (k, &p) in samples[..n as usize].iter().enumerate() {
             mesh.pattern_positions.push(p);
             mesh.origins.push(if k == 0 {
-                VertexOrigin::Corner { piece: piece.id, anchor: e as u32 }
+                VertexOrigin::Corner {
+                    piece: piece.id,
+                    anchor: e as u32,
+                }
             } else {
-                VertexOrigin::Edge { edge: EdgeRef::new(piece.id, e as u32), t: k as f32 / n as f32 }
+                VertexOrigin::Edge {
+                    edge: EdgeRef::new(piece.id, e as u32),
+                    t: k as f32 / n as f32,
+                }
             });
         }
     }
@@ -85,18 +98,28 @@ pub fn mesh_piece(piece: &PatternPiece, subdivisions: &[u32], params: &MeshingPa
 
     // --- interior lattice --------------------------------------------------
     let h = params.particle_distance.max(1e-3);
-    let (lo, hi) = boundary.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+    let (lo, hi) = boundary
+        .iter()
+        .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| {
+            (lo.min(p), hi.max(p))
+        });
     let row_height = h * 0.866_025_4;
     let rows = ((hi.y - lo.y) / row_height).ceil() as i32;
     let cols = ((hi.x - lo.x) / h).ceil() as i32;
     for row in 0..=rows {
         let shift = if row % 2 == 0 { 0.0 } else { 0.5 * h };
         for col in 0..=cols {
-            let p = Vec2::new(lo.x + col as f32 * h + shift, lo.y + row as f32 * row_height);
+            let p = Vec2::new(
+                lo.x + col as f32 * h + shift,
+                lo.y + row as f32 * row_height,
+            );
             // Keep clear of the boundary so no sliver triangles appear there.
-            if geometry::point_in_polygon(p, &boundary) && geometry::distance_to_polygon(p, &boundary) > 0.6 * h {
+            if geometry::point_in_polygon(p, &boundary)
+                && geometry::distance_to_polygon(p, &boundary) > 0.6 * h
+            {
                 mesh.pattern_positions.push(p);
-                mesh.origins.push(VertexOrigin::Interior { piece: piece.id });
+                mesh.origins
+                    .push(VertexOrigin::Interior { piece: piece.id });
             }
         }
     }
@@ -133,12 +156,14 @@ pub fn mesh_piece(piece: &PatternPiece, subdivisions: &[u32], params: &MeshingPa
         // Three near-collinear boundary samples (on a straight edge) can
         // form a sliver with no area; it would only add an ill-conditioned
         // element to the simulation.
-        let [pa, pb, pc] = [a, b, c].map(|v| Vec2::new(v.position().x as f32, v.position().y as f32));
+        let [pa, pb, pc] =
+            [a, b, c].map(|v| Vec2::new(v.position().x as f32, v.position().y as f32));
         let sliver = (pb - pa).perp_dot(pc - pa).abs() < 1e-3 * h * h;
         if !sliver && geometry::point_in_polygon(centroid, &boundary) {
             // spade emits counter-clockwise faces, so every piece gets +Z
             // normals in pattern space regardless of its outline winding.
-            mesh.indices.extend([a, b, c].map(|v| spade_to_local[v.fix().index()]));
+            mesh.indices
+                .extend([a, b, c].map(|v| spade_to_local[v.fix().index()]));
         }
     }
     mesh
@@ -154,7 +179,10 @@ mod tests {
         let doc = PatternDocument::demo_top();
         let piece = &doc.pieces()[0];
         let params = MeshingParams::default();
-        let plan: Vec<u32> = edge_lengths(piece, &params).iter().map(|&l| params.subdivisions(l)).collect();
+        let plan: Vec<u32> = edge_lengths(piece, &params)
+            .iter()
+            .map(|&l| params.subdivisions(l))
+            .collect();
         let mesh = mesh_piece(piece, &plan, &params);
 
         assert!(mesh.indices.len() > 300);
@@ -177,6 +205,9 @@ mod tests {
         let boundary_len: u32 = plan.iter().sum();
         let polygon = &mesh.pattern_positions[..boundary_len as usize];
         let expected = geometry::signed_area(polygon);
-        assert!((area - expected).abs() < 1e-3 * expected, "{area} vs {expected}");
+        assert!(
+            (area - expected).abs() < 1e-3 * expected,
+            "{area} vs {expected}"
+        );
     }
 }

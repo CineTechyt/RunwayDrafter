@@ -17,7 +17,9 @@ pub mod target;
 pub use camera::{Camera2D, OrbitCamera};
 pub use canvas2d::{CanvasBatch, CanvasOverlay, CanvasRenderer, LineHighlight};
 pub use context::{GpuContext, GpuError, preferred_backends};
-pub use scene3d::{MeshData, MeshVertex, SceneRenderer, Shading, SurfaceMaterial, SurfaceOverlay, garment_props};
+pub use scene3d::{
+    MeshData, MeshVertex, SceneRenderer, Shading, SurfaceMaterial, SurfaceOverlay, garment_props,
+};
 pub use target::RenderTarget;
 
 pub use wgpu;
@@ -41,7 +43,11 @@ pub trait ViewportRenderer {
 pub fn srgba(r: u8, g: u8, b: u8, a: f32) -> [f32; 4] {
     let lin = |c: u8| {
         let c = c as f32 / 255.0;
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
     };
     [lin(r), lin(g), lin(b), a]
 }

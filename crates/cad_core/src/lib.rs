@@ -23,16 +23,16 @@ pub mod uv;
 
 pub use document::{PatternDocument, Seam};
 pub use edit::{DocumentChange, DocumentSnapshot, EditCommand, EditError, History, MoveHandle};
-pub use lines::EdgeSpan;
-pub use transform::PieceTransform;
 pub use geometry::{CubicBezier, Curve, CurveSegment, Line, QuadBezier};
 pub use ids::{EdgeRef, FabricId, HandleKind, HandleRef, PieceId, SeamId};
-pub use material::{Fabric, FabricPhysics};
+pub use lines::EdgeSpan;
+pub use material::{Fabric, FabricPattern, FabricPhysics};
 pub use pattern::{
-    Placement,
-    Arrangement, Button, ButtonFinish, ButtonStyle, Buttonhole, ButtonholeRef, ControlPoint, FlatOutline, Grainline, Notch, NotchKind, Outline, PatternPiece,
-    PointKind, SeamAllowance, Segment,
+    Arrangement, Button, ButtonFinish, ButtonStyle, Buttonhole, ButtonholeRef, ControlPoint,
+    FlatOutline, Grainline, Notch, NotchKind, Outline, PatternPiece, Placement, PointKind,
+    SeamAllowance, Segment,
 };
+pub use transform::PieceTransform;
 pub use uv::UvMapping;
 
 pub use glam;

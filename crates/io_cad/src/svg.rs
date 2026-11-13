@@ -1,7 +1,7 @@
 //! SVG pattern reader: parses SVG vector paths, lines and splines.
 
-use std::collections::HashMap;
 use glam::Vec2;
+use std::collections::HashMap;
 
 use crate::IoError;
 use crate::pattern_import::{ImportedPattern, RawLabel, RawSegment, RawSubpath, RawVectorDrawing};
@@ -78,7 +78,8 @@ impl Transform {
 
 /// Reads vector paths from an SVG file and assembles pattern pieces.
 pub fn import_pattern_svg(bytes: &[u8], options: &SvgOptions) -> Result<ImportedPattern, IoError> {
-    let text = std::str::from_utf8(bytes).map_err(|e| IoError::malformed(format!("invalid UTF-8 in SVG: {e}")))?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|e| IoError::malformed(format!("invalid UTF-8 in SVG: {e}")))?;
 
     let (doc_height, scale) = detect_dimensions_and_scale(text, options.scale);
 
@@ -89,8 +90,15 @@ pub fn import_pattern_svg(bytes: &[u8], options: &SvgOptions) -> Result<Imported
     while let Some(tag) = parser.next_tag() {
         match tag {
             Tag::Open { name, attrs } | Tag::SelfClosing { name, attrs } => {
-                let elem_transform = attrs.get("transform").map(|s| parse_transform(s)).unwrap_or_default();
-                let current_transform = transform_stack.last().copied().unwrap_or_default().concat(elem_transform);
+                let elem_transform = attrs
+                    .get("transform")
+                    .map(|s| parse_transform(s))
+                    .unwrap_or_default();
+                let current_transform = transform_stack
+                    .last()
+                    .copied()
+                    .unwrap_or_default()
+                    .concat(elem_transform);
                 let label = ["aria-label", "data-name", "title", "inkscape:label", "id"]
                     .iter()
                     .find_map(|key| attrs.get(*key))
@@ -103,7 +111,14 @@ pub fn import_pattern_svg(bytes: &[u8], options: &SvgOptions) -> Result<Imported
                     }
                     "path" => {
                         if let Some(d) = attrs.get("d") {
-                            parse_path_d(d, current_transform, scale, doc_height, options.flip_y, &mut drawing);
+                            parse_path_d(
+                                d,
+                                current_transform,
+                                scale,
+                                doc_height,
+                                options.flip_y,
+                                &mut drawing,
+                            );
                         }
                     }
                     "line" => {
@@ -111,8 +126,20 @@ pub fn import_pattern_svg(bytes: &[u8], options: &SvgOptions) -> Result<Imported
                         let y1 = parse_val(attrs.get("y1"));
                         let x2 = parse_val(attrs.get("x2"));
                         let y2 = parse_val(attrs.get("y2"));
-                        let p1 = map_point(Vec2::new(x1, y1), current_transform, scale, doc_height, options.flip_y);
-                        let p2 = map_point(Vec2::new(x2, y2), current_transform, scale, doc_height, options.flip_y);
+                        let p1 = map_point(
+                            Vec2::new(x1, y1),
+                            current_transform,
+                            scale,
+                            doc_height,
+                            options.flip_y,
+                        );
+                        let p2 = map_point(
+                            Vec2::new(x2, y2),
+                            current_transform,
+                            scale,
+                            doc_height,
+                            options.flip_y,
+                        );
                         let mut sub = RawSubpath::new(p1);
                         sub.segments.push(RawSegment::Line { to: p2 });
                         drawing.subpaths.push(sub);
@@ -121,11 +148,23 @@ pub fn import_pattern_svg(bytes: &[u8], options: &SvgOptions) -> Result<Imported
                         if let Some(points_str) = attrs.get("points") {
                             let pts = parse_points_list(points_str);
                             if pts.len() >= 2 {
-                                let start = map_point(pts[0], current_transform, scale, doc_height, options.flip_y);
+                                let start = map_point(
+                                    pts[0],
+                                    current_transform,
+                                    scale,
+                                    doc_height,
+                                    options.flip_y,
+                                );
                                 let mut sub = RawSubpath::new(start);
                                 for pt in &pts[1..] {
                                     sub.segments.push(RawSegment::Line {
-                                        to: map_point(*pt, current_transform, scale, doc_height, options.flip_y),
+                                        to: map_point(
+                                            *pt,
+                                            current_transform,
+                                            scale,
+                                            doc_height,
+                                            options.flip_y,
+                                        ),
                                     });
                                 }
                                 if name == "polygon" {
@@ -142,10 +181,34 @@ pub fn import_pattern_svg(bytes: &[u8], options: &SvgOptions) -> Result<Imported
                         let w = parse_val(attrs.get("width"));
                         let h = parse_val(attrs.get("height"));
                         if w > 0.0 && h > 0.0 {
-                            let p0 = map_point(Vec2::new(x, y), current_transform, scale, doc_height, options.flip_y);
-                            let p1 = map_point(Vec2::new(x + w, y), current_transform, scale, doc_height, options.flip_y);
-                            let p2 = map_point(Vec2::new(x + w, y + h), current_transform, scale, doc_height, options.flip_y);
-                            let p3 = map_point(Vec2::new(x, y + h), current_transform, scale, doc_height, options.flip_y);
+                            let p0 = map_point(
+                                Vec2::new(x, y),
+                                current_transform,
+                                scale,
+                                doc_height,
+                                options.flip_y,
+                            );
+                            let p1 = map_point(
+                                Vec2::new(x + w, y),
+                                current_transform,
+                                scale,
+                                doc_height,
+                                options.flip_y,
+                            );
+                            let p2 = map_point(
+                                Vec2::new(x + w, y + h),
+                                current_transform,
+                                scale,
+                                doc_height,
+                                options.flip_y,
+                            );
+                            let p3 = map_point(
+                                Vec2::new(x, y + h),
+                                current_transform,
+                                scale,
+                                doc_height,
+                                options.flip_y,
+                            );
                             let mut sub = RawSubpath::new(p0);
                             sub.segments.push(RawSegment::Line { to: p1 });
                             sub.segments.push(RawSegment::Line { to: p2 });
@@ -165,7 +228,17 @@ pub fn import_pattern_svg(bytes: &[u8], options: &SvgOptions) -> Result<Imported
                             (parse_val(attrs.get("rx")), parse_val(attrs.get("ry")))
                         };
                         if rx > 0.0 && ry > 0.0 {
-                            add_ellipse(cx, cy, rx, ry, current_transform, scale, doc_height, options.flip_y, &mut drawing);
+                            add_ellipse(
+                                cx,
+                                cy,
+                                rx,
+                                ry,
+                                current_transform,
+                                scale,
+                                doc_height,
+                                options.flip_y,
+                                &mut drawing,
+                            );
                         }
                     }
                     _ => {}
@@ -221,7 +294,11 @@ fn subpath_group_center(paths: &[RawSubpath]) -> Option<Vec2> {
 
 fn map_point(p: Vec2, transform: Transform, scale: f32, doc_height: f32, flip_y: bool) -> Vec2 {
     let transformed = transform.transform(p);
-    let y = if flip_y { doc_height - transformed.y } else { transformed.y };
+    let y = if flip_y {
+        doc_height - transformed.y
+    } else {
+        transformed.y
+    };
     Vec2::new(transformed.x * scale, y * scale)
 }
 
@@ -300,7 +377,9 @@ fn parse_viewbox(s: &str) -> (f32, f32, f32, f32) {
 
 fn parse_length(s: &str) -> (f32, String) {
     let s = s.trim();
-    let num_end = s.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').unwrap_or(s.len());
+    let num_end = s
+        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+        .unwrap_or(s.len());
     let val = s[..num_end].parse::<f32>().unwrap_or(0.0);
     let unit = s[num_end..].trim().to_ascii_lowercase();
     (val, unit)
@@ -312,7 +391,9 @@ fn parse_val(s: Option<&String>) -> f32 {
 
 fn parse_points_list(s: &str) -> Vec<Vec2> {
     let nums = extract_floats(s);
-    nums.chunks_exact(2).map(|c| Vec2::new(c[0], c[1])).collect()
+    nums.chunks_exact(2)
+        .map(|c| Vec2::new(c[0], c[1]))
+        .collect()
 }
 
 fn parse_transform(s: &str) -> Transform {
@@ -351,12 +432,26 @@ fn parse_transform(s: &str) -> Transform {
             "translate" => {
                 let tx = args.first().copied().unwrap_or(0.0);
                 let ty = args.get(1).copied().unwrap_or(0.0);
-                Transform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: tx, f: ty }
+                Transform {
+                    a: 1.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 1.0,
+                    e: tx,
+                    f: ty,
+                }
             }
             "scale" => {
                 let sx = args.first().copied().unwrap_or(1.0);
                 let sy = args.get(1).copied().unwrap_or(sx);
-                Transform { a: sx, b: 0.0, c: 0.0, d: sy, e: 0.0, f: 0.0 }
+                Transform {
+                    a: sx,
+                    b: 0.0,
+                    c: 0.0,
+                    d: sy,
+                    e: 0.0,
+                    f: 0.0,
+                }
             }
             "rotate" => {
                 let angle_rad = args.first().copied().unwrap_or(0.0).to_radians();
@@ -365,12 +460,40 @@ fn parse_transform(s: &str) -> Transform {
                 if args.len() >= 3 {
                     let cx = args[1];
                     let cy = args[2];
-                    let t1 = Transform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: cx, f: cy };
-                    let rot = Transform { a: cos_a, b: sin_a, c: -sin_a, d: cos_a, e: 0.0, f: 0.0 };
-                    let t2 = Transform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: -cx, f: -cy };
+                    let t1 = Transform {
+                        a: 1.0,
+                        b: 0.0,
+                        c: 0.0,
+                        d: 1.0,
+                        e: cx,
+                        f: cy,
+                    };
+                    let rot = Transform {
+                        a: cos_a,
+                        b: sin_a,
+                        c: -sin_a,
+                        d: cos_a,
+                        e: 0.0,
+                        f: 0.0,
+                    };
+                    let t2 = Transform {
+                        a: 1.0,
+                        b: 0.0,
+                        c: 0.0,
+                        d: 1.0,
+                        e: -cx,
+                        f: -cy,
+                    };
                     t1.concat(rot).concat(t2)
                 } else {
-                    Transform { a: cos_a, b: sin_a, c: -sin_a, d: cos_a, e: 0.0, f: 0.0 }
+                    Transform {
+                        a: cos_a,
+                        b: sin_a,
+                        c: -sin_a,
+                        d: cos_a,
+                        e: 0.0,
+                        f: 0.0,
+                    }
                 }
             }
             _ => Transform::IDENTITY,
@@ -451,7 +574,13 @@ fn parse_path_d(
             'M' => {
                 let mut first = true;
                 while let (Some(x), Some(y)) = (lexer.next_coord(), lexer.next_coord()) {
-                    let target = if is_rel && !first { current + Vec2::new(x, y) } else if is_rel { current + Vec2::new(x, y) } else { Vec2::new(x, y) };
+                    let target = if is_rel && !first {
+                        current + Vec2::new(x, y)
+                    } else if is_rel {
+                        current + Vec2::new(x, y)
+                    } else {
+                        Vec2::new(x, y)
+                    };
                     if first {
                         if let Some(sub) = current_subpath.take() {
                             if !sub.is_empty() {
@@ -474,7 +603,11 @@ fn parse_path_d(
             }
             'L' => {
                 while let (Some(x), Some(y)) = (lexer.next_coord(), lexer.next_coord()) {
-                    let target = if is_rel { current + Vec2::new(x, y) } else { Vec2::new(x, y) };
+                    let target = if is_rel {
+                        current + Vec2::new(x, y)
+                    } else {
+                        Vec2::new(x, y)
+                    };
                     if let Some(sub) = &mut current_subpath {
                         sub.segments.push(RawSegment::Line { to: p(target) });
                     }
@@ -484,7 +617,11 @@ fn parse_path_d(
             }
             'H' => {
                 while let Some(x) = lexer.next_coord() {
-                    let target = if is_rel { Vec2::new(current.x + x, current.y) } else { Vec2::new(x, current.y) };
+                    let target = if is_rel {
+                        Vec2::new(current.x + x, current.y)
+                    } else {
+                        Vec2::new(x, current.y)
+                    };
                     if let Some(sub) = &mut current_subpath {
                         sub.segments.push(RawSegment::Line { to: p(target) });
                     }
@@ -494,7 +631,11 @@ fn parse_path_d(
             }
             'V' => {
                 while let Some(y) = lexer.next_coord() {
-                    let target = if is_rel { Vec2::new(current.x, current.y + y) } else { Vec2::new(current.x, y) };
+                    let target = if is_rel {
+                        Vec2::new(current.x, current.y + y)
+                    } else {
+                        Vec2::new(current.x, y)
+                    };
                     if let Some(sub) = &mut current_subpath {
                         sub.segments.push(RawSegment::Line { to: p(target) });
                     }
@@ -511,41 +652,86 @@ fn parse_path_d(
                     lexer.next_coord(),
                     lexer.next_coord(),
                 ) {
-                    let c1 = if is_rel { current + Vec2::new(x1, y1) } else { Vec2::new(x1, y1) };
-                    let c2 = if is_rel { current + Vec2::new(x2, y2) } else { Vec2::new(x2, y2) };
-                    let to = if is_rel { current + Vec2::new(x, y) } else { Vec2::new(x, y) };
+                    let c1 = if is_rel {
+                        current + Vec2::new(x1, y1)
+                    } else {
+                        Vec2::new(x1, y1)
+                    };
+                    let c2 = if is_rel {
+                        current + Vec2::new(x2, y2)
+                    } else {
+                        Vec2::new(x2, y2)
+                    };
+                    let to = if is_rel {
+                        current + Vec2::new(x, y)
+                    } else {
+                        Vec2::new(x, y)
+                    };
                     if let Some(sub) = &mut current_subpath {
-                        sub.segments.push(RawSegment::Cubic { ctrl1: p(c1), ctrl2: p(c2), to: p(to) });
+                        sub.segments.push(RawSegment::Cubic {
+                            ctrl1: p(c1),
+                            ctrl2: p(c2),
+                            to: p(to),
+                        });
                     }
                     current = to;
                     last_ctrl = Some(c2);
                 }
             }
             'S' => {
-                while let (Some(x2), Some(y2), Some(x), Some(y)) =
-                    (lexer.next_coord(), lexer.next_coord(), lexer.next_coord(), lexer.next_coord())
-                {
+                while let (Some(x2), Some(y2), Some(x), Some(y)) = (
+                    lexer.next_coord(),
+                    lexer.next_coord(),
+                    lexer.next_coord(),
+                    lexer.next_coord(),
+                ) {
                     let c1 = match last_ctrl {
                         Some(prev_c2) => 2.0 * current - prev_c2,
                         None => current,
                     };
-                    let c2 = if is_rel { current + Vec2::new(x2, y2) } else { Vec2::new(x2, y2) };
-                    let to = if is_rel { current + Vec2::new(x, y) } else { Vec2::new(x, y) };
+                    let c2 = if is_rel {
+                        current + Vec2::new(x2, y2)
+                    } else {
+                        Vec2::new(x2, y2)
+                    };
+                    let to = if is_rel {
+                        current + Vec2::new(x, y)
+                    } else {
+                        Vec2::new(x, y)
+                    };
                     if let Some(sub) = &mut current_subpath {
-                        sub.segments.push(RawSegment::Cubic { ctrl1: p(c1), ctrl2: p(c2), to: p(to) });
+                        sub.segments.push(RawSegment::Cubic {
+                            ctrl1: p(c1),
+                            ctrl2: p(c2),
+                            to: p(to),
+                        });
                     }
                     current = to;
                     last_ctrl = Some(c2);
                 }
             }
             'Q' => {
-                while let (Some(x1), Some(y1), Some(x), Some(y)) =
-                    (lexer.next_coord(), lexer.next_coord(), lexer.next_coord(), lexer.next_coord())
-                {
-                    let ctrl = if is_rel { current + Vec2::new(x1, y1) } else { Vec2::new(x1, y1) };
-                    let to = if is_rel { current + Vec2::new(x, y) } else { Vec2::new(x, y) };
+                while let (Some(x1), Some(y1), Some(x), Some(y)) = (
+                    lexer.next_coord(),
+                    lexer.next_coord(),
+                    lexer.next_coord(),
+                    lexer.next_coord(),
+                ) {
+                    let ctrl = if is_rel {
+                        current + Vec2::new(x1, y1)
+                    } else {
+                        Vec2::new(x1, y1)
+                    };
+                    let to = if is_rel {
+                        current + Vec2::new(x, y)
+                    } else {
+                        Vec2::new(x, y)
+                    };
                     if let Some(sub) = &mut current_subpath {
-                        sub.segments.push(RawSegment::Quadratic { ctrl: p(ctrl), to: p(to) });
+                        sub.segments.push(RawSegment::Quadratic {
+                            ctrl: p(ctrl),
+                            to: p(to),
+                        });
                     }
                     current = to;
                     last_ctrl = Some(ctrl);
@@ -557,16 +743,31 @@ fn parse_path_d(
                         Some(prev_ctrl) => 2.0 * current - prev_ctrl,
                         None => current,
                     };
-                    let to = if is_rel { current + Vec2::new(x, y) } else { Vec2::new(x, y) };
+                    let to = if is_rel {
+                        current + Vec2::new(x, y)
+                    } else {
+                        Vec2::new(x, y)
+                    };
                     if let Some(sub) = &mut current_subpath {
-                        sub.segments.push(RawSegment::Quadratic { ctrl: p(ctrl), to: p(to) });
+                        sub.segments.push(RawSegment::Quadratic {
+                            ctrl: p(ctrl),
+                            to: p(to),
+                        });
                     }
                     current = to;
                     last_ctrl = Some(ctrl);
                 }
             }
             'A' => {
-                while let (Some(_rx), Some(_ry), Some(_rot), Some(_large_arc), Some(_sweep), Some(x), Some(y)) = (
+                while let (
+                    Some(_rx),
+                    Some(_ry),
+                    Some(_rot),
+                    Some(_large_arc),
+                    Some(_sweep),
+                    Some(x),
+                    Some(y),
+                ) = (
                     lexer.next_coord(),
                     lexer.next_coord(),
                     lexer.next_coord(),
@@ -575,7 +776,11 @@ fn parse_path_d(
                     lexer.next_coord(),
                     lexer.next_coord(),
                 ) {
-                    let to = if is_rel { current + Vec2::new(x, y) } else { Vec2::new(x, y) };
+                    let to = if is_rel {
+                        current + Vec2::new(x, y)
+                    } else {
+                        Vec2::new(x, y)
+                    };
                     // Arc-to-lines approximation
                     let steps = 8;
                     for step in 1..=steps {
@@ -592,7 +797,9 @@ fn parse_path_d(
             'Z' => {
                 if let Some(sub) = &mut current_subpath {
                     if current.distance(subpath_start) > 1e-4 {
-                        sub.segments.push(RawSegment::Line { to: p(subpath_start) });
+                        sub.segments.push(RawSegment::Line {
+                            to: p(subpath_start),
+                        });
                     }
                     sub.closed = true;
                 }
@@ -620,11 +827,16 @@ struct PathLexer<'a> {
 
 impl<'a> PathLexer<'a> {
     pub fn new(s: &'a str) -> Self {
-        Self { bytes: s.as_bytes(), pos: 0 }
+        Self {
+            bytes: s.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn skip_whitespace_and_commas(&mut self) {
-        while self.pos < self.bytes.len() && (self.bytes[self.pos].is_ascii_whitespace() || self.bytes[self.pos] == b',') {
+        while self.pos < self.bytes.len()
+            && (self.bytes[self.pos].is_ascii_whitespace() || self.bytes[self.pos] == b',')
+        {
             self.pos += 1;
         }
     }
@@ -668,7 +880,9 @@ impl<'a> PathLexer<'a> {
                 self.pos += 1;
             } else if (ch == b'e' || ch == b'E') && has_digit {
                 self.pos += 1;
-                if self.pos < self.bytes.len() && (self.bytes[self.pos] == b'-' || self.bytes[self.pos] == b'+') {
+                if self.pos < self.bytes.len()
+                    && (self.bytes[self.pos] == b'-' || self.bytes[self.pos] == b'+')
+                {
                     self.pos += 1;
                 }
             } else {
@@ -679,7 +893,10 @@ impl<'a> PathLexer<'a> {
             self.pos = start;
             return None;
         }
-        std::str::from_utf8(&self.bytes[start..self.pos]).ok()?.parse::<f32>().ok()
+        std::str::from_utf8(&self.bytes[start..self.pos])
+            .ok()?
+            .parse::<f32>()
+            .ok()
     }
 }
 
@@ -693,9 +910,17 @@ fn extract_floats(s: &str) -> Vec<f32> {
 }
 
 enum Tag {
-    Open { name: String, attrs: HashMap<String, String> },
-    Close { name: String },
-    SelfClosing { name: String, attrs: HashMap<String, String> },
+    Open {
+        name: String,
+        attrs: HashMap<String, String>,
+    },
+    Close {
+        name: String,
+    },
+    SelfClosing {
+        name: String,
+        attrs: HashMap<String, String>,
+    },
 }
 
 struct XmlScanner<'a> {
@@ -726,10 +951,16 @@ impl<'a> XmlScanner<'a> {
                 continue;
             }
             if let Some(close_name) = tag_content.strip_prefix('/') {
-                return Some(Tag::Close { name: close_name.trim().to_ascii_lowercase() });
+                return Some(Tag::Close {
+                    name: close_name.trim().to_ascii_lowercase(),
+                });
             }
             let self_closing = tag_content.ends_with('/');
-            let clean = if self_closing { tag_content[..tag_content.len() - 1].trim() } else { tag_content };
+            let clean = if self_closing {
+                tag_content[..tag_content.len() - 1].trim()
+            } else {
+                tag_content
+            };
             let mut parts = clean.splitn(2, |c: char| c.is_ascii_whitespace());
             let name = parts.next().unwrap_or("").to_ascii_lowercase();
             let attrs_str = parts.next().unwrap_or("");
@@ -791,7 +1022,11 @@ mod tests {
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
             <path d="M 10 10 L 90 10 C 100 30 100 70 90 90 L 10 90 Z" />
         </svg>"#;
-        let options = SvgOptions { scale: Some(1.0), flip_y: false, default_allowance_mm: 10.0 };
+        let options = SvgOptions {
+            scale: Some(1.0),
+            flip_y: false,
+            default_allowance_mm: 10.0,
+        };
         let pattern = import_pattern_svg(svg.as_bytes(), &options).unwrap();
         assert_eq!(pattern.pieces.len(), 1);
         let piece = &pattern.pieces[0];
@@ -807,13 +1042,23 @@ mod tests {
             <!-- Sew line -->
             <path d="M 10 10 L 110 10 L 110 110 L 10 110 Z" />
         </svg>"#;
-        let options = SvgOptions { scale: Some(1.0), flip_y: false, default_allowance_mm: 10.0 };
+        let options = SvgOptions {
+            scale: Some(1.0),
+            flip_y: false,
+            default_allowance_mm: 10.0,
+        };
         let pattern = import_pattern_svg(svg.as_bytes(), &options).unwrap();
         assert_eq!(pattern.pieces.len(), 1);
         let piece = &pattern.pieces[0];
         assert_eq!(piece.loops.len(), 2);
-        assert_eq!(piece.cut_loop().unwrap().role, crate::pattern_import::LineRole::CuttingLine);
-        assert_eq!(piece.sew_loop().unwrap().role, crate::pattern_import::LineRole::SeamAllowance);
+        assert_eq!(
+            piece.cut_loop().unwrap().role,
+            crate::pattern_import::LineRole::CuttingLine
+        );
+        assert_eq!(
+            piece.sew_loop().unwrap().role,
+            crate::pattern_import::LineRole::SeamAllowance
+        );
     }
 
     #[test]
@@ -821,7 +1066,11 @@ mod tests {
         let svg = r#"<svg viewBox="0 0 200 200">
             <path id="Front_Panel" d="M 0 0 L 100 0 L 100 100 L 0 100 Z" />
         </svg>"#;
-        let options = SvgOptions { scale: Some(1.0), flip_y: false, default_allowance_mm: 10.0 };
+        let options = SvgOptions {
+            scale: Some(1.0),
+            flip_y: false,
+            default_allowance_mm: 10.0,
+        };
         let pattern = import_pattern_svg(svg.as_bytes(), &options).unwrap();
         assert_eq!(pattern.pieces[0].name, "Front Panel");
     }

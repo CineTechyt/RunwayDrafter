@@ -23,10 +23,20 @@ pub fn import_obj(bytes: &[u8]) -> Result<ImportedMesh, IoError> {
     for (number, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or_default();
         let mut words = line.split_whitespace();
-        let Some(keyword) = words.next() else { continue };
-        let syntax = |message: &str| IoError::Syntax { line: number + 1, message: message.to_owned() };
+        let Some(keyword) = words.next() else {
+            continue;
+        };
+        let syntax = |message: &str| IoError::Syntax {
+            line: number + 1,
+            message: message.to_owned(),
+        };
         let vector = |words: &mut std::str::SplitWhitespace<'_>| -> Result<Vec3, IoError> {
-            let mut next = || words.next().and_then(|w| w.parse::<f32>().ok()).ok_or_else(|| syntax("expected three numbers"));
+            let mut next = || {
+                words
+                    .next()
+                    .and_then(|w| w.parse::<f32>().ok())
+                    .ok_or_else(|| syntax("expected three numbers"))
+            };
             Ok(Vec3::new(next()?, next()?, next()?))
         };
         match keyword {
@@ -36,16 +46,24 @@ pub fn import_obj(bytes: &[u8]) -> Result<ImportedMesh, IoError> {
                 corners.clear();
                 for word in words {
                     let mut parts = word.split('/');
-                    let resolve = |part: Option<&str>, count: usize| -> Result<Option<u32>, IoError> {
-                        let Some(part) = part.filter(|p| !p.is_empty()) else { return Ok(None) };
-                        let index: i64 = part.parse().map_err(|_| syntax("bad face index"))?;
-                        let resolved = if index < 0 { count as i64 + index } else { index - 1 };
-                        if resolved < 0 || resolved >= count as i64 {
-                            return Err(syntax("face index out of range"));
-                        }
-                        Ok(Some(resolved as u32))
-                    };
-                    let position = resolve(parts.next(), mesh.positions.len())?.ok_or_else(|| syntax("face without vertex"))?;
+                    let resolve =
+                        |part: Option<&str>, count: usize| -> Result<Option<u32>, IoError> {
+                            let Some(part) = part.filter(|p| !p.is_empty()) else {
+                                return Ok(None);
+                            };
+                            let index: i64 = part.parse().map_err(|_| syntax("bad face index"))?;
+                            let resolved = if index < 0 {
+                                count as i64 + index
+                            } else {
+                                index - 1
+                            };
+                            if resolved < 0 || resolved >= count as i64 {
+                                return Err(syntax("face index out of range"));
+                            }
+                            Ok(Some(resolved as u32))
+                        };
+                    let position = resolve(parts.next(), mesh.positions.len())?
+                        .ok_or_else(|| syntax("face without vertex"))?;
                     let _uv = parts.next();
                     if let Some(normal) = resolve(parts.next(), file_normals.len())? {
                         if mesh.normals.len() < mesh.positions.len() {
@@ -63,7 +81,8 @@ pub fn import_obj(bytes: &[u8]) -> Result<ImportedMesh, IoError> {
                     return Err(syntax("a face needs at least three vertices"));
                 }
                 for k in 1..corners.len() - 1 {
-                    mesh.triangles.push([corners[0], corners[k], corners[k + 1]]);
+                    mesh.triangles
+                        .push([corners[0], corners[k], corners[k + 1]]);
                 }
             }
             _ => {}
@@ -102,10 +121,16 @@ impl GarmentExport<'_> {
                     .mesh
                     .pattern_positions
                     .iter()
-                    .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+                    .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| {
+                        (lo.min(p), hi.max(p))
+                    });
                 // One scale for both axes keeps the pattern undistorted.
                 let side = (hi - lo).max_element().max(1e-6);
-                self.mesh.pattern_positions.iter().map(|&p| (p - lo) / side).collect()
+                self.mesh
+                    .pattern_positions
+                    .iter()
+                    .map(|&p| (p - lo) / side)
+                    .collect()
             }
         }
     }
@@ -113,7 +138,17 @@ impl GarmentExport<'_> {
     /// `(piece name, fabric name, triangles)` per piece, with names made
     /// safe for use as identifiers.
     pub fn groups(&self) -> Vec<(String, String, &[u32])> {
-        let safe = |name: &str| name.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect::<String>();
+        let safe = |name: &str| {
+            name.chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>()
+        };
         self.mesh
             .pieces
             .iter()
@@ -137,7 +172,12 @@ impl GarmentExport<'_> {
 pub fn export_garment_obj(garment: &GarmentExport<'_>, mtl_name: &str) -> (String, String) {
     let mesh = garment.mesh;
     let mut obj = String::with_capacity(mesh.vertex_count() * 96);
-    let _ = writeln!(obj, "# clo360 garment: {} vertices, {} triangles", mesh.vertex_count(), mesh.triangle_count());
+    let _ = writeln!(
+        obj,
+        "# clo360 garment: {} vertices, {} triangles",
+        mesh.vertex_count(),
+        mesh.triangle_count()
+    );
     let _ = writeln!(obj, "# units: metres, Y up\nmtllib {mtl_name}");
     for p in &mesh.positions {
         let _ = writeln!(obj, "v {:.6} {:.6} {:.6}", p.x, p.y, p.z);
@@ -160,12 +200,26 @@ pub fn export_garment_obj(garment: &GarmentExport<'_>, mtl_name: &str) -> (Strin
     let mut mtl = String::new();
     let mut written: Vec<String> = Vec::new();
     for fabric in garment.document.fabrics() {
-        let name: String = fabric.name.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect();
+        let name: String = fabric
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
         if written.contains(&name) {
             continue;
         }
         let [r, g, b] = fabric.base_color;
-        let _ = writeln!(mtl, "newmtl {name}\nKd {r:.4} {g:.4} {b:.4}\nKs 0.04 0.04 0.04\nNs {:.1}\nillum 2\n", (1.0 - fabric.roughness) * 200.0);
+        let _ = writeln!(
+            mtl,
+            "newmtl {name}\nKd {r:.4} {g:.4} {b:.4}\nKs 0.04 0.04 0.04\nNs {:.1}\nillum 2\n",
+            (1.0 - fabric.roughness) * 200.0
+        );
         written.push(name);
     }
     (obj, mtl)

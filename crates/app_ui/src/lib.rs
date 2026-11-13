@@ -8,8 +8,8 @@
 
 pub mod avatar_window;
 pub mod dock;
-pub mod icons;
 pub mod file_browser;
+pub mod icons;
 pub mod io_window;
 pub mod panels;
 pub mod pattern_window;
@@ -20,8 +20,9 @@ pub use dock::{AppUi, Tab};
 pub use file_browser::{FileBrowserMode, FileBrowserState, FileFilter};
 pub use panels::{Panel, PanelContext};
 pub use state::{
-    AnimationState, AvatarState, GarmentStatus, CanvasTool, EditorState, ExportFormat, IoState, PatternImportState, Sample, ScaleMode, SceneStats, SimulationState, SewPick, SurfaceView, Timeline, UiCommand,
-    UiOutput, ViewOptions, ViewportTextures,
+    AnimationState, AvatarState, CanvasTool, EditorState, ExportFormat, GarmentStatus, IoState,
+    PatternImportState, Sample, ScaleMode, SceneStats, SewPick, SimulationState, SurfaceView,
+    Timeline, UiCommand, UiOutput, ViewOptions, ViewportTextures,
 };
 pub use viewport::{ButtonDrag, ViewportInput};
 

@@ -32,7 +32,10 @@ pub struct ControlPoint {
 
 impl ControlPoint {
     pub const fn corner(x: f32, y: f32) -> Self {
-        Self { position: Vec2::new(x, y), kind: PointKind::Corner }
+        Self {
+            position: Vec2::new(x, y),
+            kind: PointKind::Corner,
+        }
     }
 }
 
@@ -62,7 +65,11 @@ pub struct FlatOutline {
 
 impl Outline {
     pub fn new(points: Vec<ControlPoint>, segments: Vec<Segment>) -> Self {
-        assert_eq!(points.len(), segments.len(), "a closed outline has one segment per anchor");
+        assert_eq!(
+            points.len(),
+            segments.len(),
+            "a closed outline has one segment per anchor"
+        );
         Self { points, segments }
     }
 
@@ -70,7 +77,10 @@ impl Outline {
     pub fn polygon(points: impl IntoIterator<Item = Vec2>) -> Self {
         let points: Vec<_> = points
             .into_iter()
-            .map(|position| ControlPoint { position, kind: PointKind::Corner })
+            .map(|position| ControlPoint {
+                position,
+                kind: PointKind::Corner,
+            })
             .collect();
         let segments = vec![Segment::Line; points.len()];
         Self { points, segments }
@@ -103,10 +113,17 @@ impl Outline {
         let b = self.points[self.next(i)].position;
         match self.segments[i] {
             Segment::Line => CurveSegment::Line(Line { a, b }),
-            Segment::Quadratic { ctrl } => CurveSegment::Quad(QuadBezier { p0: a, p1: ctrl, p2: b }),
-            Segment::Cubic { ctrl1, ctrl2 } => {
-                CurveSegment::Cubic(CubicBezier { p0: a, p1: ctrl1, p2: ctrl2, p3: b })
-            }
+            Segment::Quadratic { ctrl } => CurveSegment::Quad(QuadBezier {
+                p0: a,
+                p1: ctrl,
+                p2: b,
+            }),
+            Segment::Cubic { ctrl1, ctrl2 } => CurveSegment::Cubic(CubicBezier {
+                p0: a,
+                p1: ctrl1,
+                p2: ctrl2,
+                p3: b,
+            }),
         }
     }
 
@@ -129,7 +146,11 @@ impl Outline {
     /// Axis-aligned bounds `(min, max)` of the flattened outline.
     pub fn bounds(&self) -> (Vec2, Vec2) {
         let flat = self.flatten(1.0);
-        flat.points.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)))
+        flat.points
+            .iter()
+            .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| {
+                (lo.min(p), hi.max(p))
+            })
     }
 
     /// Signed area of the flattened outline; positive when counter-clockwise.
@@ -160,7 +181,10 @@ impl Outline {
             let rev_seg = match self.segments[orig_edge] {
                 Segment::Line => Segment::Line,
                 Segment::Quadratic { ctrl } => Segment::Quadratic { ctrl },
-                Segment::Cubic { ctrl1, ctrl2 } => Segment::Cubic { ctrl1: ctrl2, ctrl2: ctrl1 },
+                Segment::Cubic { ctrl1, ctrl2 } => Segment::Cubic {
+                    ctrl1: ctrl2,
+                    ctrl2: ctrl1,
+                },
             };
             new_segments.push(rev_seg);
         }
@@ -213,7 +237,9 @@ impl Outline {
             let n_i = normal(i);
             let seg = match self.segments[i] {
                 Segment::Line => Segment::Line,
-                Segment::Quadratic { ctrl } => Segment::Quadratic { ctrl: ctrl + n_i * w },
+                Segment::Quadratic { ctrl } => Segment::Quadratic {
+                    ctrl: ctrl + n_i * w,
+                },
                 Segment::Cubic { ctrl1, ctrl2 } => Segment::Cubic {
                     ctrl1: ctrl1 + n_i * w,
                     ctrl2: ctrl2 + n_i * w,
@@ -249,12 +275,14 @@ impl Outline {
     pub fn handle_position(&self, handle: HandleKind) -> Option<Vec2> {
         match handle {
             HandleKind::Anchor(i) => self.points.get(i as usize).map(|p| p.position),
-            HandleKind::Control { segment, slot } => match (self.segments.get(segment as usize)?, slot) {
-                (Segment::Quadratic { ctrl }, 0) => Some(*ctrl),
-                (Segment::Cubic { ctrl1, .. }, 0) => Some(*ctrl1),
-                (Segment::Cubic { ctrl2, .. }, 1) => Some(*ctrl2),
-                _ => None,
-            },
+            HandleKind::Control { segment, slot } => {
+                match (self.segments.get(segment as usize)?, slot) {
+                    (Segment::Quadratic { ctrl }, 0) => Some(*ctrl),
+                    (Segment::Cubic { ctrl1, .. }, 0) => Some(*ctrl1),
+                    (Segment::Cubic { ctrl2, .. }, 1) => Some(*ctrl2),
+                    _ => None,
+                }
+            }
         }
     }
 
@@ -275,7 +303,9 @@ impl Outline {
         match handle {
             HandleKind::Anchor(i) => {
                 let i = i as usize;
-                let Some(point) = self.points.get_mut(i) else { return false };
+                let Some(point) = self.points.get_mut(i) else {
+                    return false;
+                };
                 let delta = position - point.position;
                 point.position = position;
                 let prev = (i + self.points.len() - 1) % self.points.len();
@@ -290,21 +320,23 @@ impl Outline {
                 }
                 true
             }
-            HandleKind::Control { segment, slot } => match (self.segments.get_mut(segment as usize), slot) {
-                (Some(Segment::Quadratic { ctrl }), 0) => {
-                    *ctrl = position;
-                    true
+            HandleKind::Control { segment, slot } => {
+                match (self.segments.get_mut(segment as usize), slot) {
+                    (Some(Segment::Quadratic { ctrl }), 0) => {
+                        *ctrl = position;
+                        true
+                    }
+                    (Some(Segment::Cubic { ctrl1, .. }), 0) => {
+                        *ctrl1 = position;
+                        true
+                    }
+                    (Some(Segment::Cubic { ctrl2, .. }), 1) => {
+                        *ctrl2 = position;
+                        true
+                    }
+                    _ => false,
                 }
-                (Some(Segment::Cubic { ctrl1, .. }), 0) => {
-                    *ctrl1 = position;
-                    true
-                }
-                (Some(Segment::Cubic { ctrl2, .. }), 1) => {
-                    *ctrl2 = position;
-                    true
-                }
-                _ => false,
-            },
+            }
         }
     }
 
@@ -379,13 +411,20 @@ pub struct SeamAllowance {
 
 impl Default for SeamAllowance {
     fn default() -> Self {
-        Self { enabled: true, default_width: 10.0, per_edge: BTreeMap::new() }
+        Self {
+            enabled: true,
+            default_width: 10.0,
+            per_edge: BTreeMap::new(),
+        }
     }
 }
 
 impl SeamAllowance {
     pub fn width(&self, edge: u32) -> f32 {
-        self.per_edge.get(&edge).copied().unwrap_or(self.default_width)
+        self.per_edge
+            .get(&edge)
+            .copied()
+            .unwrap_or(self.default_width)
     }
 }
 
@@ -426,7 +465,12 @@ pub enum ButtonStyle {
 }
 
 impl ButtonStyle {
-    pub const ALL: [ButtonStyle; 4] = [ButtonStyle::FourHole, ButtonStyle::TwoHole, ButtonStyle::Shank, ButtonStyle::Tack];
+    pub const ALL: [ButtonStyle; 4] = [
+        ButtonStyle::FourHole,
+        ButtonStyle::TwoHole,
+        ButtonStyle::Shank,
+        ButtonStyle::Tack,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -459,7 +503,12 @@ pub enum ButtonFinish {
 }
 
 impl ButtonFinish {
-    pub const ALL: [ButtonFinish; 4] = [ButtonFinish::Plastic, ButtonFinish::Metal, ButtonFinish::Wood, ButtonFinish::Pearl];
+    pub const ALL: [ButtonFinish; 4] = [
+        ButtonFinish::Plastic,
+        ButtonFinish::Metal,
+        ButtonFinish::Wood,
+        ButtonFinish::Pearl,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -564,7 +613,11 @@ impl Buttonhole {
     /// A buttonhole sized for a button: the button's diameter plus its
     /// thickness, as tailors cut them.
     pub fn for_button(position: Vec2, button_diameter: f32) -> Self {
-        Self { position, length: button_diameter + 3.0, angle: 0.0 }
+        Self {
+            position,
+            length: button_diameter + 3.0,
+            angle: 0.0,
+        }
     }
 }
 
@@ -617,7 +670,11 @@ impl Arrangement {
             // Arc length along the cylinder equals the pattern distance, so
             // wrapping does not stretch the piece.
             let angle = d.x * self.curvature;
-            Vec3::new(angle.sin() / self.curvature, d.y, (angle.cos() - 1.0) / self.curvature)
+            Vec3::new(
+                angle.sin() / self.curvature,
+                d.y,
+                (angle.cos() - 1.0) / self.curvature,
+            )
         } else {
             d.extend(0.0)
         };
@@ -688,7 +745,12 @@ impl PatternPiece {
             grainline,
             uv: UvMapping::aligned_to_grain(&grainline),
             fabric,
-            arrangement: Arrangement { anchor: centre, translation: Vec3::ZERO, rotation: Quat::IDENTITY, curvature: 0.0 },
+            arrangement: Arrangement {
+                anchor: centre,
+                translation: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                curvature: 0.0,
+            },
             layer: Self::default_layer(),
             placement: Placement::default(),
         }
@@ -705,7 +767,9 @@ impl PatternPiece {
             return None;
         }
         let flat = self.outline.flatten(tolerance);
-        Some(geometry::offset_polygon(&flat.points, |k| self.seam_allowance.width(flat.edge_of[k])))
+        Some(geometry::offset_polygon(&flat.points, |k| {
+            self.seam_allowance.width(flat.edge_of[k])
+        }))
     }
 
     /// Position and inward unit normal of a notch on the sewing line.
@@ -753,7 +817,13 @@ mod tests {
             Vec2::new(100.0, 100.0),
             Vec2::new(0.0, 100.0),
         ]);
-        o.set_segment(1, Segment::Cubic { ctrl1: Vec2::new(130.0, 30.0), ctrl2: Vec2::new(130.0, 70.0) });
+        o.set_segment(
+            1,
+            Segment::Cubic {
+                ctrl1: Vec2::new(130.0, 30.0),
+                ctrl2: Vec2::new(130.0, 70.0),
+            },
+        );
         o
     }
 
@@ -773,12 +843,18 @@ mod tests {
         let delta = Vec2::new(5.0, -3.0);
         assert!(o.set_handle_position(HandleKind::Anchor(1), Vec2::new(100.0, 0.0) + delta));
         assert_eq!(
-            o.handle_position(HandleKind::Control { segment: 1, slot: 0 }),
+            o.handle_position(HandleKind::Control {
+                segment: 1,
+                slot: 0
+            }),
             Some(Vec2::new(130.0, 30.0) + delta)
         );
         // The far control belongs to anchor 2 and stays put.
         assert_eq!(
-            o.handle_position(HandleKind::Control { segment: 1, slot: 1 }),
+            o.handle_position(HandleKind::Control {
+                segment: 1,
+                slot: 1
+            }),
             Some(Vec2::new(130.0, 70.0))
         );
         assert_eq!(o.handles().count(), 6);

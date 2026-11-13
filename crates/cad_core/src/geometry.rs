@@ -172,7 +172,11 @@ pub fn resample_polyline(points: &[Vec2], segments: u32) -> Vec<Vec2> {
         loop {
             let len = points[seg].distance(points[seg + 1]);
             if seg_start + len >= target || seg + 2 >= points.len() {
-                let t = if len > 0.0 { ((target - seg_start) / len).clamp(0.0, 1.0) } else { 0.0 };
+                let t = if len > 0.0 {
+                    ((target - seg_start) / len).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 out.push(points[seg].lerp(points[seg + 1], t));
                 break;
             }
@@ -212,7 +216,11 @@ pub fn point_in_polygon(p: Vec2, polygon: &[Vec2]) -> bool {
 pub fn distance_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
     let len2 = ab.length_squared();
-    let t = if len2 > 0.0 { ((p - a).dot(ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let t = if len2 > 0.0 {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     p.distance(a + ab * t)
 }
 
@@ -234,7 +242,11 @@ pub fn offset_polygon(polygon: &[Vec2], width: impl Fn(usize) -> f32) -> Vec<Vec
         return polygon.to_vec();
     }
     // Outward is to the right of travel for a CCW polygon.
-    let sign = if signed_area(polygon) >= 0.0 { 1.0 } else { -1.0 };
+    let sign = if signed_area(polygon) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
     let normal = |i: usize| -> Vec2 {
         let d = (polygon[(i + 1) % n] - polygon[i]).normalize_or_zero();
         Vec2::new(d.y, -d.x) * sign
@@ -289,7 +301,12 @@ mod tests {
 
     #[test]
     fn offset_square_grows_by_width() {
-        let sq = [Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(10.0, 10.0), Vec2::new(0.0, 10.0)];
+        let sq = [
+            Vec2::ZERO,
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 10.0),
+            Vec2::new(0.0, 10.0),
+        ];
         let off = offset_polygon(&sq, |_| 1.0);
         assert!((signed_area(&off) - 144.0).abs() < 1e-3);
         // Same result for the clockwise version.
@@ -299,7 +316,12 @@ mod tests {
 
     #[test]
     fn point_in_polygon_works() {
-        let sq = [Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(10.0, 10.0), Vec2::new(0.0, 10.0)];
+        let sq = [
+            Vec2::ZERO,
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 10.0),
+            Vec2::new(0.0, 10.0),
+        ];
         assert!(point_in_polygon(Vec2::new(5.0, 5.0), &sq));
         assert!(!point_in_polygon(Vec2::new(15.0, 5.0), &sq));
     }

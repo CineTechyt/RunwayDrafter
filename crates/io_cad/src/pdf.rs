@@ -77,22 +77,30 @@ impl Affine2D {
 /// Reads vector paths from a PDF file and assembles pattern pieces.
 pub fn import_pattern_pdf(bytes: &[u8], options: &PdfOptions) -> Result<ImportedPattern, IoError> {
     if !bytes.starts_with(b"%PDF-") && !bytes.windows(5).any(|w| w == b"%PDF-") {
-        return Err(IoError::malformed("not a valid PDF document (missing %PDF- header)"));
+        return Err(IoError::malformed(
+            "not a valid PDF document (missing %PDF- header)",
+        ));
     }
 
     let streams = extract_content_streams(bytes);
     if streams.is_empty() {
-        return Err(IoError::malformed("no vector graphics streams found in PDF"));
+        return Err(IoError::malformed(
+            "no vector graphics streams found in PDF",
+        ));
     }
 
     let mut drawing = RawVectorDrawing::new();
     for stream in &streams {
         parse_content_stream(stream, options.scale, &mut drawing);
-        drawing.labels.extend(extract_text_labels(stream, options.scale));
+        drawing
+            .labels
+            .extend(extract_text_labels(stream, options.scale));
     }
 
     if drawing.subpaths.is_empty() {
-        return Err(IoError::malformed("no vector paths or splines found in PDF content"));
+        return Err(IoError::malformed(
+            "no vector paths or splines found in PDF content",
+        ));
     }
 
     Ok(drawing.assemble_pattern(options.default_allowance_mm))
@@ -171,7 +179,10 @@ fn decode_pdf_text(token: &str) -> String {
                 b'0'..=b'7' => {
                     let mut value = 0u16;
                     let mut digits = 0;
-                    while digits < 3 && index + 1 < bytes.len() && (b'0'..=b'7').contains(&bytes[index]) {
+                    while digits < 3
+                        && index + 1 < bytes.len()
+                        && (b'0'..=b'7').contains(&bytes[index])
+                    {
                         value = value * 8 + u16::from(bytes[index] - b'0');
                         index += 1;
                         digits += 1;
@@ -241,12 +252,16 @@ fn index_objects(bytes: &[u8]) -> std::collections::HashMap<u32, PdfObject> {
         let keyword = cursor + relative;
         cursor = keyword + 4;
         // "<number> <generation> obj", at the start of a line or after whitespace.
-        let Some((number, header_start)) = object_number_before(bytes, keyword) else { continue };
+        let Some((number, header_start)) = object_number_before(bytes, keyword) else {
+            continue;
+        };
         if header_start > 0 && !bytes[header_start - 1].is_ascii_whitespace() {
             continue;
         }
         let body_start = keyword + 4;
-        let Some(end_relative) = find_subsequence(&bytes[body_start..], b"endobj") else { break };
+        let Some(end_relative) = find_subsequence(&bytes[body_start..], b"endobj") else {
+            break;
+        };
         let body_end = body_start + end_relative;
         let body = &bytes[body_start..body_end];
         let (dictionary, stream) = match find_subsequence(body, b"stream") {
@@ -260,7 +275,10 @@ fn index_objects(bytes: &[u8]) -> std::collections::HashMap<u32, PdfObject> {
                 }
                 let data_end = find_subsequence(&bytes[data_start..body_end], b"endstream")
                     .map_or(body_end, |end| data_start + end);
-                (String::from_utf8_lossy(&body[..at]).into_owned(), Some(data_start..data_end))
+                (
+                    String::from_utf8_lossy(&body[..at]).into_owned(),
+                    Some(data_start..data_end),
+                )
             }
             _ => (String::from_utf8_lossy(body).into_owned(), None),
         };
@@ -288,7 +306,10 @@ fn object_number_before(bytes: &[u8], keyword: usize) -> Option<(u32, usize)> {
         number_end -= 1;
     }
     let number_start = digits_back(number_end)?;
-    let number = std::str::from_utf8(&bytes[number_start..number_end]).ok()?.parse().ok()?;
+    let number = std::str::from_utf8(&bytes[number_start..number_end])
+        .ok()?
+        .parse()
+        .ok()?;
     Some((number, number_start))
 }
 
@@ -355,9 +376,13 @@ fn dictionary_value<'a>(dictionary: &'a str, key: &str) -> Option<&'a str> {
 fn page_content_objects(objects: &std::collections::HashMap<u32, PdfObject>) -> Vec<u32> {
     let is_page = |object: &PdfObject| {
         let d = &object.dictionary;
-        d.contains("/Type /Page") && !d.contains("/Type /Pages") || d.contains("/Type/Page") && !d.contains("/Type/Pages")
+        d.contains("/Type /Page") && !d.contains("/Type /Pages")
+            || d.contains("/Type/Page") && !d.contains("/Type/Pages")
     };
-    let mut pages: Vec<(&u32, &PdfObject)> = objects.iter().filter(|(_, object)| is_page(object)).collect();
+    let mut pages: Vec<(&u32, &PdfObject)> = objects
+        .iter()
+        .filter(|(_, object)| is_page(object))
+        .collect();
     pages.sort_by_key(|(number, _)| **number);
 
     let mut out = Vec::new();
@@ -371,7 +396,9 @@ fn page_content_objects(objects: &std::collections::HashMap<u32, PdfObject>) -> 
             for number in references(contents) {
                 // `/Contents 7 0 R` may point at an array object of streams.
                 match objects.get(&number) {
-                    Some(object) if object.stream.is_none() => references(&object.dictionary).into_iter().for_each(|n| push(n, &mut out)),
+                    Some(object) if object.stream.is_none() => references(&object.dictionary)
+                        .into_iter()
+                        .for_each(|n| push(n, &mut out)),
                     _ => push(number, &mut out),
                 }
             }
@@ -391,7 +418,10 @@ fn page_content_objects(objects: &std::collections::HashMap<u32, PdfObject>) -> 
                 _ => xobjects.to_owned(),
             };
             for number in references(&xobjects) {
-                if objects.get(&number).is_some_and(|o| o.stream.is_some() && o.dictionary.contains("/Form")) {
+                if objects
+                    .get(&number)
+                    .is_some_and(|o| o.stream.is_some() && o.dictionary.contains("/Form"))
+                {
                     push(number, &mut out);
                 }
             }
@@ -408,8 +438,13 @@ fn decode_stream(bytes: &[u8], object: &PdfObject) -> Option<Vec<u8>> {
         end -= 1;
     }
     let raw = &raw[..end];
-    if object.dictionary.contains("/FlateDecode") || object.dictionary.contains("/Fl ") || object.dictionary.contains("/Fl/") {
-        miniz_oxide::inflate::decompress_to_vec_zlib(raw).ok().or_else(|| miniz_oxide::inflate::decompress_to_vec(raw).ok())
+    if object.dictionary.contains("/FlateDecode")
+        || object.dictionary.contains("/Fl ")
+        || object.dictionary.contains("/Fl/")
+    {
+        miniz_oxide::inflate::decompress_to_vec_zlib(raw)
+            .ok()
+            .or_else(|| miniz_oxide::inflate::decompress_to_vec(raw).ok())
     } else if object.dictionary.contains("/Filter") {
         None // other encodings are not supported
     } else {
@@ -448,7 +483,9 @@ fn extract_all_streams(bytes: &[u8]) -> Vec<Vec<u8>> {
         };
         let mut data_end = data_start + end_rel;
         // Trim trailing newline before endstream if present
-        while data_end > data_start && (bytes[data_end - 1] == b'\r' || bytes[data_end - 1] == b'\n') {
+        while data_end > data_start
+            && (bytes[data_end - 1] == b'\r' || bytes[data_end - 1] == b'\n')
+        {
             data_end -= 1;
         }
 
@@ -479,7 +516,11 @@ fn contains_flate_filter(header: &[u8]) -> bool {
 
 fn contains_vector_commands(stream: &[u8]) -> bool {
     let s = String::from_utf8_lossy(stream);
-    s.contains(" m\n") || s.contains(" m ") || s.contains(" l\n") || s.contains(" c\n") || s.contains(" re\n")
+    s.contains(" m\n")
+        || s.contains(" m ")
+        || s.contains(" l\n")
+        || s.contains(" c\n")
+        || s.contains(" re\n")
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -569,7 +610,11 @@ fn parse_content_stream(stream: &[u8], scale: f32, drawing: &mut RawVectorDrawin
                     let c2 = ctm.transform(args[args.len() - 4], args[args.len() - 3]) * scale;
                     let p3 = ctm.transform(args[args.len() - 2], args[args.len() - 1]) * scale;
                     if let Some(sub) = &mut current_subpath {
-                        sub.segments.push(RawSegment::Cubic { ctrl1: c1, ctrl2: c2, to: p3 });
+                        sub.segments.push(RawSegment::Cubic {
+                            ctrl1: c1,
+                            ctrl2: c2,
+                            to: p3,
+                        });
                         current_point = Some(p3);
                     }
                 }
@@ -582,7 +627,11 @@ fn parse_content_stream(stream: &[u8], scale: f32, drawing: &mut RawVectorDrawin
                     let c2 = ctm.transform(args[args.len() - 4], args[args.len() - 3]) * scale;
                     let p3 = ctm.transform(args[args.len() - 2], args[args.len() - 1]) * scale;
                     if let Some(sub) = &mut current_subpath {
-                        sub.segments.push(RawSegment::Cubic { ctrl1: c1, ctrl2: c2, to: p3 });
+                        sub.segments.push(RawSegment::Cubic {
+                            ctrl1: c1,
+                            ctrl2: c2,
+                            to: p3,
+                        });
                         current_point = Some(p3);
                     }
                 }
@@ -595,7 +644,11 @@ fn parse_content_stream(stream: &[u8], scale: f32, drawing: &mut RawVectorDrawin
                     let p3 = ctm.transform(args[args.len() - 2], args[args.len() - 1]) * scale;
                     let c2 = p3;
                     if let Some(sub) = &mut current_subpath {
-                        sub.segments.push(RawSegment::Cubic { ctrl1: c1, ctrl2: c2, to: p3 });
+                        sub.segments.push(RawSegment::Cubic {
+                            ctrl1: c1,
+                            ctrl2: c2,
+                            to: p3,
+                        });
                         current_point = Some(p3);
                     }
                 }
@@ -706,7 +759,8 @@ impl<'a> Tokenizer<'a> {
                 self.pos += 1;
             } else if b == b'%' {
                 // Comment until end of line
-                while self.pos < bytes.len() && bytes[self.pos] != b'\n' && bytes[self.pos] != b'\r' {
+                while self.pos < bytes.len() && bytes[self.pos] != b'\n' && bytes[self.pos] != b'\r'
+                {
                     self.pos += 1;
                 }
             } else {
@@ -773,7 +827,15 @@ impl<'a> Tokenizer<'a> {
         // Regular token
         while self.pos < bytes.len() {
             let ch = bytes[self.pos];
-            if ch.is_ascii_whitespace() || ch == b'(' || ch == b')' || ch == b'<' || ch == b'>' || ch == b'[' || ch == b']' || ch == b'%' {
+            if ch.is_ascii_whitespace()
+                || ch == b'('
+                || ch == b')'
+                || ch == b'<'
+                || ch == b'>'
+                || ch == b'['
+                || ch == b']'
+                || ch == b'%'
+            {
                 break;
             }
             self.pos += 1;
@@ -828,10 +890,16 @@ endstream
 endobj
 trailer << /Root 1 0 R >>
 %%EOF";
-        let options = PdfOptions { scale: 1.0, default_allowance_mm: 10.0 };
+        let options = PdfOptions {
+            scale: 1.0,
+            default_allowance_mm: 10.0,
+        };
         let pattern = import_pattern_pdf(pdf, &options).unwrap();
         assert_eq!(pattern.pieces.len(), 1);
-        assert!(pattern.pieces[0].loops[0].bounds.0.x > 150.0, "the referenced drawing, not the orphan");
+        assert!(
+            pattern.pieces[0].loops[0].bounds.0.x > 150.0,
+            "the referenced drawing, not the orphan"
+        );
     }
 
     #[test]
@@ -854,7 +922,10 @@ endstream
 endobj
 trailer << /Root 1 0 R /Prev 0 >>
 %%EOF";
-        let options = PdfOptions { scale: 1.0, default_allowance_mm: 10.0 };
+        let options = PdfOptions {
+            scale: 1.0,
+            default_allowance_mm: 10.0,
+        };
         let pattern = import_pattern_pdf(pdf, &options).unwrap();
         assert_eq!(pattern.pieces.len(), 1);
         assert!(pattern.pieces[0].loops[0].bounds.0.x > 150.0);
@@ -863,7 +934,10 @@ trailer << /Root 1 0 R /Prev 0 >>
     #[test]
     fn parse_minimal_pdf_document() {
         let pdf = b"%PDF-1.4\n1 0 obj\n<< /Length 50 >>\nstream\n0 0 m 100 0 l 100 100 l 0 100 l h S\nendstream\nendobj\ntrailer\n<<>>\n%%EOF";
-        let options = PdfOptions { scale: 1.0, default_allowance_mm: 10.0 };
+        let options = PdfOptions {
+            scale: 1.0,
+            default_allowance_mm: 10.0,
+        };
         let pattern = import_pattern_pdf(pdf, &options).unwrap();
         assert_eq!(pattern.pieces.len(), 1);
         assert_eq!(pattern.pieces[0].loops.len(), 1);
@@ -872,7 +946,10 @@ trailer << /Root 1 0 R /Prev 0 >>
     #[test]
     fn pdf_piece_uses_positioned_text_as_its_source_name() {
         let pdf = b"%PDF-1.4\n1 0 obj\n<< /Length 120 >>\nstream\n0 0 m 100 0 l 100 100 l 0 100 l h S\nBT /F1 12 Tf 1 0 0 1 25 25 Tm (Front Panel) Tj ET\nendstream\nendobj\ntrailer\n<<>>\n%%EOF";
-        let options = PdfOptions { scale: 1.0, default_allowance_mm: 10.0 };
+        let options = PdfOptions {
+            scale: 1.0,
+            default_allowance_mm: 10.0,
+        };
         let pattern = import_pattern_pdf(pdf, &options).unwrap();
         assert_eq!(pattern.pieces[0].name, "Front Panel");
     }
@@ -880,7 +957,8 @@ trailer << /Root 1 0 R /Prev 0 >>
     #[test]
     fn parse_flatedecode_compressed_pdf() {
         // Stream data containing cubic splines and lines, compressed with zlib deflate
-        let uncompressed = b"q 1 0 0 1 0 0 cm 0 0 m 200 0 l 200 50 150 150 100 200 c 50 150 0 50 0 0 c h S Q";
+        let uncompressed =
+            b"q 1 0 0 1 0 0 cm 0 0 m 200 0 l 200 50 150 150 100 200 c 50 150 0 50 0 0 c h S Q";
         let compressed = miniz_oxide::deflate::compress_to_vec_zlib(uncompressed, 6);
         let mut pdf = Vec::new();
         pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj\n<< /Length ");
@@ -889,14 +967,23 @@ trailer << /Root 1 0 R /Prev 0 >>
         pdf.extend_from_slice(&compressed);
         pdf.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<<>>\n%%EOF");
 
-        let options = PdfOptions { scale: 1.0, default_allowance_mm: 10.0 };
+        let options = PdfOptions {
+            scale: 1.0,
+            default_allowance_mm: 10.0,
+        };
         let pattern = import_pattern_pdf(&pdf, &options).unwrap();
         assert_eq!(pattern.pieces.len(), 1);
         let piece = &pattern.pieces[0];
         let outline = &piece.loops[0].outline;
         assert_eq!(outline.edge_count(), 3);
         assert!(matches!(outline.segments()[0], cad_core::Segment::Line));
-        assert!(matches!(outline.segments()[1], cad_core::Segment::Cubic { .. }));
-        assert!(matches!(outline.segments()[2], cad_core::Segment::Cubic { .. }));
+        assert!(matches!(
+            outline.segments()[1],
+            cad_core::Segment::Cubic { .. }
+        ));
+        assert!(matches!(
+            outline.segments()[2],
+            cad_core::Segment::Cubic { .. }
+        ));
     }
 }

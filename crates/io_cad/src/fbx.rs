@@ -84,14 +84,21 @@ impl Node {
 
     /// The values of `P: "name", …` under this node's `Properties70`.
     fn property70(&self, name: &str) -> Option<Vec<f64>> {
-        self.child("Properties70")?.children_named("P").find(|p| p.text(0) == Some(name)).map(Node::numbers)
+        self.child("Properties70")?
+            .children_named("P")
+            .find(|p| p.text(0) == Some(name))
+            .map(Node::numbers)
     }
 }
 
 /// Parses a binary or ASCII FBX file into its node tree; the returned
 /// node is an unnamed root.
 pub fn parse_fbx(bytes: &[u8]) -> Result<Node, IoError> {
-    if bytes.starts_with(BINARY_MAGIC) { parse_binary(bytes) } else { parse_ascii(bytes) }
+    if bytes.starts_with(BINARY_MAGIC) {
+        parse_binary(bytes)
+    } else {
+        parse_ascii(bytes)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +112,10 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8], IoError> {
-        let slice = self.data.get(self.at..self.at + count).ok_or_else(|| IoError::malformed("unexpected end of FBX data"))?;
+        let slice = self
+            .data
+            .get(self.at..self.at + count)
+            .ok_or_else(|| IoError::malformed("unexpected end of FBX data"))?;
         self.at += count;
         Ok(slice)
     }
@@ -120,12 +130,19 @@ impl<'a> Reader<'a> {
 
     /// A record offset or count: 32 bits before FBX 7.5, 64 bits since.
     fn size(&mut self, wide: bool) -> Result<u64, IoError> {
-        Ok(if wide { u64::from_le_bytes(self.array()?) } else { self.u32()? as u64 })
+        Ok(if wide {
+            u64::from_le_bytes(self.array()?)
+        } else {
+            self.u32()? as u64
+        })
     }
 }
 
 fn parse_binary(bytes: &[u8]) -> Result<Node, IoError> {
-    let mut reader = Reader { data: bytes, at: BINARY_MAGIC.len() + 2 };
+    let mut reader = Reader {
+        data: bytes,
+        at: BINARY_MAGIC.len() + 2,
+    };
     let version = reader.u32()?;
     let wide = version >= 7500;
     let mut root = Node::default();
@@ -154,7 +171,10 @@ fn binary_node(reader: &mut Reader<'_>, wide: bool, depth: u32) -> Result<Option
     if end > reader.data.len() || end < reader.at {
         return Err(IoError::malformed("FBX node runs past the file"));
     }
-    let mut node = Node { name, ..Node::default() };
+    let mut node = Node {
+        name,
+        ..Node::default()
+    };
     for _ in 0..property_count {
         node.properties.push(binary_property(reader)?);
     }
@@ -202,8 +222,9 @@ fn binary_property(reader: &mut Reader<'_>) -> Result<Property, IoError> {
             let data = match encoding {
                 0 => raw,
                 1 => {
-                    inflated = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(raw, count * width)
-                        .map_err(|_| IoError::malformed("corrupt compressed FBX array"))?;
+                    inflated =
+                        miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(raw, count * width)
+                            .map_err(|_| IoError::malformed("corrupt compressed FBX array"))?;
                     &inflated
                 }
                 _ => return Err(IoError::malformed("unknown FBX array encoding")),
@@ -213,14 +234,35 @@ fn binary_property(reader: &mut Reader<'_>) -> Result<Property, IoError> {
             }
             let items = data.chunks_exact(width).take(count);
             match kind {
-                b'f' => Property::Floats(items.map(|b| f32::from_le_bytes(b.try_into().expect("width")) as f64).collect()),
-                b'd' => Property::Floats(items.map(|b| f64::from_le_bytes(b.try_into().expect("width"))).collect()),
-                b'i' => Property::Integers(items.map(|b| i32::from_le_bytes(b.try_into().expect("width")) as i64).collect()),
-                b'l' => Property::Integers(items.map(|b| i64::from_le_bytes(b.try_into().expect("width"))).collect()),
+                b'f' => Property::Floats(
+                    items
+                        .map(|b| f32::from_le_bytes(b.try_into().expect("width")) as f64)
+                        .collect(),
+                ),
+                b'd' => Property::Floats(
+                    items
+                        .map(|b| f64::from_le_bytes(b.try_into().expect("width")))
+                        .collect(),
+                ),
+                b'i' => Property::Integers(
+                    items
+                        .map(|b| i32::from_le_bytes(b.try_into().expect("width")) as i64)
+                        .collect(),
+                ),
+                b'l' => Property::Integers(
+                    items
+                        .map(|b| i64::from_le_bytes(b.try_into().expect("width")))
+                        .collect(),
+                ),
                 _ => Property::Other,
             }
         }
-        other => return Err(IoError::malformed(format!("unknown FBX property type {:?}", other as char))),
+        other => {
+            return Err(IoError::malformed(format!(
+                "unknown FBX property type {:?}",
+                other as char
+            )));
+        }
     })
 }
 
@@ -247,7 +289,10 @@ struct Lexer<'a> {
 
 impl Lexer<'_> {
     fn error(&self, message: &str) -> IoError {
-        IoError::Syntax { line: self.line, message: message.to_owned() }
+        IoError::Syntax {
+            line: self.line,
+            message: message.to_owned(),
+        }
     }
 
     fn peek(&mut self) -> Result<Option<&Token>, IoError> {
@@ -299,13 +344,20 @@ impl Lexer<'_> {
                 self.at += 1;
                 let text = String::from_utf8_lossy(&self.text[start + 1..self.at - 1]);
                 // `Class::Name` in text files; keep the name part.
-                Token::Value(Property::Text(text.rsplit("::").next().unwrap_or_default().to_owned()))
+                Token::Value(Property::Text(
+                    text.rsplit("::").next().unwrap_or_default().to_owned(),
+                ))
             }
             _ => {
-                while self.text.get(self.at).is_some_and(|c| !b" \t\r\n,{}\";".contains(c)) {
+                while self
+                    .text
+                    .get(self.at)
+                    .is_some_and(|c| !b" \t\r\n,{}\";".contains(c))
+                {
                     self.at += 1;
                 }
-                let word = std::str::from_utf8(&self.text[start..self.at]).map_err(|_| self.error("not UTF-8"))?;
+                let word = std::str::from_utf8(&self.text[start..self.at])
+                    .map_err(|_| self.error("not UTF-8"))?;
                 if let Some(key) = word.strip_suffix(':') {
                     Token::Key(key.to_owned())
                 } else if let Ok(integer) = word.parse::<i64>() {
@@ -321,7 +373,12 @@ impl Lexer<'_> {
 }
 
 fn parse_ascii(bytes: &[u8]) -> Result<Node, IoError> {
-    let mut lexer = Lexer { text: bytes, at: 0, line: 1, peeked: None };
+    let mut lexer = Lexer {
+        text: bytes,
+        at: 0,
+        line: 1,
+        peeked: None,
+    };
     let mut root = Node::default();
     while let Some(token) = lexer.next()? {
         match token {
@@ -341,7 +398,10 @@ fn ascii_node(lexer: &mut Lexer<'_>, name: String, depth: u32) -> Result<Node, I
     if depth > 64 {
         return Err(lexer.error("nodes nested too deeply"));
     }
-    let mut node = Node { name, ..Node::default() };
+    let mut node = Node {
+        name,
+        ..Node::default()
+    };
     if matches!(lexer.peek()?, Some(Token::Value(_))) {
         loop {
             match lexer.next()? {
@@ -403,17 +463,29 @@ fn model_transform(model: &Node) -> DMat4 {
 /// Reads every mesh of an FBX file into one triangle mesh, in metres.
 pub fn import_fbx(bytes: &[u8]) -> Result<ImportedMesh, IoError> {
     let root = parse_fbx(bytes)?;
-    let objects = root.child("Objects").ok_or_else(|| IoError::malformed("FBX without Objects"))?;
+    let objects = root
+        .child("Objects")
+        .ok_or_else(|| IoError::malformed("FBX without Objects"))?;
 
     // child id → parent id
     let mut parent_of: HashMap<i64, i64> = HashMap::new();
-    for connection in root.child("Connections").into_iter().flat_map(|c| c.children_named("C")) {
-        if let (Some("OO"), Some(child), Some(parent)) = (connection.text(0), connection.integer(1), connection.integer(2)) {
+    for connection in root
+        .child("Connections")
+        .into_iter()
+        .flat_map(|c| c.children_named("C"))
+    {
+        if let (Some("OO"), Some(child), Some(parent)) = (
+            connection.text(0),
+            connection.integer(1),
+            connection.integer(2),
+        ) {
             parent_of.entry(child).or_insert(parent);
         }
     }
-    let models: HashMap<i64, DMat4> =
-        objects.children_named("Model").filter_map(|m| Some((m.integer(0)?, model_transform(m)))).collect();
+    let models: HashMap<i64, DMat4> = objects
+        .children_named("Model")
+        .filter_map(|m| Some((m.integer(0)?, model_transform(m))))
+        .collect();
     let world_of = |geometry: i64| {
         let mut world = DMat4::IDENTITY;
         let mut current = parent_of.get(&geometry).copied();
@@ -427,14 +499,24 @@ pub fn import_fbx(bytes: &[u8]) -> Result<ImportedMesh, IoError> {
     };
 
     let settings = root.child("GlobalSettings");
-    let setting = |name: &str| settings.and_then(|s| s.property70(name)).and_then(|values| values.last().copied());
+    let setting = |name: &str| {
+        settings
+            .and_then(|s| s.property70(name))
+            .and_then(|values| values.last().copied())
+    };
     // Centimetres per file unit.
-    let to_metres = setting("UnitScaleFactor").filter(|s| *s > 0.0).unwrap_or(1.0) / 100.0;
+    let to_metres = setting("UnitScaleFactor")
+        .filter(|s| *s > 0.0)
+        .unwrap_or(1.0)
+        / 100.0;
     let z_up = setting("UpAxis") == Some(2.0);
 
     let mut mesh = ImportedMesh::default();
     for geometry in objects.children_named("Geometry") {
-        let (Some(vertices), Some(polygons)) = (geometry.child("Vertices"), geometry.child("PolygonVertexIndex")) else {
+        let (Some(vertices), Some(polygons)) = (
+            geometry.child("Vertices"),
+            geometry.child("PolygonVertexIndex"),
+        ) else {
             continue; // shapes, curves
         };
         let world = geometry.integer(0).map_or(DMat4::IDENTITY, world_of);
@@ -451,7 +533,11 @@ pub fn import_fbx(bytes: &[u8]) -> Result<ImportedMesh, IoError> {
         for index in polygons.numbers() {
             let index = index as i64;
             // The last corner of a polygon is stored bit-inverted.
-            let (corner, last) = if index < 0 { (!index, true) } else { (index, false) };
+            let (corner, last) = if index < 0 {
+                (!index, true)
+            } else {
+                (index, false)
+            };
             if corner >= count {
                 return Err(IoError::malformed("FBX polygon index out of range"));
             }
@@ -459,7 +545,8 @@ pub fn import_fbx(bytes: &[u8]) -> Result<ImportedMesh, IoError> {
             if last {
                 for k in 1..polygon.len().saturating_sub(1) {
                     let t = [polygon[0], polygon[k], polygon[k + 1]];
-                    mesh.triangles.push(if flip { [t[0], t[2], t[1]] } else { t });
+                    mesh.triangles
+                        .push(if flip { [t[0], t[2], t[1]] } else { t });
                 }
                 polygon.clear();
             }
@@ -507,7 +594,11 @@ struct Out {
 }
 
 fn node(name: &'static str, values: Vec<Value>, children: Vec<Out>) -> Out {
-    Out { name, values, children }
+    Out {
+        name,
+        values,
+        children,
+    }
 }
 
 fn text(value: &str) -> Value {
@@ -538,11 +629,21 @@ fn write_ascii(out: &mut String, item: &Out, depth: usize) {
             Value::Flag(c) => out.push(*c),
             Value::I32s(list) => {
                 let _ = write!(out, "*{}", list.len());
-                array = Some(list.iter().map(i32::to_string).collect::<Vec<_>>().join(","));
+                array = Some(
+                    list.iter()
+                        .map(i32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
             }
             Value::F64s(list) => {
                 let _ = write!(out, "*{}", list.len());
-                array = Some(list.iter().map(f64::to_string).collect::<Vec<_>>().join(","));
+                array = Some(
+                    list.iter()
+                        .map(f64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
             }
         }
     }
@@ -587,7 +688,9 @@ fn write_binary(out: &mut Vec<u8>, item: &Out) {
                 let bytes = match value {
                     Value::Text(v) => v.clone().into_bytes(),
                     // Name and class are separated by 0x00 0x01.
-                    Value::Name(name, class) => [name.as_bytes(), &[0, 1], class.as_bytes()].concat(),
+                    Value::Name(name, class) => {
+                        [name.as_bytes(), &[0, 1], class.as_bytes()].concat()
+                    }
                     Value::Flag(c) => vec![*c as u8],
                     _ => unreachable!(),
                 };
@@ -638,8 +741,10 @@ fn garment_tree(garment: &GarmentExport<'_>) -> Vec<Out> {
             materials.push(fabric.clone());
         }
     }
-    let int = |name: &str, value: i32| property70(name, "int", "Integer", "", vec![Value::I32(value)]);
-    let vector = |name: &str, v: [f64; 3]| property70(name, name, "", "A", v.map(Value::F64).to_vec());
+    let int =
+        |name: &str, value: i32| property70(name, "int", "Integer", "", vec![Value::I32(value)]);
+    let vector =
+        |name: &str, v: [f64; 3]| property70(name, name, "", "A", v.map(Value::F64).to_vec());
 
     let header = node(
         "FBXHeaderExtension",
@@ -666,29 +771,61 @@ fn garment_tree(garment: &GarmentExport<'_>) -> Vec<Out> {
                     int("CoordAxis", 0),
                     int("CoordAxisSign", 1),
                     // Centimetres per unit.
-                    property70("UnitScaleFactor", "double", "Number", "", vec![Value::F64(1.0)]),
-                    property70("OriginalUnitScaleFactor", "double", "Number", "", vec![Value::F64(1.0)]),
+                    property70(
+                        "UnitScaleFactor",
+                        "double",
+                        "Number",
+                        "",
+                        vec![Value::F64(1.0)],
+                    ),
+                    property70(
+                        "OriginalUnitScaleFactor",
+                        "double",
+                        "Number",
+                        "",
+                        vec![Value::F64(1.0)],
+                    ),
                 ],
             ),
         ],
     );
-    let object_type = |kind: &str, count: usize| node("ObjectType", vec![text(kind)], vec![node("Count", vec![Value::I32(count as i32)], vec![])]);
+    let object_type = |kind: &str, count: usize| {
+        node(
+            "ObjectType",
+            vec![text(kind)],
+            vec![node("Count", vec![Value::I32(count as i32)], vec![])],
+        )
+    };
     let definitions = node(
         "Definitions",
         vec![],
         vec![
             node("Version", vec![Value::I32(100)], vec![]),
-            node("Count", vec![Value::I32((2 * groups.len() + materials.len()) as i32)], vec![]),
+            node(
+                "Count",
+                vec![Value::I32((2 * groups.len() + materials.len()) as i32)],
+                vec![],
+            ),
             object_type("Geometry", groups.len()),
             object_type("Model", groups.len()),
             object_type("Material", materials.len()),
         ],
     );
 
-    let (geometry_id, model_id, material_id) = (|i: usize| 1000 + i as i64, |i: usize| 2000 + i as i64, |i: usize| 3000 + i as i64);
+    let (geometry_id, model_id, material_id) = (
+        |i: usize| 1000 + i as i64,
+        |i: usize| 2000 + i as i64,
+        |i: usize| 3000 + i as i64,
+    );
     let mut objects = Vec::new();
     let mut connections = Vec::new();
-    let connect = |child: i64, parent: i64| node("C", vec![text("OO"), Value::I64(child), Value::I64(parent)], vec![]);
+    let connect = |child: i64, parent: i64| {
+        node(
+            "C",
+            vec![text("OO"), Value::I64(child), Value::I64(parent)],
+            vec![],
+        )
+    };
     for (index, (piece, fabric, triangles)) in groups.iter().enumerate() {
         // Each piece gets its own vertex numbering.
         let mut local: HashMap<u32, i32> = HashMap::new();
@@ -699,9 +836,17 @@ fn garment_tree(garment: &GarmentExport<'_>) -> Vec<Out> {
                 order.len() as i32 - 1
             });
         }
-        let doubles = |values: &mut dyn Iterator<Item = f32>| Value::F64s(values.map(f64::from).collect());
+        let doubles =
+            |values: &mut dyn Iterator<Item = f32>| Value::F64s(values.map(f64::from).collect());
         let layer_element = |kind: &'static str| {
-            node("LayerElement", vec![], vec![node("Type", vec![text(kind)], vec![]), node("TypedIndex", vec![Value::I32(0)], vec![])])
+            node(
+                "LayerElement",
+                vec![],
+                vec![
+                    node("Type", vec![text(kind)], vec![]),
+                    node("TypedIndex", vec![Value::I32(0)], vec![]),
+                ],
+            )
         };
         let mapping = |name: &str, mapping: &str, reference: &str| {
             vec![
@@ -717,13 +862,28 @@ fn garment_tree(garment: &GarmentExport<'_>) -> Vec<Out> {
         };
         objects.push(node(
             "Geometry",
-            vec![Value::I64(geometry_id(index)), Value::Name(piece.clone(), "Geometry"), text("Mesh")],
             vec![
-                node("Vertices", vec![doubles(&mut order.iter().flat_map(|&v| (mesh.positions[v as usize] * TO_CM).to_array()))], vec![]),
+                Value::I64(geometry_id(index)),
+                Value::Name(piece.clone(), "Geometry"),
+                text("Mesh"),
+            ],
+            vec![
+                node(
+                    "Vertices",
+                    vec![doubles(&mut order.iter().flat_map(|&v| {
+                        (mesh.positions[v as usize] * TO_CM).to_array()
+                    }))],
+                    vec![],
+                ),
                 // The last corner of each polygon is stored bit-inverted.
                 node(
                     "PolygonVertexIndex",
-                    vec![Value::I32s(triangles.chunks_exact(3).flat_map(|t| [local[&t[0]], local[&t[1]], !local[&t[2]]]).collect())],
+                    vec![Value::I32s(
+                        triangles
+                            .chunks_exact(3)
+                            .flat_map(|t| [local[&t[0]], local[&t[1]], !local[&t[2]]])
+                            .collect(),
+                    )],
                     vec![],
                 ),
                 node("GeometryVersion", vec![Value::I32(124)], vec![]),
@@ -732,7 +892,15 @@ fn garment_tree(garment: &GarmentExport<'_>) -> Vec<Out> {
                     vec![Value::I32(0)],
                     with(
                         mapping("", "ByVertice", "Direct"),
-                        vec![node("Normals", vec![doubles(&mut order.iter().flat_map(|&v| mesh.normals[v as usize].to_array()))], vec![])],
+                        vec![node(
+                            "Normals",
+                            vec![doubles(
+                                &mut order
+                                    .iter()
+                                    .flat_map(|&v| mesh.normals[v as usize].to_array()),
+                            )],
+                            vec![],
+                        )],
                     ),
                 ),
                 node(
@@ -741,15 +909,28 @@ fn garment_tree(garment: &GarmentExport<'_>) -> Vec<Out> {
                     with(
                         mapping("UVMap", "ByPolygonVertex", "IndexToDirect"),
                         vec![
-                            node("UV", vec![doubles(&mut order.iter().flat_map(|&v| uvs[v as usize].to_array()))], vec![]),
-                            node("UVIndex", vec![Value::I32s(triangles.iter().map(|v| local[v]).collect())], vec![]),
+                            node(
+                                "UV",
+                                vec![doubles(
+                                    &mut order.iter().flat_map(|&v| uvs[v as usize].to_array()),
+                                )],
+                                vec![],
+                            ),
+                            node(
+                                "UVIndex",
+                                vec![Value::I32s(triangles.iter().map(|v| local[v]).collect())],
+                                vec![],
+                            ),
                         ],
                     ),
                 ),
                 node(
                     "LayerElementMaterial",
                     vec![Value::I32(0)],
-                    with(mapping("", "AllSame", "IndexToDirect"), vec![node("Materials", vec![Value::I32s(vec![0])], vec![])]),
+                    with(
+                        mapping("", "AllSame", "IndexToDirect"),
+                        vec![node("Materials", vec![Value::I32s(vec![0])], vec![])],
+                    ),
                 ),
                 node(
                     "Layer",
@@ -765,13 +946,21 @@ fn garment_tree(garment: &GarmentExport<'_>) -> Vec<Out> {
         ));
         objects.push(node(
             "Model",
-            vec![Value::I64(model_id(index)), Value::Name(piece.clone(), "Model"), text("Mesh")],
+            vec![
+                Value::I64(model_id(index)),
+                Value::Name(piece.clone(), "Model"),
+                text("Mesh"),
+            ],
             vec![
                 node("Version", vec![Value::I32(232)], vec![]),
                 node(
                     "Properties70",
                     vec![],
-                    vec![vector("Lcl Translation", [0.0; 3]), vector("Lcl Rotation", [0.0; 3]), vector("Lcl Scaling", [1.0; 3])],
+                    vec![
+                        vector("Lcl Translation", [0.0; 3]),
+                        vector("Lcl Rotation", [0.0; 3]),
+                        vector("Lcl Scaling", [1.0; 3]),
+                    ],
                 ),
                 node("Shading", vec![Value::Flag('T')], vec![]),
                 // Cloth is seen from both sides.
@@ -786,23 +975,55 @@ fn garment_tree(garment: &GarmentExport<'_>) -> Vec<Out> {
         ]);
     }
     for (index, name) in materials.iter().enumerate() {
-        let safe = |fabric: &str| fabric.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect::<String>();
-        let color = garment.document.fabrics().iter().find(|f| safe(&f.name) == *name).map_or([0.6; 3], |f| f.base_color);
+        let safe = |fabric: &str| {
+            fabric
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>()
+        };
+        let color = garment
+            .document
+            .fabrics()
+            .iter()
+            .find(|f| safe(&f.name) == *name)
+            .map_or([0.6; 3], |f| f.base_color);
         objects.push(node(
             "Material",
-            vec![Value::I64(material_id(index)), Value::Name(name.clone(), "Material"), text("")],
+            vec![
+                Value::I64(material_id(index)),
+                Value::Name(name.clone(), "Material"),
+                text(""),
+            ],
             vec![
                 node("Version", vec![Value::I32(102)], vec![]),
                 node("ShadingModel", vec![text("lambert")], vec![]),
                 node(
                     "Properties70",
                     vec![],
-                    vec![property70("DiffuseColor", "Color", "", "A", color.map(|c| Value::F64(c as f64)).to_vec())],
+                    vec![property70(
+                        "DiffuseColor",
+                        "Color",
+                        "",
+                        "A",
+                        color.map(|c| Value::F64(c as f64)).to_vec(),
+                    )],
                 ),
             ],
         ));
     }
-    vec![header, settings, definitions, node("Objects", vec![], objects), node("Connections", vec![], connections)]
+    vec![
+        header,
+        settings,
+        definitions,
+        node("Objects", vec![], objects),
+        node("Connections", vec![], connections),
+    ]
 }
 
 /// Writes the draped garment as FBX 7.4: one mesh per pattern piece with
@@ -828,13 +1049,22 @@ pub fn export_garment_fbx(garment: &GarmentExport<'_>, encoding: FbxEncoding) ->
             out.extend([0u8; NULL_RECORD]);
             // Footer: an id, padding to a 16-byte boundary, the version
             // again, 120 zero bytes and a closing magic number.
-            out.extend([0xFA, 0xBC, 0xAB, 0x09, 0xD0, 0xC8, 0xD4, 0x66, 0xB1, 0x76, 0xFB, 0x83, 0x1C, 0xF7, 0x26, 0x7E]);
+            out.extend([
+                0xFA, 0xBC, 0xAB, 0x09, 0xD0, 0xC8, 0xD4, 0x66, 0xB1, 0x76, 0xFB, 0x83, 0x1C, 0xF7,
+                0x26, 0x7E,
+            ]);
             out.extend([0u8; 4]);
             let padding = (16 - out.len() % 16) % 16;
-            out.extend(std::iter::repeat_n(0u8, if padding == 0 { 16 } else { padding }));
+            out.extend(std::iter::repeat_n(
+                0u8,
+                if padding == 0 { 16 } else { padding },
+            ));
             out.extend(7400u32.to_le_bytes());
             out.extend([0u8; 120]);
-            out.extend([0xF8, 0x5A, 0x8C, 0x6A, 0xDE, 0xF5, 0xD9, 0x7E, 0xEC, 0xE9, 0x0C, 0xE3, 0x75, 0x8F, 0x29, 0x0B]);
+            out.extend([
+                0xF8, 0x5A, 0x8C, 0x6A, 0xDE, 0xF5, 0xD9, 0x7E, 0xEC, 0xE9, 0x0C, 0xE3, 0x75, 0x8F,
+                0x29, 0x0B,
+            ]);
             out
         }
     }
@@ -880,7 +1110,12 @@ Connections:  {
         // A quad becomes two triangles.
         assert_eq!(mesh.triangles, vec![[0, 1, 2], [0, 2, 3]]);
         // Centimetres → metres; rotated 90° about z, then lifted 0.5 m.
-        let expected = [Vec3::new(0.0, 0.5, 0.0), Vec3::new(0.0, 1.5, 0.0), Vec3::new(-1.0, 1.5, 0.0), Vec3::new(-1.0, 0.5, 0.0)];
+        let expected = [
+            Vec3::new(0.0, 0.5, 0.0),
+            Vec3::new(0.0, 1.5, 0.0),
+            Vec3::new(-1.0, 1.5, 0.0),
+            Vec3::new(-1.0, 0.5, 0.0),
+        ];
         for (found, expected) in mesh.positions.iter().zip(expected) {
             assert!((*found - expected).length() < 1e-5, "{found} vs {expected}");
         }
@@ -911,7 +1146,11 @@ Connections:  {
                 }
                 P::Doubles(values, compressed) => {
                     let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-                    let stored = if *compressed { miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6) } else { raw };
+                    let stored = if *compressed {
+                        miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6)
+                    } else {
+                        raw
+                    };
                     props.push(b'd');
                     props.extend((values.len() as u32).to_le_bytes());
                     props.extend(u32::from(*compressed).to_le_bytes());
@@ -927,7 +1166,8 @@ Connections:  {
                 }
             }
         }
-        let children_bytes: usize = children.iter().map(Vec::len).sum::<usize>() + if children.is_empty() { 0 } else { 13 };
+        let children_bytes: usize =
+            children.iter().map(Vec::len).sum::<usize>() + if children.is_empty() { 0 } else { 13 };
         let length = 13 + name.len() + props.len() + children_bytes;
         let mut out = Vec::new();
         out.extend(((offset + length) as u32).to_le_bytes());
@@ -955,11 +1195,22 @@ Connections:  {
         // Sizes are needed before offsets: build once to measure.
         let build = |objects_at: usize| {
             let geometry_at = objects_at + 13 + "Objects".len();
-            let geometry_head = 13 + "Geometry".len() + node("", &geometry_props, &[], 0).len() - 13;
+            let geometry_head =
+                13 + "Geometry".len() + node("", &geometry_props, &[], 0).len() - 13;
             let vertices_at = geometry_at + geometry_head;
             let vertices_node = node("Vertices", &[P::Doubles(&vertices, true)], &[], vertices_at);
-            let polygons_node = node("PolygonVertexIndex", &[P::Ints(&[0, 1, -3])], &[], vertices_at + vertices_node.len());
-            let geometry = node("Geometry", &geometry_props, &[vertices_node, polygons_node], geometry_at);
+            let polygons_node = node(
+                "PolygonVertexIndex",
+                &[P::Ints(&[0, 1, -3])],
+                &[],
+                vertices_at + vertices_node.len(),
+            );
+            let geometry = node(
+                "Geometry",
+                &geometry_props,
+                &[vertices_node, polygons_node],
+                geometry_at,
+            );
             node("Objects", &[], &[geometry], objects_at)
         };
         let mut file = BINARY_MAGIC.to_vec();

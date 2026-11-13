@@ -46,7 +46,10 @@ impl GrayImage {
     }
 
     fn line(&mut self, a: Vec2, b: Vec2, radius: f32) {
-        let (lo, hi) = (a.min(b) - Vec2::splat(radius + 1.0), a.max(b) + Vec2::splat(radius + 1.0));
+        let (lo, hi) = (
+            a.min(b) - Vec2::splat(radius + 1.0),
+            a.max(b) + Vec2::splat(radius + 1.0),
+        );
         let x0 = lo.x.max(0.0) as u32;
         let y0 = lo.y.max(0.0) as u32;
         let x1 = (hi.x.ceil() as u32).min(self.width.saturating_sub(1));
@@ -88,9 +91,16 @@ impl TesseractCli {
     /// The program from `CLO360_TESSERACT`, else `tesseract` on the `PATH`,
     /// if it runs.
     pub fn find() -> Option<Self> {
-        let program = std::env::var_os("CLO360_TESSERACT").map_or_else(|| PathBuf::from("tesseract"), PathBuf::from);
-        let works = Command::new(&program).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status();
-        works.is_ok_and(|status| status.success()).then_some(Self { program })
+        let program = std::env::var_os("CLO360_TESSERACT")
+            .map_or_else(|| PathBuf::from("tesseract"), PathBuf::from);
+        let works = Command::new(&program)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        works
+            .is_ok_and(|status| status.success())
+            .then_some(Self { program })
     }
 }
 
@@ -107,7 +117,10 @@ impl TextReader for TesseractCli {
             .ok()?;
         child.stdin.take()?.write_all(&image.to_pgm()).ok()?;
         let output = child.wait_with_output().ok()?;
-        output.status.success().then(|| parse_tsv(&String::from_utf8_lossy(&output.stdout)))
+        output
+            .status
+            .success()
+            .then(|| parse_tsv(&String::from_utf8_lossy(&output.stdout)))
     }
 }
 
@@ -124,22 +137,40 @@ pub fn parse_tsv(tsv: &str) -> Vec<Word> {
                 return None;
             }
             // Block, paragraph and line together identify a line.
-            let line = columns[2].parse::<u32>().ok()? * 10_000 + columns[3].parse::<u32>().ok()? * 100 + columns[4].parse::<u32>().ok()?;
-            Some(Word { text: text.to_owned(), confidence, line })
+            let line = columns[2].parse::<u32>().ok()? * 10_000
+                + columns[3].parse::<u32>().ok()? * 100
+                + columns[4].parse::<u32>().ok()?;
+            Some(Word {
+                text: text.to_owned(),
+                confidence,
+                line,
+            })
         })
         .collect()
 }
 
 /// The small strokes inside piece `index`: what drawn lettering consists of.
 pub fn piece_strokes(pattern: &ImportedPattern, index: usize) -> Vec<Vec<Vec2>> {
-    let Some(piece) = pattern.pieces.get(index) else { return Vec::new() };
-    let Some(outer) = piece.loops.first() else { return Vec::new() };
+    let Some(piece) = pattern.pieces.get(index) else {
+        return Vec::new();
+    };
+    let Some(outer) = piece.loops.first() else {
+        return Vec::new();
+    };
     let polygon = outer.outline.flatten(1.0).points;
     // Some files draw the outlines themselves as many short strokes; those
     // are not lettering.
-    let outlines: Vec<Vec<Vec2>> = piece.loops.iter().map(|l| l.outline.flatten(0.25).points).collect();
+    let outlines: Vec<Vec<Vec2>> = piece
+        .loops
+        .iter()
+        .map(|l| l.outline.flatten(0.25).points)
+        .collect();
     let on_outline = |points: &[Vec2]| {
-        outlines.iter().any(|outline| points.iter().all(|&p| geometry::distance_to_polygon(p, outline) < 1.0))
+        outlines.iter().any(|outline| {
+            points
+                .iter()
+                .all(|&p| geometry::distance_to_polygon(p, outline) < 1.0)
+        })
     };
     pattern
         .marks
@@ -148,7 +179,9 @@ pub fn piece_strokes(pattern: &ImportedPattern, index: usize) -> Vec<Vec<Vec2>> 
         .filter(|points| {
             let (lo, hi) = bounds(points);
             (hi - lo).max_element() <= MAX_GLYPH_MM
-                && points.iter().all(|&p| geometry::point_in_polygon(p, &polygon))
+                && points
+                    .iter()
+                    .all(|&p| geometry::point_in_polygon(p, &polygon))
                 && !on_outline(points)
         })
         .collect()
@@ -193,19 +226,33 @@ pub fn text_blocks(strokes: &[Vec<Vec2>]) -> Vec<Vec<Vec<Vec2>>> {
         }
     }
     // A word has a few letters at least.
-    blocks.into_iter().map(|(_, block)| block).filter(|block| block.len() >= 3).collect()
+    blocks
+        .into_iter()
+        .map(|(_, block)| block)
+        .filter(|block| block.len() >= 3)
+        .collect()
 }
 
 /// About the height of a letter: drawn letters consist of a few strokes,
 /// each a good part of the letter's height.
 fn letter_size(strokes: &[Vec<Vec2>]) -> f32 {
-    let mut sizes: Vec<f32> = strokes.iter().map(|s| { let (lo, hi) = bounds(s); (hi - lo).max_element() }).collect();
+    let mut sizes: Vec<f32> = strokes
+        .iter()
+        .map(|s| {
+            let (lo, hi) = bounds(s);
+            (hi - lo).max_element()
+        })
+        .collect();
     sizes.sort_by(f32::total_cmp);
     (sizes[sizes.len() / 2] * 1.3).max(0.5)
 }
 
 fn bounds(points: &[Vec2]) -> (Vec2, Vec2) {
-    points.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| (lo.min(p), hi.max(p)))
+    points
+        .iter()
+        .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| {
+            (lo.min(p), hi.max(p))
+        })
 }
 
 /// Draws `strokes` turned by `quarter_turns` × 90° counter-clockwise, scaled
@@ -219,7 +266,11 @@ pub fn render_strokes(strokes: &[Vec<Vec2>], quarter_turns: u32) -> Option<GrayI
 
 /// Draws `strokes` turned by `quarter_turns` × 90° counter-clockwise at
 /// `scale` pixels per millimetre.
-pub fn render_strokes_at(strokes: &[Vec<Vec2>], quarter_turns: u32, scale: f32) -> Option<GrayImage> {
+pub fn render_strokes_at(
+    strokes: &[Vec<Vec2>],
+    quarter_turns: u32,
+    scale: f32,
+) -> Option<GrayImage> {
     if strokes.is_empty() {
         return None;
     }
@@ -229,16 +280,25 @@ pub fn render_strokes_at(strokes: &[Vec<Vec2>], quarter_turns: u32, scale: f32) 
         2 => -p,
         _ => Vec2::new(p.y, -p.x),
     };
-    let turned: Vec<Vec<Vec2>> = strokes.iter().map(|s| s.iter().map(|&p| turn(p) * scale).collect()).collect();
-    let (lo, hi) = turned.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), s| {
-        let (a, b) = bounds(s);
-        (lo.min(a), hi.max(b))
-    });
+    let turned: Vec<Vec<Vec2>> = strokes
+        .iter()
+        .map(|s| s.iter().map(|&p| turn(p) * scale).collect())
+        .collect();
+    let (lo, hi) = turned
+        .iter()
+        .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), s| {
+            let (a, b) = bounds(s);
+            (lo.min(a), hi.max(b))
+        });
     let size = hi - lo + Vec2::splat(2.0 * MARGIN_PX);
     if size.x * size.y > 16e6 {
         return None; // scattered marks, not a label
     }
-    let mut image = GrayImage { width: size.x.ceil() as u32, height: size.y.ceil() as u32, pixels: Vec::new() };
+    let mut image = GrayImage {
+        width: size.x.ceil() as u32,
+        height: size.y.ceil() as u32,
+        pixels: Vec::new(),
+    };
     image.pixels = vec![255; (image.width * image.height) as usize];
     // Half the stroke width, in pixels.
     let radius = (STROKE_RADIUS * letter_size(strokes) * scale).max(1.0);
@@ -258,7 +318,17 @@ pub fn render_strokes_at(strokes: &[Vec<Vec2>], quarter_turns: u32, scale: f32) 
 /// Text that is pattern bookkeeping rather than a name.
 fn is_annotation(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
-    ["grain", "fabric", "piece qty", "qty", "cut ", "fold", "size"].iter().any(|w| lower.contains(w))
+    [
+        "grain",
+        "fabric",
+        "piece qty",
+        "qty",
+        "cut ",
+        "fold",
+        "size",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
 }
 
 /// Scores one reading: confident letters count, garbage does not.
@@ -274,19 +344,95 @@ fn score(words: &[Word]) -> f32 {
 /// gets a letter wrong now and then ("FRUNT", "PARI"); a word that nearly
 /// matches one of these is taken to be it.
 const VOCABULARY: &[&str] = &[
-    "ARMHOLE", "BACK", "BAND", "BELT", "BIB", "BINDING", "BODICE", "BOTTOM", "CENTER", "CENTRE", "COAT", "COLLAR",
-    "CUFF", "DART", "DRESS", "FACING", "FLAP", "FLY", "FRONT", "GODET", "GORE", "GUSSET", "HALF", "HEM", "HOOD",
-    "INNER", "INSERT", "JACKET", "LAPEL", "LEFT", "LEG", "LINING", "LOOP", "LOWER", "MAIN", "NECK", "NECKLINE",
-    "OUTER", "PANEL", "PANT", "PART", "PIECE", "PLACKET", "POCKET", "RIGHT", "RUFFLE", "SHIRT", "SHOULDER", "SIDE",
-    "SKIRT", "SLEEVE", "STAND", "STRAP", "TAB", "TOP", "TROUSER", "UNDER", "UPPER", "VENT", "VEST", "WAIST",
-    "WAISTBAND", "WELT", "YOKE",
+    "ARMHOLE",
+    "BACK",
+    "BAND",
+    "BELT",
+    "BIB",
+    "BINDING",
+    "BODICE",
+    "BOTTOM",
+    "CENTER",
+    "CENTRE",
+    "COAT",
+    "COLLAR",
+    "CUFF",
+    "DART",
+    "DRESS",
+    "FACING",
+    "FLAP",
+    "FLY",
+    "FRONT",
+    "GODET",
+    "GORE",
+    "GUSSET",
+    "HALF",
+    "HEM",
+    "HOOD",
+    "INNER",
+    "INSERT",
+    "JACKET",
+    "LAPEL",
+    "LEFT",
+    "LEG",
+    "LINING",
+    "LOOP",
+    "LOWER",
+    "MAIN",
+    "NECK",
+    "NECKLINE",
+    "OUTER",
+    "PANEL",
+    "PANT",
+    "PART",
+    "PIECE",
+    "PLACKET",
+    "POCKET",
+    "RIGHT",
+    "RUFFLE",
+    "SHIRT",
+    "SHOULDER",
+    "SIDE",
+    "SKIRT",
+    "SLEEVE",
+    "STAND",
+    "STRAP",
+    "TAB",
+    "TOP",
+    "TROUSER",
+    "UNDER",
+    "UPPER",
+    "VENT",
+    "VEST",
+    "WAIST",
+    "WAISTBAND",
+    "WELT",
+    "YOKE",
 ];
 
 /// Letters OCR mixes up in thin plotter lettering; swapping them counts
 /// half.
 const CONFUSIONS: &[(char, char)] = &[
-    ('I', 'L'), ('I', '1'), ('L', '1'), ('I', 'T'), ('I', 'J'), ('U', 'O'), ('U', 'D'), ('O', 'D'), ('O', '0'), ('C', 'G'),
-    ('C', 'K'), ('C', 'L'), ('B', '8'), ('S', '5'), ('Z', '2'), ('R', 'P'), ('F', 'P'), ('E', 'F'), ('N', 'H'), ('V', 'Y'),
+    ('I', 'L'),
+    ('I', '1'),
+    ('L', '1'),
+    ('I', 'T'),
+    ('I', 'J'),
+    ('U', 'O'),
+    ('U', 'D'),
+    ('O', 'D'),
+    ('O', '0'),
+    ('C', 'G'),
+    ('C', 'K'),
+    ('C', 'L'),
+    ('B', '8'),
+    ('S', '5'),
+    ('Z', '2'),
+    ('R', 'P'),
+    ('F', 'P'),
+    ('E', 'F'),
+    ('N', 'H'),
+    ('V', 'Y'),
 ];
 
 /// Edit distance with cheap confusable substitutions.
@@ -295,7 +441,10 @@ fn edit_distance(a: &str, b: &str) -> f32 {
     let substitution = |x: char, y: char| {
         if x == y {
             0.0
-        } else if CONFUSIONS.iter().any(|&(p, q)| (p, q) == (x, y) || (q, p) == (x, y)) {
+        } else if CONFUSIONS
+            .iter()
+            .any(|&(p, q)| (p, q) == (x, y) || (q, p) == (x, y))
+        {
             0.5
         } else {
             1.0
@@ -325,8 +474,17 @@ fn known_word(token: &str) -> Option<&'static str> {
     VOCABULARY
         .iter()
         .map(|word| {
-            let cut_off = upper.len() >= 4 && word.len() > upper.len() && word.starts_with(&upper[..upper.len() - 1]);
-            (word, if cut_off { 1.0 } else { edit_distance(&upper, word) })
+            let cut_off = upper.len() >= 4
+                && word.len() > upper.len()
+                && word.starts_with(&upper[..upper.len() - 1]);
+            (
+                word,
+                if cut_off {
+                    1.0
+                } else {
+                    edit_distance(&upper, word)
+                },
+            )
         })
         .filter(|&(_, distance)| distance <= allowed)
         .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -359,7 +517,16 @@ fn name_from(words: &[Word]) -> Option<String> {
     lines.sort_by_key(|(line, _)| *line);
     let texts: Vec<(u32, String)> = lines
         .into_iter()
-        .map(|(line, words)| (line / BLOCK_LINES, words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")))
+        .map(|(line, words)| {
+            (
+                line / BLOCK_LINES,
+                words
+                    .iter()
+                    .map(|w| w.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        })
         .filter(|(_, line)| !is_annotation(line))
         .collect();
     // A name broken over two lines ("BACK_NECKLI" / "NE_FACING") is joined
@@ -378,24 +545,48 @@ fn name_from(words: &[Word]) -> Option<String> {
             previous = None;
             continue;
         }
-        previous = text.split(|c: char| c.is_whitespace() || c == '_').rev().find(|t| t.len() >= 2).and_then(|raw| {
-            let word = known_word(raw)?;
-            let raw = raw.to_ascii_uppercase();
-            let stem = &raw[..raw.len().saturating_sub(1)];
-            word.strip_prefix(stem).map(|rest| (block, rest[(raw.len() - stem.len()).min(rest.len())..].to_owned()))
-        });
+        previous = text
+            .split(|c: char| c.is_whitespace() || c == '_')
+            .rev()
+            .find(|t| t.len() >= 2)
+            .and_then(|raw| {
+                let word = known_word(raw)?;
+                let raw = raw.to_ascii_uppercase();
+                let stem = &raw[..raw.len().saturating_sub(1)];
+                word.strip_prefix(stem).map(|rest| {
+                    (
+                        block,
+                        rest[(raw.len() - stem.len()).min(rest.len())..].to_owned(),
+                    )
+                })
+            });
         joined.push(tokens);
     }
     joined
         .into_iter()
-        .filter(|tokens| tokens.iter().map(|(t, _)| t.chars().filter(|c| c.is_alphabetic()).count()).sum::<usize>() >= 4)
+        .filter(|tokens| {
+            tokens
+                .iter()
+                .map(|(t, _)| t.chars().filter(|c| c.is_alphabetic()).count())
+                .sum::<usize>()
+                >= 4
+        })
         .max_by_key(|tokens| {
             let known = tokens.iter().filter(|(_, known)| *known).count();
-            let letters: usize = tokens.iter().map(|(t, _)| t.chars().filter(|c| c.is_alphabetic()).count()).sum();
+            let letters: usize = tokens
+                .iter()
+                .map(|(t, _)| t.chars().filter(|c| c.is_alphabetic()).count())
+                .sum();
             (known, letters)
         })
         .filter(|tokens| tokens.iter().any(|(_, known)| *known) || tokens.len() == 1)
-        .map(|tokens| tokens.into_iter().map(|(t, _)| t).collect::<Vec<_>>().join(" "))
+        .map(|tokens| {
+            tokens
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
 }
 
 /// Blocks with fewer strokes than this are marks or single letters, not
@@ -418,24 +609,33 @@ pub fn name_pieces(pattern: &mut ImportedPattern, reader: &dyn TextReader) -> us
     let unnamed: Vec<usize> = (0..pattern.pieces.len())
         .filter(|&i| {
             let name = &pattern.pieces[i].name;
-            name.strip_prefix("Piece ").is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()))
+            name.strip_prefix("Piece ")
+                .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()))
         })
         .collect();
     let images: Vec<(usize, GrayImage)> = unnamed
         .iter()
-        .flat_map(|&piece| label_images(pattern, piece).into_iter().map(move |image| (piece, image)))
+        .flat_map(|&piece| {
+            label_images(pattern, piece)
+                .into_iter()
+                .map(move |image| (piece, image))
+        })
         .collect();
 
     // A small pool of workers runs the readings.
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results = std::sync::Mutex::new(Vec::new());
-    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, MAX_CONCURRENT_READS);
+    let workers = std::thread::available_parallelism()
+        .map_or(2, |n| n.get())
+        .clamp(1, MAX_CONCURRENT_READS);
     std::thread::scope(|scope| {
         for _ in 0..workers.min(images.len()) {
             scope.spawn(|| {
                 loop {
                     let job = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some((piece, image)) = images.get(job) else { break };
+                    let Some((piece, image)) = images.get(job) else {
+                        break;
+                    };
                     if let Some(reading) = reader.read(image)
                         && let Ok(mut results) = results.lock()
                     {
@@ -467,17 +667,22 @@ pub fn name_pieces(pattern: &mut ImportedPattern, reader: &dyn TextReader) -> us
 /// The lettering of piece `index` as two images, upright and upside down:
 /// every text block turned so that its long side is horizontal, stacked.
 pub fn label_images(pattern: &ImportedPattern, index: usize) -> Vec<GrayImage> {
-    let blocks: Vec<Vec<Vec<Vec2>>> =
-        text_blocks(&piece_strokes(pattern, index)).into_iter().filter(|b| b.len() >= MIN_NAME_STROKES).collect();
+    let blocks: Vec<Vec<Vec<Vec2>>> = text_blocks(&piece_strokes(pattern, index))
+        .into_iter()
+        .filter(|b| b.len() >= MIN_NAME_STROKES)
+        .collect();
     (0..2u32)
         .filter_map(|flip| {
             let parts: Vec<GrayImage> = blocks
                 .iter()
                 .filter_map(|block| {
-                    let (lo, hi) = block.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), s| {
-                        let (a, b) = bounds(s);
-                        (lo.min(a), hi.max(b))
-                    });
+                    let (lo, hi) =
+                        block
+                            .iter()
+                            .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), s| {
+                                let (a, b) = bounds(s);
+                                (lo.min(a), hi.max(b))
+                            });
                     let upright = u32::from(hi.y - lo.y > hi.x - lo.x);
                     render_strokes(block, upright + 2 * flip)
                 })
@@ -495,7 +700,11 @@ fn stack(images: &[GrayImage]) -> Option<GrayImage> {
     if u64::from(width) * u64::from(height) > 16_000_000 {
         return None;
     }
-    let mut out = GrayImage { width, height, pixels: vec![255; (width * height) as usize] };
+    let mut out = GrayImage {
+        width,
+        height,
+        pixels: vec![255; (width * height) as usize],
+    };
     let mut top = 0;
     for image in images {
         for y in 0..image.height {
@@ -528,21 +737,52 @@ mod tests {
 
     #[test]
     fn bookkeeping_lines_are_not_names() {
-        let word = |text: &str, line| Word { text: text.to_owned(), confidence: 90.0, line };
-        let words = [word("STRAIGHT", 1), word("GRAIN", 1), word("Fabric", 2), word("type", 2), word("Side", 3), word("Back", 3)];
+        let word = |text: &str, line| Word {
+            text: text.to_owned(),
+            confidence: 90.0,
+            line,
+        };
+        let words = [
+            word("STRAIGHT", 1),
+            word("GRAIN", 1),
+            word("Fabric", 2),
+            word("type", 2),
+            word("Side", 3),
+            word("Back", 3),
+        ];
         assert_eq!(name_from(&words).as_deref(), Some("SIDE BACK"));
     }
 
     #[test]
     fn misread_letters_are_corrected_and_crumbs_dropped() {
-        let word = |text: &str, line, confidence| Word { text: text.to_owned(), confidence, line };
+        let word = |text: &str, line, confidence| Word {
+            text: text.to_owned(),
+            confidence,
+            line,
+        };
         // What OCR made of the vest's labels at a poor resolution.
-        let words = [word("SIDE", 1, 90.0), word("_FRUNT", 1, 80.0), word("PARI", 1, 80.0), word("5017", 2, 90.0), word("Vest", 2, 90.0)];
+        let words = [
+            word("SIDE", 1, 90.0),
+            word("_FRUNT", 1, 80.0),
+            word("PARI", 1, 80.0),
+            word("5017", 2, 90.0),
+            word("Vest", 2, 90.0),
+        ];
         assert_eq!(name_from(&words).as_deref(), Some("SIDE FRONT PART"));
-        let words = [word("BACK_NECKLI", 1, 90.0), word("|", 1, 90.0), word("1", 1, 90.0), word("LEKO", 2, 90.0), word("CAD", 2, 90.0)];
+        let words = [
+            word("BACK_NECKLI", 1, 90.0),
+            word("|", 1, 90.0),
+            word("1", 1, 90.0),
+            word("LEKO", 2, 90.0),
+            word("CAD", 2, 90.0),
+        ];
         assert_eq!(name_from(&words).as_deref(), Some("BACK NECKLINE"));
         // The rest of a word on the next line of the same block is joined.
-        let words = [word("BACK_NECKLI", 1, 90.0), word("NE_FACING", 2, 90.0), word("Fabric", 3, 90.0)];
+        let words = [
+            word("BACK_NECKLI", 1, 90.0),
+            word("NE_FACING", 2, 90.0),
+            word("Fabric", 3, 90.0),
+        ];
         assert_eq!(name_from(&words).as_deref(), Some("BACK NECKLINE FACING"));
         assert_eq!(known_word("SLUE"), Some("SIDE"));
         assert_eq!(known_word("BAUK"), Some("BACK"));
@@ -554,8 +794,16 @@ mod tests {
     struct Upright;
     impl TextReader for Upright {
         fn read(&self, image: &GrayImage) -> Option<Vec<Word>> {
-            let confidence = if image.width > image.height { 95.0 } else { 20.0 };
-            Some(vec![Word { text: "YOKE".into(), confidence, line: 1 }])
+            let confidence = if image.width > image.height {
+                95.0
+            } else {
+                20.0
+            };
+            Some(vec![Word {
+                text: "YOKE".into(),
+                confidence,
+                line: 1,
+            }])
         }
     }
 
@@ -563,7 +811,12 @@ mod tests {
     fn pieces_are_named_from_the_best_orientation() {
         let mut drawing = RawVectorDrawing::new();
         let mut square = RawSubpath::new(Vec2::ZERO);
-        for to in [Vec2::new(200.0, 0.0), Vec2::splat(200.0), Vec2::new(0.0, 200.0), Vec2::ZERO] {
+        for to in [
+            Vec2::new(200.0, 0.0),
+            Vec2::splat(200.0),
+            Vec2::new(0.0, 200.0),
+            Vec2::ZERO,
+        ] {
             square.segments.push(RawSegment::Line { to });
         }
         square.closed = true;
@@ -571,7 +824,9 @@ mod tests {
         // A "label": a row of short vertical strokes, written bottom to top.
         for k in 0..8 {
             let mut stroke = RawSubpath::new(Vec2::new(100.0, 40.0 + 6.0 * k as f32));
-            stroke.segments.push(RawSegment::Line { to: Vec2::new(104.0, 40.0 + 6.0 * k as f32) });
+            stroke.segments.push(RawSegment::Line {
+                to: Vec2::new(104.0, 40.0 + 6.0 * k as f32),
+            });
             drawing.subpaths.push(stroke);
         }
         let mut pattern = drawing.assemble_pattern(10.0);

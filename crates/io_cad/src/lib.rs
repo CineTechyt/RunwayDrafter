@@ -56,7 +56,11 @@ impl IoError {
 /// Reads an avatar from an `.obj`, `.gltf`, `.glb` or `.fbx` file and
 /// normalises it with `options`.
 pub fn import_avatar(path: &Path, options: &ImportOptions) -> Result<ImportedMesh, IoError> {
-    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let bytes = std::fs::read(path)?;
     let mut mesh = match extension.as_str() {
         "obj" => obj::import_obj(&bytes)?,
@@ -67,14 +71,22 @@ pub fn import_avatar(path: &Path, options: &ImportOptions) -> Result<ImportedMes
     if mesh.triangles.is_empty() {
         return Err(IoError::Empty);
     }
-    mesh.name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("avatar").to_owned();
+    mesh.name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("avatar")
+        .to_owned();
     mesh.normalise(options);
     Ok(mesh)
 }
 
 /// Reads a 2D pattern from a `.pdf` or `.svg` file.
 pub fn import_pattern(path: &Path) -> Result<ImportedPattern, IoError> {
-    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let bytes = std::fs::read(path)?;
     match extension.as_str() {
         "pdf" => import_pattern_pdf(&bytes, &PdfOptions::default()),

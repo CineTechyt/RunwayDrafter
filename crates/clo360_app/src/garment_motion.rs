@@ -39,7 +39,11 @@ const BAKE_CLOSING: f32 = 0.0;
 /// A field around the garment, of a body moving by small steps (see the
 /// sub-frames below), so no deep interior is needed.
 fn field_options(region: (Vec3, Vec3), velocities: Option<&[Vec3]>) -> avatar::FieldOptions<'_> {
-    avatar::FieldOptions { region: Some(region), velocities, deep: false }
+    avatar::FieldOptions {
+        region: Some(region),
+        velocities,
+        deep: false,
+    }
 }
 
 /// A garment simulated through a motion.
@@ -105,7 +109,18 @@ pub fn start(job: Job) -> Receiver<Message> {
 }
 
 fn run(job: Job, sender: &Sender<Message>) {
-    let Job { motion, shape_version, document, mut mesh, model, rest, start_pose, settings, closing, duration } = job;
+    let Job {
+        motion,
+        shape_version,
+        document,
+        mut mesh,
+        model,
+        rest,
+        start_pose,
+        settings,
+        closing,
+        duration,
+    } = job;
     let performance = Performance::bake(motion, &model, &rest);
     let pose_at = |t: f32| model.pose_with_transforms(&rest, &performance.pose(t, &model, &rest));
     // Into the first pose, then a moment to settle.
@@ -125,7 +140,9 @@ fn run(job: Job, sender: &Sender<Message>) {
         pose.offset = first.offset;
         model.pose(&rest, &pose)
     };
-    let count = (duration.unwrap_or_else(|| motion.duration()) * FPS).ceil().max(1.0) as usize;
+    let count = (duration.unwrap_or_else(|| motion.duration()) * FPS)
+        .ceil()
+        .max(1.0) as usize;
     let dt = 1.0 / FPS;
 
     // The garment stays as draped; the body moves under it (never carried
@@ -133,28 +150,57 @@ fn run(job: Job, sender: &Sender<Message>) {
     // A motion may start somewhere else on the floor (a walk, at the start
     // of its runway). The worn garment goes there with the avatar, as if it
     // had been dressed there; from then on only the simulation moves it.
-    let start = Vec3::new(first.offset.x - start_pose.offset.x, 0.0, first.offset.z - start_pose.offset.z);
+    let start = Vec3::new(
+        first.offset.x - start_pose.offset.x,
+        0.0,
+        first.offset.z - start_pose.offset.z,
+    );
     for p in &mut mesh.positions {
         *p += start;
     }
     let mut body = lead_in(0.0);
     mesh.recompute_normals();
     let (worst, typical) = stretch(&mesh, std::slice::from_ref(&mesh.positions));
-    log::info!("garment as draped: edges stretched at most {:.1} %, 99 % of them within {:.1} %", worst * 100.0, typical * 100.0);
+    log::info!(
+        "garment as draped: edges stretched at most {:.1} %, 99 % of them within {:.1} %",
+        worst * 100.0,
+        typical * 100.0
+    );
 
     let region = |mesh: &GarmentMesh| {
-        let (low, high) = mesh.positions.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+        let (low, high) = mesh
+            .positions
+            .iter()
+            .fold((Vec3::MAX, Vec3::MIN), |(lo, hi), &p| {
+                (lo.min(p), hi.max(p))
+            });
         (low - Vec3::splat(0.15), high + Vec3::splat(0.15))
     };
-    let mut field = Arc::new(avatar::distance_field_within(&body, VOXEL, BAKE_CLOSING.min(closing), &field_options(region(&mesh), None)));
+    let mut field = Arc::new(avatar::distance_field_within(
+        &body,
+        VOXEL,
+        BAKE_CLOSING.min(closing),
+        &field_options(region(&mesh), None),
+    ));
     let mut collider = Arc::new(body.collider());
     let mut solver = XpbdSolver::new();
-    let context = |field: &Arc<_>, collider: &Arc<_>| -> (Arc<topology_sync::DistanceField>, Arc<physics_collision::TriangleMesh>) {
-        (Arc::clone(field), Arc::clone(collider))
-    };
+    let context = |field: &Arc<_>,
+                   collider: &Arc<_>|
+     -> (
+        Arc<topology_sync::DistanceField>,
+        Arc<physics_collision::TriangleMesh>,
+    ) { (Arc::clone(field), Arc::clone(collider)) };
     {
         let (f, c) = context(&field, &collider);
-        let ctx = SolverContext { document: &document, settings: &settings, colliders: &[], body: Some(&f), body_mesh: Some(&c), ground: 0.0, dt };
+        let ctx = SolverContext {
+            document: &document,
+            settings: &settings,
+            colliders: &[],
+            body: Some(&f),
+            body_mesh: Some(&c),
+            ground: 0.0,
+            dt,
+        };
         solver.rebind(&mesh, &ctx);
     }
 
@@ -193,26 +239,49 @@ fn run(job: Job, sender: &Sender<Message>) {
                     .map(|(a, b)| *b - *a)
                     .collect();
                 let mean = moves.iter().copied().sum::<Vec3>() / moves.len().max(1) as f32;
-                let moved = moves.iter().map(|m| m.distance(mean)).fold(0.0f32, f32::max);
+                let moved = moves
+                    .iter()
+                    .map(|m| m.distance(mean))
+                    .fold(0.0f32, f32::max);
                 ((moved / 0.012).ceil() as usize).clamp(1, 6)
             }
             None => 1,
         };
         // Holding still: the skin is not moving any more.
         if next.is_none() && !field.velocity.is_empty() {
-            field = Arc::new(avatar::distance_field_within(&body, VOXEL, BAKE_CLOSING.min(closing), &field_options(region(&mesh), None)));
+            field = Arc::new(avatar::distance_field_within(
+                &body,
+                VOXEL,
+                BAKE_CLOSING.min(closing),
+                &field_options(region(&mesh), None),
+            ));
         }
         for piece in 1..=pieces {
             if let Some(next) = &next {
                 let clock = std::time::Instant::now();
-                let then = if piece == pieces { next.clone() } else { body_at(frame as f32 - 1.0 + piece as f32 / pieces as f32).unwrap_or_else(|| next.clone()) };
+                let then = if piece == pieces {
+                    next.clone()
+                } else {
+                    body_at(frame as f32 - 1.0 + piece as f32 / pieces as f32)
+                        .unwrap_or_else(|| next.clone())
+                };
                 timing[0] += clock.elapsed();
                 let clock = std::time::Instant::now();
                 // The skin's velocity, for friction with the moving body.
                 let step = dt / pieces as f32;
-                let velocities: Vec<Vec3> = body.positions.iter().zip(&then.positions).map(|(a, b)| (*b - *a) / step).collect();
+                let velocities: Vec<Vec3> = body
+                    .positions
+                    .iter()
+                    .zip(&then.positions)
+                    .map(|(a, b)| (*b - *a) / step)
+                    .collect();
                 body = then;
-                field = Arc::new(avatar::distance_field_within(&body, VOXEL, BAKE_CLOSING.min(closing), &field_options(region(&mesh), Some(&velocities))));
+                field = Arc::new(avatar::distance_field_within(
+                    &body,
+                    VOXEL,
+                    BAKE_CLOSING.min(closing),
+                    &field_options(region(&mesh), Some(&velocities)),
+                ));
                 timing[1] += clock.elapsed();
                 let clock = std::time::Instant::now();
                 collider = Arc::new(body.collider());
@@ -247,17 +316,44 @@ fn run(job: Job, sender: &Sender<Message>) {
             );
             // Where the worst edge is.
             let p = &mesh.positions;
-            if let Some((a, b, e)) = mesh.indices.as_chunks::<3>().0.iter().flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]).map(|(a, b)| {
-                let r = mesh.pattern_positions[a as usize].distance(mesh.pattern_positions[b as usize]) * 1e-3;
-                (a, b, if r > 1e-5 { p[a as usize].distance(p[b as usize]) / r - 1.0 } else { 0.0 })
-            }).max_by(|x, y| x.2.total_cmp(&y.2)) {
-                eprintln!("  worst edge {a}-{b} {:.0} % at {:.2?}", e * 100.0, p[a as usize]);
+            if let Some((a, b, e)) = mesh
+                .indices
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+                .map(|(a, b)| {
+                    let r = mesh.pattern_positions[a as usize]
+                        .distance(mesh.pattern_positions[b as usize])
+                        * 1e-3;
+                    (
+                        a,
+                        b,
+                        if r > 1e-5 {
+                            p[a as usize].distance(p[b as usize]) / r - 1.0
+                        } else {
+                            0.0
+                        },
+                    )
+                })
+                .max_by(|x, y| x.2.total_cmp(&y.2))
+            {
+                eprintln!(
+                    "  worst edge {a}-{b} {:.0} % at {:.2?}",
+                    e * 100.0,
+                    p[a as usize]
+                );
             }
         }
         if frame >= lead {
             frames.push(mesh.positions.clone());
         }
-        if sender.send(Message::Progress((frame + 1) as f32 / (lead + count) as f32)).is_err() {
+        if sender
+            .send(Message::Progress(
+                (frame + 1) as f32 / (lead + count) as f32,
+            ))
+            .is_err()
+        {
             return; // nobody is waiting any more
         }
     }
@@ -273,7 +369,11 @@ fn run(job: Job, sender: &Sender<Message>) {
         timing[3].as_secs_f32()
     );
     let (worst, typical) = stretch(&mesh, &frames);
-    log::info!("garment through {motion:?}: edges stretched at most {:.1} %, 99 % of them within {:.1} %", worst * 100.0, typical * 100.0);
+    log::info!(
+        "garment through {motion:?}: edges stretched at most {:.1} %, 99 % of them within {:.1} %",
+        worst * 100.0,
+        typical * 100.0
+    );
 
     // The loop's end blends into its start.
     let blend = (FPS * 0.4) as usize;
@@ -288,7 +388,13 @@ fn run(job: Job, sender: &Sender<Message>) {
             }
         }
     }
-    let _ = sender.send(Message::Done(GarmentMotion { motion, shape_version, document_revision: document.revision(), frames, stretch: typical }));
+    let _ = sender.send(Message::Done(GarmentMotion {
+        motion,
+        shape_version,
+        document_revision: document.revision(),
+        frames,
+        stretch: typical,
+    }));
 }
 
 /// The worst stretch of any mesh edge over all frames, and the 99th
@@ -305,15 +411,25 @@ fn stretch(mesh: &GarmentMesh, frames: &[Vec<Vec3>]) -> (f32, f32) {
         .collect();
     edges.sort_unstable();
     edges.dedup();
-    let rest: Vec<f32> =
-        edges.iter().map(|&(a, b)| mesh.pattern_positions[a as usize].distance(mesh.pattern_positions[b as usize]) * 1e-3).collect();
+    let rest: Vec<f32> = edges
+        .iter()
+        .map(|&(a, b)| {
+            mesh.pattern_positions[a as usize].distance(mesh.pattern_positions[b as usize]) * 1e-3
+        })
+        .collect();
     let (mut worst, mut typical) = (0.0f32, 0.0f32);
     let mut strains = Vec::with_capacity(edges.len());
     for positions in frames {
         strains.clear();
-        strains.extend(edges.iter().zip(&rest).filter(|(_, r)| **r > 1e-5).map(|(&(a, b), r)| {
-            positions[a as usize].distance(positions[b as usize]) / r - 1.0
-        }));
+        strains.extend(
+            edges
+                .iter()
+                .zip(&rest)
+                .filter(|(_, r)| **r > 1e-5)
+                .map(|(&(a, b), r)| {
+                    positions[a as usize].distance(positions[b as usize]) / r - 1.0
+                }),
+        );
         if strains.is_empty() {
             continue;
         }

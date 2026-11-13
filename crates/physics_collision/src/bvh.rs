@@ -15,26 +15,40 @@ pub struct Aabb {
 
 impl Aabb {
     /// The box that contains nothing; the identity of [`Aabb::union`].
-    pub const EMPTY: Self = Self { min: Vec3A::INFINITY, max: Vec3A::NEG_INFINITY };
+    pub const EMPTY: Self = Self {
+        min: Vec3A::INFINITY,
+        max: Vec3A::NEG_INFINITY,
+    };
 
     pub fn from_points(points: impl IntoIterator<Item = Vec3A>) -> Self {
-        points.into_iter().fold(Self::EMPTY, |bounds, p| bounds.with_point(p))
+        points
+            .into_iter()
+            .fold(Self::EMPTY, |bounds, p| bounds.with_point(p))
     }
 
     #[inline]
     pub fn with_point(self, p: Vec3A) -> Self {
-        Self { min: self.min.min(p), max: self.max.max(p) }
+        Self {
+            min: self.min.min(p),
+            max: self.max.max(p),
+        }
     }
 
     #[inline]
     pub fn union(self, other: Self) -> Self {
-        Self { min: self.min.min(other.min), max: self.max.max(other.max) }
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
     }
 
     /// Grown by `margin` on every side.
     #[inline]
     pub fn expanded(self, margin: f32) -> Self {
-        Self { min: self.min - Vec3A::splat(margin), max: self.max + Vec3A::splat(margin) }
+        Self {
+            min: self.min - Vec3A::splat(margin),
+            max: self.max + Vec3A::splat(margin),
+        }
     }
 
     #[inline]
@@ -57,7 +71,10 @@ impl Aabb {
     /// Squared distance from `p` to the box (zero inside).
     #[inline]
     pub fn distance_squared(&self, p: Vec3A) -> f32 {
-        (self.min - p).max(p - self.max).max(Vec3A::ZERO).length_squared()
+        (self.min - p)
+            .max(p - self.max)
+            .max(Vec3A::ZERO)
+            .length_squared()
     }
 
     /// Where the ray `origin + t * direction` enters the box, if it does
@@ -96,25 +113,44 @@ pub struct Bvh {
 impl Bvh {
     /// Builds the hierarchy over `boxes`; primitive `i` is `boxes[i]`.
     pub fn build(boxes: &[Aabb]) -> Self {
-        let mut bvh = Self { nodes: Vec::with_capacity(boxes.len() / 2 + 1), order: (0..boxes.len() as u32).collect() };
+        let mut bvh = Self {
+            nodes: Vec::with_capacity(boxes.len() / 2 + 1),
+            order: (0..boxes.len() as u32).collect(),
+        };
         if boxes.is_empty() {
             return bvh;
         }
         let centres: Vec<Vec3A> = boxes.iter().map(Aabb::centre).collect();
-        bvh.nodes.push(Node { bounds: Aabb::EMPTY, first: 0, count: boxes.len() as u32 });
+        bvh.nodes.push(Node {
+            bounds: Aabb::EMPTY,
+            first: 0,
+            count: boxes.len() as u32,
+        });
         let mut stack = vec![0usize];
         while let Some(index) = stack.pop() {
             let Node { first, count, .. } = bvh.nodes[index];
             let range = first as usize..(first + count) as usize;
-            let bounds = bvh.order[range.clone()].iter().fold(Aabb::EMPTY, |b, &i| b.union(boxes[i as usize]));
+            let bounds = bvh.order[range.clone()]
+                .iter()
+                .fold(Aabb::EMPTY, |b, &i| b.union(boxes[i as usize]));
             bvh.nodes[index].bounds = bounds;
             if count <= LEAF_SIZE {
                 continue;
             }
-            let Some(middle) = Self::split(&mut bvh.order[range], &centres, boxes, bounds) else { continue };
+            let Some(middle) = Self::split(&mut bvh.order[range], &centres, boxes, bounds) else {
+                continue;
+            };
             let left = bvh.nodes.len();
-            bvh.nodes.push(Node { bounds: Aabb::EMPTY, first, count: middle });
-            bvh.nodes.push(Node { bounds: Aabb::EMPTY, first: first + middle, count: count - middle });
+            bvh.nodes.push(Node {
+                bounds: Aabb::EMPTY,
+                first,
+                count: middle,
+            });
+            bvh.nodes.push(Node {
+                bounds: Aabb::EMPTY,
+                first: first + middle,
+                count: count - middle,
+            });
             bvh.nodes[index].first = left as u32;
             bvh.nodes[index].count = 0;
             stack.extend([left, left + 1]);
@@ -128,13 +164,21 @@ impl Bvh {
     fn split(order: &mut [u32], centres: &[Vec3A], boxes: &[Aabb], bounds: Aabb) -> Option<u32> {
         let centre_bounds = Aabb::from_points(order.iter().map(|&i| centres[i as usize]));
         let extent = centre_bounds.max - centre_bounds.min;
-        let axis = if extent.x >= extent.y && extent.x >= extent.z { 0 } else if extent.y >= extent.z { 1 } else { 2 };
+        let axis = if extent.x >= extent.y && extent.x >= extent.z {
+            0
+        } else if extent.y >= extent.z {
+            1
+        } else {
+            2
+        };
         if extent[axis] <= 1e-9 {
             // All centres coincide: nothing separates them, cut in half.
             return (order.len() as u32 > 4 * LEAF_SIZE).then_some(order.len() as u32 / 2);
         }
         let scale = BINS as f32 / extent[axis];
-        let bin_of = |i: u32| (((centres[i as usize][axis] - centre_bounds.min[axis]) * scale) as usize).min(BINS - 1);
+        let bin_of = |i: u32| {
+            (((centres[i as usize][axis] - centre_bounds.min[axis]) * scale) as usize).min(BINS - 1)
+        };
 
         let mut bins = [(Aabb::EMPTY, 0u32); BINS];
         for &i in order.iter() {
@@ -185,7 +229,9 @@ impl Bvh {
                     .iter()
                     .fold(Aabb::EMPTY, |b, &i| b.union(boxes[i as usize]))
             } else {
-                self.nodes[node.first as usize].bounds.union(self.nodes[node.first as usize + 1].bounds)
+                self.nodes[node.first as usize]
+                    .bounds
+                    .union(self.nodes[node.first as usize + 1].bounds)
             };
         }
     }
@@ -213,7 +259,9 @@ impl Bvh {
                 continue;
             }
             if node.count > 0 {
-                self.order[node.first as usize..(node.first + node.count) as usize].iter().for_each(|&i| visit(i));
+                self.order[node.first as usize..(node.first + node.count) as usize]
+                    .iter()
+                    .for_each(|&i| visit(i));
             } else if top + 2 <= stack.len() {
                 stack[top] = node.first;
                 stack[top + 1] = node.first + 1;
@@ -257,10 +305,16 @@ impl Bvh {
                     }
                 }
             } else if top + 2 <= stack.len() {
-                let entry = |child: u32| self.nodes[child as usize].bounds.ray_entry(origin, inverse, limit);
+                let entry = |child: u32| {
+                    self.nodes[child as usize]
+                        .bounds
+                        .ray_entry(origin, inverse, limit)
+                };
                 let (left, right) = (node.first, node.first + 1);
                 // Push the farther child first so the nearer is popped first.
-                let (near, far) = if entry(left).unwrap_or(f32::INFINITY) <= entry(right).unwrap_or(f32::INFINITY) {
+                let (near, far) = if entry(left).unwrap_or(f32::INFINITY)
+                    <= entry(right).unwrap_or(f32::INFINITY)
+                {
                     (left, right)
                 } else {
                     (right, left)
@@ -275,7 +329,12 @@ impl Bvh {
 
     /// The primitive closest to `p` within `max_distance`.
     /// `distance_squared` measures one primitive.
-    pub fn closest(&self, p: Vec3A, max_distance: f32, mut distance_squared: impl FnMut(u32) -> f32) -> Option<(u32, f32)> {
+    pub fn closest(
+        &self,
+        p: Vec3A,
+        max_distance: f32,
+        mut distance_squared: impl FnMut(u32) -> f32,
+    ) -> Option<(u32, f32)> {
         if self.nodes.is_empty() {
             return None;
         }
@@ -301,7 +360,11 @@ impl Bvh {
                 let (left, right) = (node.first, node.first + 1);
                 let near_left = self.nodes[left as usize].bounds.distance_squared(p)
                     <= self.nodes[right as usize].bounds.distance_squared(p);
-                let (near, far) = if near_left { (left, right) } else { (right, left) };
+                let (near, far) = if near_left {
+                    (left, right)
+                } else {
+                    (right, left)
+                };
                 stack[top] = far;
                 stack[top + 1] = near;
                 top += 2;
@@ -326,7 +389,11 @@ mod tests {
         (0..count)
             .map(|_| {
                 let centre = Vec3A::new(noise(&mut seed), noise(&mut seed), noise(&mut seed));
-                Aabb { min: centre, max: centre }.expanded(0.01 + 0.02 * noise(&mut seed))
+                Aabb {
+                    min: centre,
+                    max: centre,
+                }
+                .expanded(0.01 + 0.02 * noise(&mut seed))
             })
             .collect()
     }
@@ -339,7 +406,11 @@ mod tests {
         let mut seed = 99;
         for _ in 0..50 {
             let centre = Vec3A::new(noise(&mut seed), noise(&mut seed), noise(&mut seed));
-            let query = Aabb { min: centre, max: centre }.expanded(0.05);
+            let query = Aabb {
+                min: centre,
+                max: centre,
+            }
+            .expanded(0.05);
             let mut found = Vec::new();
             bvh.query(&query, |i| {
                 if boxes[i as usize].overlaps(&query) {
@@ -347,7 +418,9 @@ mod tests {
                 }
             });
             found.sort_unstable();
-            let expected: Vec<u32> = (0..boxes.len() as u32).filter(|&i| boxes[i as usize].overlaps(&query)).collect();
+            let expected: Vec<u32> = (0..boxes.len() as u32)
+                .filter(|&i| boxes[i as usize].overlaps(&query))
+                .collect();
             assert_eq!(found, expected);
         }
     }
@@ -357,7 +430,10 @@ mod tests {
         let boxes = random_boxes(4000);
         let bvh = Bvh::build(&boxes);
         // A point query must touch a small fraction of the primitives.
-        let query = Aabb { min: Vec3A::splat(0.5), max: Vec3A::splat(0.5) };
+        let query = Aabb {
+            min: Vec3A::splat(0.5),
+            max: Vec3A::splat(0.5),
+        };
         let mut visited = 0;
         bvh.query(&query, |_| visited += 1);
         assert!(visited < 200, "visited {visited} of {}", boxes.len());
@@ -384,8 +460,14 @@ mod tests {
         let boxes = random_boxes(1000);
         let bvh = Bvh::build(&boxes);
         let p = Vec3A::new(0.3, 0.6, 0.2);
-        let (found, distance) = bvh.closest(p, 10.0, |i| boxes[i as usize].distance_squared(p)).unwrap();
-        let brute = boxes.iter().map(|b| b.distance_squared(p)).fold(f32::INFINITY, f32::min).sqrt();
+        let (found, distance) = bvh
+            .closest(p, 10.0, |i| boxes[i as usize].distance_squared(p))
+            .unwrap();
+        let brute = boxes
+            .iter()
+            .map(|b| b.distance_squared(p))
+            .fold(f32::INFINITY, f32::min)
+            .sqrt();
         assert!((distance - brute).abs() < 1e-6);
         assert!((boxes[found as usize].distance_squared(p).sqrt() - brute).abs() < 1e-6);
     }

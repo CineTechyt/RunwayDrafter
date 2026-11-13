@@ -3,8 +3,8 @@
 
 use app_ui::{CanvasTool as Tool, EditorState, SewPick, ViewportInput};
 use cad_core::{
-    ControlPoint, DocumentChange, DocumentSnapshot, EdgeRef, EdgeSpan, HandleRef, History, MoveHandle, Outline, PatternDocument, PieceId,
-    PointKind, Segment,
+    ControlPoint, DocumentChange, DocumentSnapshot, EdgeRef, EdgeSpan, HandleRef, History,
+    MoveHandle, Outline, PatternDocument, PieceId, PointKind, Segment,
 };
 use gfx_render::{Camera2D, OrbitCamera};
 use glam::Vec2;
@@ -44,7 +44,11 @@ pub struct CanvasTool {
 }
 
 /// The line (run of edges between turn points) at `at`, if any.
-pub fn pick_line(document: &PatternDocument, at: Vec2, radius: f32) -> Option<(PieceId, EdgeSpan, EdgeRef)> {
+pub fn pick_line(
+    document: &PatternDocument,
+    at: Vec2,
+    radius: f32,
+) -> Option<(PieceId, EdgeSpan, EdgeRef)> {
     let edge = document.pick_edge(at, radius)?;
     let piece = document.piece(edge.piece)?;
     Some((edge.piece, piece.outline.line_span(edge.edge), edge))
@@ -52,31 +56,50 @@ pub fn pick_line(document: &PatternDocument, at: Vec2, radius: f32) -> Option<(P
 
 /// Whether any edge of the span is sewn already.
 fn is_sewn(document: &PatternDocument, piece: PieceId, span: EdgeSpan) -> bool {
-    let Some(p) = document.piece(piece) else { return true };
+    let Some(p) = document.piece(piece) else {
+        return true;
+    };
     let n = p.outline.edge_count();
-    span.edges(n).any(|edge| document.seam_of(EdgeRef::new(piece, edge)).is_some())
+    span.edges(n)
+        .any(|edge| document.seam_of(EdgeRef::new(piece, edge)).is_some())
 }
 
 fn overlaps(document: &PatternDocument, a: &SewPick, b: &SewPick) -> bool {
-    let Some(piece) = document.piece(a.piece) else { return false };
+    let Some(piece) = document.piece(a.piece) else {
+        return false;
+    };
     let n = piece.outline.edge_count();
     a.piece == b.piece && a.span.edges(n).any(|edge| b.span.contains(edge, n))
 }
 
 /// Sews the two picks together. Each side starts at the end nearer to
 /// where it was first clicked. Records one undo step.
-pub fn sew(document: &mut PatternDocument, history: &mut History, a: SewPick, b: SewPick) -> Option<cad_core::SeamId> {
-    if is_sewn(document, a.piece, a.span) || is_sewn(document, b.piece, b.span) || overlaps(document, &a, &b) {
+pub fn sew(
+    document: &mut PatternDocument,
+    history: &mut History,
+    a: SewPick,
+    b: SewPick,
+) -> Option<cad_core::SeamId> {
+    if is_sewn(document, a.piece, a.span)
+        || is_sewn(document, b.piece, b.span)
+        || overlaps(document, &a, &b)
+    {
         return None;
     }
     let near_end = |pick: &SewPick| {
-        document.piece(pick.piece).is_some_and(|p| p.outline.span_fraction(pick.span, pick.at) > 0.5)
+        document
+            .piece(pick.piece)
+            .is_some_and(|p| p.outline.span_fraction(pick.span, pick.at) > 0.5)
     };
     // `reversed` means: the start of A meets the end of B.
     let reversed = near_end(&a) != near_end(&b);
     let before = document.clone();
     let id = document.add_seam_spans((a.piece, a.span), (b.piece, b.span), reversed);
-    history.record(Box::new(DocumentSnapshot::new("Sew", before, document.clone())));
+    history.record(Box::new(DocumentSnapshot::new(
+        "Sew",
+        before,
+        document.clone(),
+    )));
     Some(id)
 }
 
@@ -116,17 +139,29 @@ impl CanvasTool {
         if input.primary.started {
             // Pick where the button went down, not where the drag threshold
             // was crossed.
-            let origin = input.press_origin.or(input.pointer).map(|p| world(p, camera));
+            let origin = input
+                .press_origin
+                .or(input.pointer)
+                .map(|p| world(p, camera));
             self.panning = true;
             if let Some(at) = origin {
                 match tool {
                     Tool::Points => {
-                        let handle = editor.selected_piece.and_then(|piece| pick_handle_in(document, piece, at, radius));
+                        let handle = editor
+                            .selected_piece
+                            .and_then(|piece| pick_handle_in(document, piece, at, radius));
                         if let Some(handle) = handle {
                             let from = document.handle_position(handle).unwrap_or(at);
-                            self.drag = Some(HandleDrag { handle, from, grab_offset: from - at });
+                            self.drag = Some(HandleDrag {
+                                handle,
+                                from,
+                                grab_offset: from - at,
+                            });
                             self.panning = false;
-                        } else if let Some(piece) = pick_line(document, at, radius * 1.5).map(|l| l.0).or_else(|| document.pick_piece(at)) {
+                        } else if let Some(piece) = pick_line(document, at, radius * 1.5)
+                            .map(|l| l.0)
+                            .or_else(|| document.pick_piece(at))
+                        {
                             editor.selected_piece = Some(piece);
                             self.panning = false;
                         }
@@ -136,7 +171,12 @@ impl CanvasTool {
                         if let Some(piece) = line.map(|l| l.0).or_else(|| document.pick_piece(at)) {
                             editor.selected_piece = Some(piece);
                             editor.selected_edge = line.map(|l| l.2);
-                            self.piece_drag = Some(PieceDrag { piece, before: document.clone(), last: at, moved: false });
+                            self.piece_drag = Some(PieceDrag {
+                                piece,
+                                before: document.clone(),
+                                last: at,
+                                moved: false,
+                            });
                             self.panning = false;
                         }
                     }
@@ -154,7 +194,9 @@ impl CanvasTool {
             if let (Some(drag), Some(at)) = (&self.drag, pointer) {
                 let target = at + drag.grab_offset;
                 let moved = document.handle_position(drag.handle) != Some(target)
-                    && document.piece_mut(drag.handle.piece).is_some_and(|piece| piece.outline.set_handle_position(drag.handle.kind, target));
+                    && document.piece_mut(drag.handle.piece).is_some_and(|piece| {
+                        piece.outline.set_handle_position(drag.handle.kind, target)
+                    });
                 if moved {
                     document.touch();
                     changes.push(DocumentChange::PieceGeometry(drag.handle.piece));
@@ -180,28 +222,59 @@ impl CanvasTool {
                 && let Some(to) = document.handle_position(drag.handle)
                 && to != drag.from
             {
-                history.record(Box::new(MoveHandle { handle: drag.handle, from: drag.from, to }));
+                history.record(Box::new(MoveHandle {
+                    handle: drag.handle,
+                    from: drag.from,
+                    to,
+                }));
             }
             if let Some(drag) = self.piece_drag.take()
                 && drag.moved
             {
-                history.record(Box::new(DocumentSnapshot::new("Move piece", drag.before, document.clone())));
+                history.record(Box::new(DocumentSnapshot::new(
+                    "Move piece",
+                    drag.before,
+                    document.clone(),
+                )));
             }
         }
 
         // --- double-click: join two lines / split a line at a point ------------
         if input.double_clicked
             && tool == Tool::Points
-            && let (Some(piece), Some(at)) = (editor.selected_piece, input.pointer.map(|p| world(p, camera)))
-            && let Some(HandleRef { kind: cad_core::HandleKind::Anchor(anchor), .. }) = pick_handle_in(document, piece, at, radius)
+            && let (Some(piece), Some(at)) = (
+                editor.selected_piece,
+                input.pointer.map(|p| world(p, camera)),
+            )
+            && let Some(HandleRef {
+                kind: cad_core::HandleKind::Anchor(anchor),
+                ..
+            }) = pick_handle_in(document, piece, at, radius)
         {
             let before = document.clone();
-            let current = document.piece(piece).map(|p| p.outline.points()[anchor as usize].kind);
-            let kind = if current == Some(PointKind::Corner) { PointKind::Smooth } else { PointKind::Corner };
-            if document.piece_mut(piece).is_some_and(|p| p.outline.set_point_kind(anchor, kind)) {
+            let current = document
+                .piece(piece)
+                .map(|p| p.outline.points()[anchor as usize].kind);
+            let kind = if current == Some(PointKind::Corner) {
+                PointKind::Smooth
+            } else {
+                PointKind::Corner
+            };
+            if document
+                .piece_mut(piece)
+                .is_some_and(|p| p.outline.set_point_kind(anchor, kind))
+            {
                 document.touch();
-                let label = if kind == PointKind::Smooth { "Join lines" } else { "Split line" };
-                history.record(Box::new(DocumentSnapshot::new(label, before, document.clone())));
+                let label = if kind == PointKind::Smooth {
+                    "Join lines"
+                } else {
+                    "Split line"
+                };
+                history.record(Box::new(DocumentSnapshot::new(
+                    label,
+                    before,
+                    document.clone(),
+                )));
                 changes.push(DocumentChange::PieceAnnotations(piece));
             }
         }
@@ -212,7 +285,10 @@ impl CanvasTool {
         {
             if matches!(tool, Tool::SketchLine | Tool::SketchSpline) {
                 let close = editor.sketch_points.len() >= 3
-                    && editor.sketch_points.first().is_some_and(|first| first.distance(at) <= radius * 2.0);
+                    && editor
+                        .sketch_points
+                        .first()
+                        .is_some_and(|first| first.distance(at) <= radius * 2.0);
                 if close || input.double_clicked {
                     if !close {
                         editor.sketch_points.push(at);
@@ -230,21 +306,32 @@ impl CanvasTool {
                     editor.selected_edge = line.map(|l| l.2);
                     editor.selected_piece = line.map(|l| l.0).or_else(|| document.pick_piece(at));
                 }
-                Tool::Sew => self.sew_click(document, history, editor, changes, line, at, input.shift),
+                Tool::Sew => {
+                    self.sew_click(document, history, editor, changes, line, at, input.shift)
+                }
                 Tool::SketchLine | Tool::SketchSpline => {}
                 Tool::Button | Tool::Buttonhole => {
-                    let Some(piece_id) = line.map(|l| l.0).or_else(|| document.pick_piece(at)) else { return };
+                    let Some(piece_id) = line.map(|l| l.0).or_else(|| document.pick_piece(at))
+                    else {
+                        return;
+                    };
                     let before = document.clone();
                     if let Some(piece) = document.piece_mut(piece_id) {
                         if tool == Tool::Button {
                             piece.buttons.push(cad_core::Button::new(at, 18.0));
                         } else {
-                            piece.buttonholes.push(cad_core::Buttonhole::for_button(at, 18.0));
+                            piece
+                                .buttonholes
+                                .push(cad_core::Buttonhole::for_button(at, 18.0));
                         }
                         document.touch();
                         editor.selected_piece = Some(piece_id);
                         history.record(Box::new(DocumentSnapshot::new(
-                            if tool == Tool::Button { "Add button" } else { "Add buttonhole" },
+                            if tool == Tool::Button {
+                                "Add button"
+                            } else {
+                                "Add buttonhole"
+                            },
                             before,
                             document.clone(),
                         )));
@@ -255,15 +342,20 @@ impl CanvasTool {
         }
 
         // --- hover -----------------------------------------------------------------
-        let pointer = input.pointer.filter(|_| input.hovered).map(|p| world(p, camera));
+        let pointer = input
+            .pointer
+            .filter(|_| input.hovered)
+            .map(|p| world(p, camera));
         self.hovered = match (&self.drag, pointer) {
             (Some(drag), _) => Some(drag.handle),
-            (None, Some(at)) if tool == Tool::Points => {
-                editor.selected_piece.and_then(|piece| pick_handle_in(document, piece, at, radius))
-            }
+            (None, Some(at)) if tool == Tool::Points => editor
+                .selected_piece
+                .and_then(|piece| pick_handle_in(document, piece, at, radius)),
             _ => None,
         };
-        self.hovered_line = pointer.and_then(|at| pick_line(document, at, radius * 1.5)).map(|(piece, span, _)| (piece, span));
+        self.hovered_line = pointer
+            .and_then(|at| pick_line(document, at, radius * 1.5))
+            .map(|(piece, span, _)| (piece, span));
         editor.canvas_hint = self.hint(document, editor);
     }
 
@@ -283,8 +375,17 @@ impl CanvasTool {
             return;
         };
         let before = document.clone();
-        let control_points = points.into_iter().map(|position| ControlPoint { position, kind: PointKind::Corner }).collect::<Vec<_>>();
-        let mut outline = Outline::new(control_points.clone(), vec![Segment::Line; control_points.len()]);
+        let control_points = points
+            .into_iter()
+            .map(|position| ControlPoint {
+                position,
+                kind: PointKind::Corner,
+            })
+            .collect::<Vec<_>>();
+        let mut outline = Outline::new(
+            control_points.clone(),
+            vec![Segment::Line; control_points.len()],
+        );
         if tool == Tool::SketchSpline {
             outline = outline.simplified(1.0, 18.0);
         }
@@ -292,7 +393,11 @@ impl CanvasTool {
         editor.selected_piece = Some(id);
         editor.selected_edge = None;
         history.record(Box::new(DocumentSnapshot::new(
-            if tool == Tool::SketchSpline { "Draw spline" } else { "Draw polygon" },
+            if tool == Tool::SketchSpline {
+                "Draw spline"
+            } else {
+                "Draw polygon"
+            },
             before,
             document.clone(),
         )));
@@ -368,7 +473,11 @@ impl CanvasTool {
 
     /// What the active tool expects next.
     fn hint(&self, document: &PatternDocument, editor: &EditorState) -> String {
-        let length = |pick: &SewPick| document.piece(pick.piece).map_or(0.0, |p| p.outline.span_length(pick.span));
+        let length = |pick: &SewPick| {
+            document
+                .piece(pick.piece)
+                .map_or(0.0, |p| p.outline.span_length(pick.span))
+        };
         match editor.canvas_tool {
             Tool::Select => "Drag a piece to move it · click a line to select it · Del deletes the piece".to_owned(),
             Tool::Points if editor.selected_piece.is_none() => "Click a piece to edit its points".to_owned(),
@@ -400,7 +509,12 @@ impl CanvasTool {
 }
 
 /// The handle of one piece nearest to `at` within `radius`.
-fn pick_handle_in(document: &PatternDocument, piece: PieceId, at: Vec2, radius: f32) -> Option<HandleRef> {
+fn pick_handle_in(
+    document: &PatternDocument,
+    piece: PieceId,
+    at: Vec2,
+    radius: f32,
+) -> Option<HandleRef> {
     let p = document.piece(piece)?;
     p.outline
         .handles()
@@ -464,7 +578,13 @@ pub fn surface_hit(
         .zip([hit.barycentric.x, hit.barycentric.y, hit.barycentric.z])
         .map(|(vertex, weight)| topology.mesh().positions[vertex as usize] * weight)
         .reduce(|a, b| a + b)?;
-    Some((SurfaceLocation { triangle: hit.triangle, barycentric: hit.barycentric }, position))
+    Some((
+        SurfaceLocation {
+            triangle: hit.triangle,
+            barycentric: hit.barycentric,
+        },
+        position,
+    ))
 }
 
 #[cfg(test)]
@@ -473,11 +593,26 @@ mod tests {
     use cad_core::geometry::Curve;
 
     fn click(point: Vec2, shift: bool) -> ViewportInput {
-        ViewportInput { size: [1200, 1100], hovered: true, pointer: Some(point), clicked: true, zoom: 1.0, shift, ..Default::default() }
+        ViewportInput {
+            size: [1200, 1100],
+            hovered: true,
+            pointer: Some(point),
+            clicked: true,
+            zoom: 1.0,
+            shift,
+            ..Default::default()
+        }
     }
 
     /// A click on `edge` of `piece`, at fraction `t` along it.
-    fn click_edge(document: &PatternDocument, camera: &Camera2D, piece: PieceId, edge: u32, t: f32, shift: bool) -> ViewportInput {
+    fn click_edge(
+        document: &PatternDocument,
+        camera: &Camera2D,
+        piece: PieceId,
+        edge: u32,
+        t: f32,
+        shift: bool,
+    ) -> ViewportInput {
         let viewport = Vec2::new(1200.0, 1100.0);
         let point = document.piece(piece).unwrap().outline.curve(edge).eval(t);
         click(camera.world_to_screen(point, viewport), shift)
@@ -490,26 +625,65 @@ mod tests {
             document.remove_seam(seam);
         }
         let (front, back) = (document.pieces()[0].id, document.pieces()[1].id);
-        let mut editor = EditorState { canvas_tool: Tool::Sew, ..Default::default() };
-        let (mut tool, camera, mut history, mut changes) = (CanvasTool::default(), Camera2D::default(), History::default(), Vec::new());
-        let mut run = |input: ViewportInput, document: &mut PatternDocument, editor: &mut EditorState, history: &mut History| {
-            tool.update(&input, &mut camera.clone(), document, history, editor, &mut changes);
+        let mut editor = EditorState {
+            canvas_tool: Tool::Sew,
+            ..Default::default()
+        };
+        let (mut tool, camera, mut history, mut changes) = (
+            CanvasTool::default(),
+            Camera2D::default(),
+            History::default(),
+            Vec::new(),
+        );
+        let mut run = |input: ViewportInput,
+                       document: &mut PatternDocument,
+                       editor: &mut EditorState,
+                       history: &mut History| {
+            tool.update(
+                &input,
+                &mut camera.clone(),
+                document,
+                history,
+                editor,
+                &mut changes,
+            );
         };
 
         // Front's right side near its start (bottom), back's left side near
         // its end (bottom): the seam must not be twisted.
-        run(click_edge(&document, &camera, front, 1, 0.1, false), &mut document, &mut editor, &mut history);
+        run(
+            click_edge(&document, &camera, front, 1, 0.1, false),
+            &mut document,
+            &mut editor,
+            &mut history,
+        );
         assert!(editor.sew_a.is_some());
-        run(click_edge(&document, &camera, back, 7, 0.9, false), &mut document, &mut editor, &mut history);
+        run(
+            click_edge(&document, &camera, back, 7, 0.9, false),
+            &mut document,
+            &mut editor,
+            &mut history,
+        );
         assert!(editor.sew_a.is_none() && editor.sew_b.is_none());
         assert_eq!(document.seams().len(), 1);
         let seam = document.seams()[0];
-        assert_eq!((seam.a, seam.b), (EdgeRef::new(front, 1), EdgeRef::new(back, 7)));
-        assert!(seam.reversed, "the start of the front's side meets the end of the back's");
+        assert_eq!(
+            (seam.a, seam.b),
+            (EdgeRef::new(front, 1), EdgeRef::new(back, 7))
+        );
+        assert!(
+            seam.reversed,
+            "the start of the front's side meets the end of the back's"
+        );
         assert_eq!(history.undo_label(), Some("Sew"));
 
         // A sewn line cannot be sewn again.
-        run(click_edge(&document, &camera, front, 1, 0.5, false), &mut document, &mut editor, &mut history);
+        run(
+            click_edge(&document, &camera, front, 1, 0.5, false),
+            &mut document,
+            &mut editor,
+            &mut history,
+        );
         assert!(editor.sew_a.is_none());
     }
 
@@ -521,9 +695,19 @@ mod tests {
         }
         let (front, back) = (document.pieces()[0].id, document.pieces()[1].id);
         let mut history = History::default();
-        let at = |document: &PatternDocument, piece, edge| document.piece(piece).unwrap().outline.curve(edge).eval(0.1);
-        let a = SewPick { piece: front, span: EdgeSpan::single(1), at: at(&document, front, 1) };
-        let b = SewPick { piece: back, span: EdgeSpan::single(7), at: at(&document, back, 7) };
+        let at = |document: &PatternDocument, piece, edge| {
+            document.piece(piece).unwrap().outline.curve(edge).eval(0.1)
+        };
+        let a = SewPick {
+            piece: front,
+            span: EdgeSpan::single(1),
+            at: at(&document, front, 1),
+        };
+        let b = SewPick {
+            piece: back,
+            span: EdgeSpan::single(7),
+            at: at(&document, back, 7),
+        };
         sew(&mut document, &mut history, a, b).unwrap();
         assert_eq!(document.seams().len(), 1);
         history.undo(&mut document).unwrap().unwrap();
@@ -537,12 +721,34 @@ mod tests {
         let mut document = PatternDocument::demo_top();
         let front = document.pieces()[0].id;
         let lines_before = document.piece(front).unwrap().outline.lines().len();
-        let mut editor = EditorState { canvas_tool: Tool::Points, selected_piece: Some(front), ..Default::default() };
-        let (mut tool, camera, mut history, mut changes) = (CanvasTool::default(), Camera2D::default(), History::default(), Vec::new());
+        let mut editor = EditorState {
+            canvas_tool: Tool::Points,
+            selected_piece: Some(front),
+            ..Default::default()
+        };
+        let (mut tool, camera, mut history, mut changes) = (
+            CanvasTool::default(),
+            Camera2D::default(),
+            History::default(),
+            Vec::new(),
+        );
         // Anchor 1: the corner between the hem and the right side.
         let point = document.piece(front).unwrap().outline.points()[1].position;
-        let input = ViewportInput { double_clicked: true, ..click(camera.world_to_screen(point, Vec2::new(1200.0, 1100.0)), false) };
-        tool.update(&input, &mut camera.clone(), &mut document, &mut history, &mut editor, &mut changes);
+        let input = ViewportInput {
+            double_clicked: true,
+            ..click(
+                camera.world_to_screen(point, Vec2::new(1200.0, 1100.0)),
+                false,
+            )
+        };
+        tool.update(
+            &input,
+            &mut camera.clone(),
+            &mut document,
+            &mut history,
+            &mut editor,
+            &mut changes,
+        );
         let outline = &document.piece(front).unwrap().outline;
         assert_eq!(outline.lines().len(), lines_before - 1);
         assert_eq!(outline.line_span(0), EdgeSpan { first: 0, count: 2 });
@@ -556,14 +762,29 @@ mod tests {
             document.remove_seam(seam);
         }
         let (front, back) = (document.pieces()[0].id, document.pieces()[1].id);
-        let mut editor = EditorState { canvas_tool: Tool::Sew, ..Default::default() };
-        let (mut tool, camera, mut history, mut changes) = (CanvasTool::default(), Camera2D::default(), History::default(), Vec::new());
+        let mut editor = EditorState {
+            canvas_tool: Tool::Sew,
+            ..Default::default()
+        };
+        let (mut tool, camera, mut history, mut changes) = (
+            CanvasTool::default(),
+            Camera2D::default(),
+            History::default(),
+            Vec::new(),
+        );
         for input in [
             click_edge(&document, &camera, front, 2, 0.1, false),
             click_edge(&document, &camera, front, 3, 0.5, true),
             click_edge(&document, &camera, back, 4, 0.5, false),
         ] {
-            tool.update(&input, &mut camera.clone(), &mut document, &mut history, &mut editor, &mut changes);
+            tool.update(
+                &input,
+                &mut camera.clone(),
+                &mut document,
+                &mut history,
+                &mut editor,
+                &mut changes,
+            );
         }
         let seam = document.seams()[0];
         assert_eq!((seam.a_count, seam.b_count), (2, 1));

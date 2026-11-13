@@ -142,11 +142,22 @@ impl BodyParams {
     pub const MORPH_LIMIT: f32 = 2.0;
 
     pub fn female() -> Self {
-        Self { gender: 0.0, weight: 0.5, muscle: 0.5, stature: 0.0, cup: 0.0, scale: 1.0, morphs: [0.0; Morph::ALL.len()] }
+        Self {
+            gender: 0.0,
+            weight: 0.5,
+            muscle: 0.5,
+            stature: 0.0,
+            cup: 0.0,
+            scale: 1.0,
+            morphs: [0.0; Morph::ALL.len()],
+        }
     }
 
     pub fn male() -> Self {
-        Self { gender: 1.0, ..Self::female() }
+        Self {
+            gender: 1.0,
+            ..Self::female()
+        }
     }
 
     pub fn morph(&self, morph: Morph) -> f32 {
@@ -201,13 +212,28 @@ pub struct BodyMesh {
 impl BodyMesh {
     /// A body from plain geometry (an imported avatar): no skeleton, and
     /// every triangle counts as skin.
-    pub fn from_triangles(positions: Vec<Vec3>, normals: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Self {
-        Self { skin_triangles: triangles.len(), positions, normals, triangles, shoulder_points: [0; 2], joints: Vec::new(), centres: Default::default() }
+    pub fn from_triangles(
+        positions: Vec<Vec3>,
+        normals: Vec<Vec3>,
+        triangles: Vec<[u32; 3]>,
+    ) -> Self {
+        Self {
+            skin_triangles: triangles.len(),
+            positions,
+            normals,
+            triangles,
+            shoulder_points: [0; 2],
+            joints: Vec::new(),
+            centres: Default::default(),
+        }
     }
 
     /// The skin behind a BVH, for ray casts and continuous collision.
     pub fn collider(&self) -> physics_collision::TriangleMesh {
-        physics_collision::TriangleMesh::new(self.positions.iter().map(|&p| p.into()).collect(), self.skin().to_vec())
+        physics_collision::TriangleMesh::new(
+            self.positions.iter().map(|&p| p.into()).collect(),
+            self.skin().to_vec(),
+        )
     }
 
     pub fn skin(&self) -> &[[u32; 3]] {
@@ -267,7 +293,11 @@ pub struct BodyModel {
 /// Weights of the low/average/high targets for a 0..=1 slider.
 fn three_way(value: f32) -> [f32; 3] {
     let v = value.clamp(0.0, 1.0);
-    [(1.0 - 2.0 * v).max(0.0), 1.0 - (2.0 * v - 1.0).abs(), (2.0 * v - 1.0).max(0.0)]
+    [
+        (1.0 - 2.0 * v).max(0.0),
+        1.0 - (2.0 * v - 1.0).abs(),
+        (2.0 * v - 1.0).max(0.0),
+    ]
 }
 
 impl BodyModel {
@@ -285,7 +315,9 @@ impl BodyModel {
         if mesh_vertices > vertex_count {
             return Err(LoadError::Format);
         }
-        let rest = (0..vertex_count).map(|_| reader.vec3()).collect::<Result<Vec<_>, _>>()?;
+        let rest = (0..vertex_count)
+            .map(|_| reader.vec3())
+            .collect::<Result<Vec<_>, _>>()?;
         let triangle_count = reader.u32()? as usize;
         let skin_triangles = reader.u32()? as usize;
         let mut triangles = Vec::with_capacity(triangle_count);
@@ -302,7 +334,8 @@ impl BodyModel {
         let mut targets = HashMap::new();
         for _ in 0..reader.u32()? {
             let name_length = reader.u16()? as usize;
-            let name = String::from_utf8(reader.take(name_length)?.to_vec()).map_err(|_| LoadError::Format)?;
+            let name = String::from_utf8(reader.take(name_length)?.to_vec())
+                .map_err(|_| LoadError::Format)?;
             let entries = reader.u32()? as usize;
             let mut target = Vec::with_capacity(entries);
             for _ in 0..entries {
@@ -318,20 +351,32 @@ impl BodyModel {
         let mut bones: Vec<Bone> = Vec::new();
         for index in 0..reader.u32()? as usize {
             let name_length = reader.u16()? as usize;
-            let name = String::from_utf8(reader.take(name_length)?.to_vec()).map_err(|_| LoadError::Format)?;
+            let name = String::from_utf8(reader.take(name_length)?.to_vec())
+                .map_err(|_| LoadError::Format)?;
             let parent = reader.i32()?;
             // Parents come first, which the skinning loop relies on.
-            let parent = if parent < 0 { None } else { Some(parent as usize).filter(|&p| p < index) };
+            let parent = if parent < 0 {
+                None
+            } else {
+                Some(parent as usize).filter(|&p| p < index)
+            };
             let mut markers = || -> Result<Vec<u32>, LoadError> {
                 let count = reader.u32()? as usize;
-                let list = (0..count).map(|_| reader.u32()).collect::<Result<Vec<_>, _>>()?;
+                let list = (0..count)
+                    .map(|_| reader.u32())
+                    .collect::<Result<Vec<_>, _>>()?;
                 if list.is_empty() || list.iter().any(|&i| i as usize >= vertex_count) {
                     return Err(LoadError::Format);
                 }
                 Ok(list)
             };
             let (head, tail) = (markers()?, markers()?);
-            bones.push(Bone { name, parent, head, tail });
+            bones.push(Bone {
+                name,
+                parent,
+                head,
+                tail,
+            });
         }
         let mut weights = Vec::with_capacity(mesh_vertices);
         for _ in 0..mesh_vertices {
@@ -342,8 +387,15 @@ impl BodyModel {
             }
             weights.push((influence, weight));
         }
-        let bone_names = bones.iter().enumerate().map(|(i, b)| (b.name.clone(), i)).collect();
-        let bins = std::sync::Arc::new(crate::skinning::Bins::new(&weights, &triangles[..skin_triangles]));
+        let bone_names = bones
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.name.clone(), i))
+            .collect();
+        let bins = std::sync::Arc::new(crate::skinning::Bins::new(
+            &weights,
+            &triangles[..skin_triangles],
+        ));
 
         let mut model = Self {
             rest,
@@ -357,7 +409,10 @@ impl BodyModel {
             shoulder_points: [0, 0],
             bins,
         };
-        let neutral = model.build(&BodyParams { gender: 0.5, ..BodyParams::female() });
+        let neutral = model.build(&BodyParams {
+            gender: 0.5,
+            ..BodyParams::female()
+        });
         model.shoulder_points = crate::measure::find_shoulder_points(&model, &neutral);
         Ok(model)
     }
@@ -411,12 +466,28 @@ impl BodyModel {
         let arm: Vec<bool> = self
             .bones
             .iter()
-            .map(|bone| ["upperarm", "lowerarm", "wrist", "finger", "metacarpal", "thumb"].iter().any(|stem| bone.name.starts_with(stem)))
+            .map(|bone| {
+                [
+                    "upperarm",
+                    "lowerarm",
+                    "wrist",
+                    "finger",
+                    "metacarpal",
+                    "thumb",
+                ]
+                .iter()
+                .any(|stem| bone.name.starts_with(stem))
+            })
             .collect();
         self.weights
             .iter()
             .map(|(bones, weights)| {
-                let share: f32 = bones.iter().zip(weights).filter(|(b, _)| arm.get(**b as usize).copied().unwrap_or(false)).map(|(_, w)| w).sum();
+                let share: f32 = bones
+                    .iter()
+                    .zip(weights)
+                    .filter(|(b, _)| arm.get(**b as usize).copied().unwrap_or(false))
+                    .map(|(_, w)| w)
+                    .sum();
                 share > 0.5
             })
             .collect()
@@ -443,21 +514,38 @@ impl BodyModel {
         // Stand on the floor, centre the torso on the z = 0 plane (garment
         // pieces are arranged in front of and behind it) and scale.
         let skin = &positions[..self.mesh_vertices];
-        let (low, high) = skin.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+        let (low, high) = skin.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+            (lo.min(p.y), hi.max(p.y))
+        });
         let height = high - low;
         let torso = skin
             .iter()
             .filter(|p| p.x.abs() < 0.12 && p.y - low > 0.55 * height && p.y - low < 0.78 * height)
-            .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.z), hi.max(p.z)));
-        let centre_z = if torso.0 < torso.1 { 0.5 * (torso.0 + torso.1) } else { 0.0 };
+            .fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                (lo.min(p.z), hi.max(p.z))
+            });
+        let centre_z = if torso.0 < torso.1 {
+            0.5 * (torso.0 + torso.1)
+        } else {
+            0.0
+        };
         let scale = params.scale.clamp(0.5, 1.5);
         for p in &mut positions {
             *p = Vec3::new(p.x, p.y - low, p.z - centre_z) * scale;
         }
 
         // Joints sit at the centre of their marker vertices.
-        let centre = |markers: &[u32]| markers.iter().map(|&i| positions[i as usize]).sum::<Vec3>() / markers.len() as f32;
-        let joints = self.bones.iter().map(|bone| Joint { head: centre(&bone.head), tail: centre(&bone.tail) }).collect();
+        let centre = |markers: &[u32]| {
+            markers.iter().map(|&i| positions[i as usize]).sum::<Vec3>() / markers.len() as f32
+        };
+        let joints = self
+            .bones
+            .iter()
+            .map(|bone| Joint {
+                head: centre(&bone.head),
+                tail: centre(&bone.tail),
+            })
+            .collect();
         positions.truncate(self.mesh_vertices);
 
         let mut mesh = BodyMesh {
@@ -478,7 +566,11 @@ impl BodyMesh {
     pub(crate) fn recompute_normals(&mut self) {
         self.normals = vec![Vec3::ZERO; self.positions.len()];
         for &[a, b, c] in &self.triangles {
-            let (pa, pb, pc) = (self.positions[a as usize], self.positions[b as usize], self.positions[c as usize]);
+            let (pa, pb, pc) = (
+                self.positions[a as usize],
+                self.positions[b as usize],
+                self.positions[c as usize],
+            );
             let normal = (pb - pa).cross(pc - pa); // area weighted
             for i in [a, b, c] {
                 self.normals[i as usize] += normal;
@@ -497,7 +589,11 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8], LoadError> {
-        let end = self.at.checked_add(count).filter(|&end| end <= self.bytes.len()).ok_or(LoadError::Format)?;
+        let end = self
+            .at
+            .checked_add(count)
+            .filter(|&end| end <= self.bytes.len())
+            .ok_or(LoadError::Format)?;
         let slice = &self.bytes[self.at..end];
         self.at = end;
         Ok(slice)

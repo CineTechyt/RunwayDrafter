@@ -84,11 +84,21 @@ struct CachedPiece {
 
 impl CachedPiece {
     fn place(&mut self, piece: &PatternPiece) {
-        self.positions = self.mesh.pattern_positions.iter().map(|&p| piece.arrangement.place(p)).collect();
+        self.positions = self
+            .mesh
+            .pattern_positions
+            .iter()
+            .map(|&p| piece.arrangement.place(p))
+            .collect();
     }
 
     fn map_uvs(&mut self, piece: &PatternPiece) {
-        self.uvs = self.mesh.pattern_positions.iter().map(|&p| piece.uv.map(p)).collect();
+        self.uvs = self
+            .mesh
+            .pattern_positions
+            .iter()
+            .map(|&p| piece.uv.map(p))
+            .collect();
     }
 }
 
@@ -113,7 +123,10 @@ pub struct GarmentTopology {
 
 impl GarmentTopology {
     pub fn new(params: MeshingParams) -> Self {
-        Self { params, ..Self::default() }
+        Self {
+            params,
+            ..Self::default()
+        }
     }
 
     pub fn params(&self) -> MeshingParams {
@@ -143,8 +156,11 @@ impl GarmentTopology {
         // Both sides of a seam need the same number of mesh edges. A side
         // can be several pattern edges (one line made of several segments);
         // the side with fewer gets more, spread by length.
-        let lengths: HashMap<PieceId, Vec<f32>> =
-            doc.pieces().iter().map(|piece| (piece.id, triangulate::edge_lengths(piece, &self.params))).collect();
+        let lengths: HashMap<PieceId, Vec<f32>> = doc
+            .pieces()
+            .iter()
+            .map(|piece| (piece.id, triangulate::edge_lengths(piece, &self.params)))
+            .collect();
         for _ in 0..doc.seams().len().max(1) {
             let mut stable = true;
             for seam in doc.seams() {
@@ -159,7 +175,12 @@ impl GarmentTopology {
                 else {
                     continue;
                 };
-                let total = |side: usize| edges[side].iter().map(|&e| plan[&sides[side].0][e]).sum::<u32>();
+                let total = |side: usize| {
+                    edges[side]
+                        .iter()
+                        .map(|&e| plan[&sides[side].0][e])
+                        .sum::<u32>()
+                };
                 let (a, b) = (total(0), total(1));
                 if a == b {
                     continue;
@@ -167,7 +188,10 @@ impl GarmentTopology {
                 stable = false;
                 let (side, target) = if a < b { (0, b) } else { (1, a) };
                 let piece = sides[side].0;
-                let edge_lengths: Vec<f32> = edges[side].iter().map(|&e| lengths[&piece][e].max(1e-3)).collect();
+                let edge_lengths: Vec<f32> = edges[side]
+                    .iter()
+                    .map(|&e| lengths[&piece][e].max(1e-3))
+                    .collect();
                 let counts = distribute(target, &edge_lengths);
                 let piece_plan = plan.get_mut(&piece).unwrap();
                 for (&edge, count) in edges[side].iter().zip(counts) {
@@ -183,7 +207,12 @@ impl GarmentTopology {
 
     /// The boundary vertices along a run of edges, start to end, with the
     /// shared corners counted once.
-    fn span_vertices(&self, piece: PieceId, span: cad_core::EdgeSpan, edge_count: u32) -> Option<Vec<u32>> {
+    fn span_vertices(
+        &self,
+        piece: PieceId,
+        span: cad_core::EdgeSpan,
+        edge_count: u32,
+    ) -> Option<Vec<u32>> {
         let mut chain: Vec<u32> = Vec::new();
         for edge in span.edges(edge_count) {
             let part = self.edge_map.get(&EdgeRef::new(piece, edge))?;
@@ -200,7 +229,9 @@ impl GarmentTopology {
             if let Some(cached) = self.cache.iter_mut().find(|c| c.id == span.piece) {
                 let range = span.vertices.start as usize..span.vertices.end as usize;
                 if range.len() == cached.positions.len() {
-                    cached.positions.copy_from_slice(&self.mesh.positions[range]);
+                    cached
+                        .positions
+                        .copy_from_slice(&self.mesh.positions[range]);
                 }
             }
         }
@@ -211,13 +242,14 @@ impl GarmentTopology {
         let mut plan = self.plan(doc);
         let mut report = SyncReport::default();
 
-        let mut old: HashMap<PieceId, CachedPiece> = self.cache.drain(..).map(|c| (c.id, c)).collect();
+        let mut old: HashMap<PieceId, CachedPiece> =
+            self.cache.drain(..).map(|c| (c.id, c)).collect();
         let had_removed_pieces = old.keys().any(|id| doc.piece(*id).is_none());
         for piece in doc.pieces() {
             let piece_plan = plan.remove(&piece.id).unwrap_or_default();
-            let reusable = old
-                .remove(&piece.id)
-                .filter(|c| !dirty.everything && !dirty.geometry.contains(&piece.id) && c.plan == piece_plan);
+            let reusable = old.remove(&piece.id).filter(|c| {
+                !dirty.everything && !dirty.geometry.contains(&piece.id) && c.plan == piece_plan
+            });
             let cached = match reusable {
                 Some(mut cached) => {
                     if dirty.arrangement.contains(&piece.id) {
@@ -232,8 +264,13 @@ impl GarmentTopology {
                 }
                 None => {
                     let mesh = triangulate::mesh_piece(piece, &piece_plan, &self.params);
-                    let mut cached =
-                        CachedPiece { id: piece.id, plan: piece_plan, mesh, positions: Vec::new(), uvs: Vec::new() };
+                    let mut cached = CachedPiece {
+                        id: piece.id,
+                        plan: piece_plan,
+                        mesh,
+                        positions: Vec::new(),
+                        uvs: Vec::new(),
+                    };
                     // A re-meshed piece restarts from its flat arrangement.
                     // Transferring the draped shape across topologies would
                     // go here (barycentric lookup in the old mesh).
@@ -246,7 +283,8 @@ impl GarmentTopology {
             self.cache.push(cached);
         }
 
-        report.topology_changed = !report.remeshed.is_empty() || dirty.structure || had_removed_pieces;
+        report.topology_changed =
+            !report.remeshed.is_empty() || dirty.structure || had_removed_pieces;
         if report.changed() {
             self.assemble(doc, report.topology_changed);
         }
@@ -256,7 +294,10 @@ impl GarmentTopology {
     /// Concatenates the cached pieces into the global buffers.
     fn assemble(&mut self, doc: &PatternDocument, topology_changed: bool) {
         let generation = self.mesh.generation + 1;
-        let mut mesh = GarmentMesh { generation, ..GarmentMesh::default() };
+        let mut mesh = GarmentMesh {
+            generation,
+            ..GarmentMesh::default()
+        };
         if !topology_changed {
             // Connectivity is intact: keep it and only refresh attributes.
             mesh.indices = std::mem::take(&mut self.mesh.indices);
@@ -271,21 +312,25 @@ impl GarmentTopology {
             let base = mesh.positions.len() as u32;
             mesh.positions.extend_from_slice(&cached.positions);
             mesh.uvs.extend_from_slice(&cached.uvs);
-            mesh.pattern_positions.extend_from_slice(&cached.mesh.pattern_positions);
+            mesh.pattern_positions
+                .extend_from_slice(&cached.mesh.pattern_positions);
             if !topology_changed {
                 continue;
             }
             let first_index = mesh.indices.len() as u32;
             mesh.origins.extend_from_slice(&cached.mesh.origins);
-            mesh.indices.extend(cached.mesh.indices.iter().map(|i| base + i));
+            mesh.indices
+                .extend(cached.mesh.indices.iter().map(|i| base + i));
             mesh.pieces.push(PieceSpan {
                 piece: cached.id,
                 vertices: base..mesh.positions.len() as u32,
                 indices: first_index..mesh.indices.len() as u32,
             });
             for (edge, chain) in cached.mesh.edge_chains.iter().enumerate() {
-                self.edge_map
-                    .insert(EdgeRef::new(cached.id, edge as u32), chain.iter().map(|i| base + i).collect());
+                self.edge_map.insert(
+                    EdgeRef::new(cached.id, edge as u32),
+                    chain.iter().map(|i| base + i).collect(),
+                );
             }
         }
 
@@ -300,17 +345,29 @@ impl GarmentTopology {
                 };
                 // Equal by construction (see `plan`); `zip` guards the rest.
                 debug_assert_eq!(a.len(), b.len());
-                let pairs: Box<dyn Iterator<Item = (&u32, &u32)>> =
-                    if seam.reversed { Box::new(a.iter().zip(b.iter().rev())) } else { Box::new(a.iter().zip(b.iter())) };
-                mesh.stitches.extend(pairs.map(|(&a, &b)| Stitch { seam: seam.id, a, b }));
+                let pairs: Box<dyn Iterator<Item = (&u32, &u32)>> = if seam.reversed {
+                    Box::new(a.iter().zip(b.iter().rev()))
+                } else {
+                    Box::new(a.iter().zip(b.iter()))
+                };
+                mesh.stitches.extend(pairs.map(|(&a, &b)| Stitch {
+                    seam: seam.id,
+                    a,
+                    b,
+                }));
             }
             // A done-up button holds its buttonhole on itself: one stitch
             // between the mesh vertices nearest to each.
             for (button_piece, button, hole_piece, hole) in doc.fastenings() {
-                if let (Some(a), Some(b)) =
-                    (mesh.nearest_vertex(button_piece, button.position), mesh.nearest_vertex(hole_piece, hole.position))
-                {
-                    mesh.stitches.push(Stitch { seam: Stitch::FASTENING, a, b });
+                if let (Some(a), Some(b)) = (
+                    mesh.nearest_vertex(button_piece, button.position),
+                    mesh.nearest_vertex(hole_piece, hole.position),
+                ) {
+                    mesh.stitches.push(Stitch {
+                        seam: Stitch::FASTENING,
+                        a,
+                        b,
+                    });
                 }
             }
         }
@@ -320,7 +377,10 @@ impl GarmentTopology {
     }
 
     fn triangles_of(&self, piece: PieceId) -> impl Iterator<Item = u32> + '_ {
-        self.mesh.span(piece).into_iter().flat_map(|s| s.indices.start / 3..s.indices.end / 3)
+        self.mesh
+            .span(piece)
+            .into_iter()
+            .flat_map(|s| s.indices.start / 3..s.indices.end / 3)
     }
 }
 
@@ -349,7 +409,14 @@ impl TopologySync for GarmentTopology {
     fn rebuild(&mut self, doc: &PatternDocument) -> SyncReport {
         self.cache.clear();
         self.mesh.pieces.clear();
-        self.sync(doc, Dirty { everything: true, structure: true, ..Dirty::default() })
+        self.sync(
+            doc,
+            Dirty {
+                everything: true,
+                structure: true,
+                ..Dirty::default()
+            },
+        )
     }
 
     fn apply(&mut self, doc: &PatternDocument, changes: &[DocumentChange]) -> SyncReport {
@@ -366,7 +433,9 @@ impl TopologySync for GarmentTopology {
                 DocumentChange::PieceUv(id) => {
                     dirty.uv.insert(id);
                 }
-                DocumentChange::PieceAdded(_) | DocumentChange::PieceRemoved(_) | DocumentChange::Seams => {
+                DocumentChange::PieceAdded(_)
+                | DocumentChange::PieceRemoved(_)
+                | DocumentChange::Seams => {
                     dirty.structure = true;
                 }
                 DocumentChange::Everything => {
@@ -374,13 +443,19 @@ impl TopologySync for GarmentTopology {
                     dirty.structure = true;
                 }
                 // Drawing- or shading-only changes never touch the mesh.
-                DocumentChange::PieceAnnotations(_) | DocumentChange::PieceFabric(_) | DocumentChange::Fabric(_) => {
+                DocumentChange::PieceAnnotations(_)
+                | DocumentChange::PieceFabric(_)
+                | DocumentChange::Fabric(_) => {
                     continue;
                 }
             }
             relevant = true;
         }
-        if relevant { self.sync(doc, dirty) } else { SyncReport::default() }
+        if relevant {
+            self.sync(doc, dirty)
+        } else {
+            SyncReport::default()
+        }
     }
 
     fn mesh(&self) -> &GarmentMesh {
@@ -398,7 +473,10 @@ impl TopologySync for GarmentTopology {
     fn pattern_to_surface(&self, location: PatternLocation) -> Option<SurfaceLocation> {
         let p = location.position;
         self.triangles_of(location.piece).find_map(|triangle| {
-            let [a, b, c] = self.mesh.triangle(triangle).map(|v| self.mesh.pattern_positions[v as usize]);
+            let [a, b, c] = self
+                .mesh
+                .triangle(triangle)
+                .map(|v| self.mesh.pattern_positions[v as usize]);
             let area = (b - a).perp_dot(c - a);
             if area.abs() < 1e-9 {
                 return None;
@@ -407,7 +485,10 @@ impl TopologySync for GarmentTopology {
             let v = (c - p).perp_dot(a - p) / area;
             let w = 1.0 - u - v;
             const EPS: f32 = -1e-4;
-            (u >= EPS && v >= EPS && w >= EPS).then_some(SurfaceLocation { triangle, barycentric: Vec3::new(u, v, w) })
+            (u >= EPS && v >= EPS && w >= EPS).then_some(SurfaceLocation {
+                triangle,
+                barycentric: Vec3::new(u, v, w),
+            })
         })
     }
 
@@ -420,16 +501,22 @@ impl TopologySync for GarmentTopology {
             return None;
         }
         let piece = self.mesh.piece_of_triangle(location.triangle)?;
-        let [a, b, c] = self.mesh.triangle(location.triangle).map(|v| self.mesh.pattern_positions[v as usize]);
+        let [a, b, c] = self
+            .mesh
+            .triangle(location.triangle)
+            .map(|v| self.mesh.pattern_positions[v as usize]);
         let w = location.barycentric;
-        Some(PatternLocation { piece, position: a * w.x + b * w.y + c * w.z })
+        Some(PatternLocation {
+            piece,
+            position: a * w.x + b * w.y + c * w.z,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cad_core::{HandleKind, HandleRef, MoveHandle, EditCommand};
+    use cad_core::{EditCommand, HandleKind, HandleRef, MoveHandle};
 
     fn built() -> (PatternDocument, GarmentTopology) {
         let doc = PatternDocument::demo_top();
@@ -471,28 +558,51 @@ mod tests {
         // piece B: its left side is one straight edge of similar length.
         let a = doc.add_piece(
             "A",
-            Outline::polygon([Vec2::ZERO, Vec2::new(100.0, 0.0), Vec2::new(100.0, 120.0), Vec2::new(100.0, 300.0), Vec2::new(0.0, 300.0)]),
+            Outline::polygon([
+                Vec2::ZERO,
+                Vec2::new(100.0, 0.0),
+                Vec2::new(100.0, 120.0),
+                Vec2::new(100.0, 300.0),
+                Vec2::new(0.0, 300.0),
+            ]),
             fabric,
         );
         let b = doc.add_piece(
             "B",
-            Outline::polygon([Vec2::new(200.0, 0.0), Vec2::new(300.0, 0.0), Vec2::new(300.0, 300.0), Vec2::new(200.0, 300.0)]),
+            Outline::polygon([
+                Vec2::new(200.0, 0.0),
+                Vec2::new(300.0, 0.0),
+                Vec2::new(300.0, 300.0),
+                Vec2::new(200.0, 300.0),
+            ]),
             fabric,
         );
         // A's edges 1 and 2 run upwards; B's edge 3 runs downwards.
-        doc.add_seam_spans((a, EdgeSpan { first: 1, count: 2 }), (b, EdgeSpan::single(3)), true);
+        doc.add_seam_spans(
+            (a, EdgeSpan { first: 1, count: 2 }),
+            (b, EdgeSpan::single(3)),
+            true,
+        );
 
-        let mut topo = GarmentTopology::new(MeshingParams { particle_distance: 25.0, ..Default::default() });
+        let mut topo = GarmentTopology::new(MeshingParams {
+            particle_distance: 25.0,
+            ..Default::default()
+        });
         topo.rebuild(&doc);
         let mesh = topo.mesh();
         let stitches = &mesh.stitches;
-        let side_a = topo.span_vertices(a, EdgeSpan { first: 1, count: 2 }, 5).unwrap();
+        let side_a = topo
+            .span_vertices(a, EdgeSpan { first: 1, count: 2 }, 5)
+            .unwrap();
         let side_b = topo.edge_vertices(EdgeRef::new(b, 3)).unwrap().to_vec();
         assert_eq!(side_a.len(), side_b.len());
         assert_eq!(stitches.len(), side_a.len());
         // Every stitch joins points at the same height: the seam is not twisted.
         for stitch in stitches {
-            let (pa, pb) = (mesh.pattern_positions[stitch.a as usize], mesh.pattern_positions[stitch.b as usize]);
+            let (pa, pb) = (
+                mesh.pattern_positions[stitch.a as usize],
+                mesh.pattern_positions[stitch.b as usize],
+            );
             assert!((pa.y - pb.y).abs() < 15.0, "{pa} vs {pb}");
         }
     }
@@ -511,7 +621,10 @@ mod tests {
                 // Stitched vertices sit across the avatar from each other:
                 // same x/y, opposite z.
                 let (pa, pb) = (mesh.positions[s.a as usize], mesh.positions[s.b as usize]);
-                assert!((pa.x - pb.x).abs() < 2e-3 && (pa.y - pb.y).abs() < 2e-3, "{pa} vs {pb}");
+                assert!(
+                    (pa.x - pb.x).abs() < 2e-3 && (pa.y - pb.y).abs() < 2e-3,
+                    "{pa} vs {pb}"
+                );
                 assert!(pa.z > 0.0 && pb.z < 0.0);
             }
         }
@@ -523,11 +636,28 @@ mod tests {
         let piece = &doc.pieces()[0];
         let chain = topo.edge_vertices(EdgeRef::new(piece.id, 2)).unwrap();
         let mesh = topo.mesh();
-        assert_eq!(mesh.origins[chain[0] as usize], VertexOrigin::Corner { piece: piece.id, anchor: 2 });
-        assert_eq!(mesh.origins[*chain.last().unwrap() as usize], VertexOrigin::Corner { piece: piece.id, anchor: 3 });
-        assert_eq!(mesh.pattern_positions[chain[0] as usize], piece.outline.points()[2].position);
+        assert_eq!(
+            mesh.origins[chain[0] as usize],
+            VertexOrigin::Corner {
+                piece: piece.id,
+                anchor: 2
+            }
+        );
+        assert_eq!(
+            mesh.origins[*chain.last().unwrap() as usize],
+            VertexOrigin::Corner {
+                piece: piece.id,
+                anchor: 3
+            }
+        );
+        assert_eq!(
+            mesh.pattern_positions[chain[0] as usize],
+            piece.outline.points()[2].position
+        );
         for &v in &chain[1..chain.len() - 1] {
-            assert!(matches!(mesh.origins[v as usize], VertexOrigin::Edge { edge, .. } if edge.edge == 2));
+            assert!(
+                matches!(mesh.origins[v as usize], VertexOrigin::Edge { edge, .. } if edge.edge == 2)
+            );
         }
     }
 
@@ -542,9 +672,21 @@ mod tests {
         topo.mesh_mut().positions[back_start + 3] = draped;
 
         // Nudge the neckline control: no seam length changes.
-        let handle = HandleRef { piece: front, kind: HandleKind::Control { segment: 4, slot: 0 } };
+        let handle = HandleRef {
+            piece: front,
+            kind: HandleKind::Control {
+                segment: 4,
+                slot: 0,
+            },
+        };
         let from = doc.handle_position(handle).unwrap();
-        let change = MoveHandle { handle, from, to: from + Vec2::new(0.0, -15.0) }.apply(&mut doc).unwrap();
+        let change = MoveHandle {
+            handle,
+            from,
+            to: from + Vec2::new(0.0, -15.0),
+        }
+        .apply(&mut doc)
+        .unwrap();
         let report = topo.apply(&doc, &[change]);
         assert_eq!(report.remeshed, vec![front]);
         assert!(topo.mesh().is_manifold());
@@ -552,21 +694,36 @@ mod tests {
         assert_eq!(topo.mesh().positions[back_start + 3], draped);
 
         // Lengthening a seamed edge re-plans the partner piece too.
-        let handle = HandleRef { piece: front, kind: HandleKind::Anchor(0) };
+        let handle = HandleRef {
+            piece: front,
+            kind: HandleKind::Anchor(0),
+        };
         let from = doc.handle_position(handle).unwrap();
-        let change = MoveHandle { handle, from, to: from + Vec2::new(0.0, -200.0) }.apply(&mut doc).unwrap();
+        let change = MoveHandle {
+            handle,
+            from,
+            to: from + Vec2::new(0.0, -200.0),
+        }
+        .apply(&mut doc)
+        .unwrap();
         let report = topo.apply(&doc, &[change]);
         assert_eq!(report.remeshed, vec![front, back]);
 
         // Shading-only changes are free.
-        assert_eq!(topo.apply(&doc, &[DocumentChange::Fabric(doc.fabrics()[0].id)]), SyncReport::default());
+        assert_eq!(
+            topo.apply(&doc, &[DocumentChange::Fabric(doc.fabrics()[0].id)]),
+            SyncReport::default()
+        );
     }
 
     #[test]
     fn surface_and_pattern_locations_round_trip() {
         let (doc, topo) = built();
         let piece = &doc.pieces()[0];
-        let location = PatternLocation { piece: piece.id, position: Vec2::new(-300.0, 250.0) };
+        let location = PatternLocation {
+            piece: piece.id,
+            position: Vec2::new(-300.0, 250.0),
+        };
         let surface = topo.pattern_to_surface(location).unwrap();
         let back = topo.surface_to_pattern(surface).unwrap();
         assert_eq!(back.piece, piece.id);
@@ -576,7 +733,10 @@ mod tests {
         let world = piece.arrangement.place(location.position);
         let hit = topo.mesh().raycast(world + Vec3::Z, -Vec3::Z).unwrap();
         let picked = topo
-            .surface_to_pattern(SurfaceLocation { triangle: hit.triangle, barycentric: hit.barycentric })
+            .surface_to_pattern(SurfaceLocation {
+                triangle: hit.triangle,
+                barycentric: hit.barycentric,
+            })
             .unwrap();
         assert_eq!(picked.piece, piece.id);
         assert!(picked.position.distance(location.position) < 0.5);

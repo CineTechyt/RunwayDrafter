@@ -169,7 +169,10 @@ impl<T: Copy> Csr<T> {
             items[cursor[i as usize] as usize] = Some(item);
             cursor[i as usize] += 1;
         }
-        Self { start, items: items.into_iter().map(Option::unwrap).collect() }
+        Self {
+            start,
+            items: items.into_iter().map(Option::unwrap).collect(),
+        }
     }
 
     #[inline]
@@ -215,16 +218,28 @@ pub struct Ogc {
 }
 
 impl Ogc {
-    pub fn new(model: &Model, triangles: Vec<[u32; 3]>, stitches: &[(u32, u32)], rest: &[Vec3A]) -> Self {
+    pub fn new(
+        model: &Model,
+        triangles: Vec<[u32; 3]>,
+        stitches: &[(u32, u32)],
+        rest: &[Vec3A],
+    ) -> Self {
         let n = model.inverse_mass.len();
-        let mut edges: Vec<[u32; 2]> =
-            triangles.iter().flat_map(|t| [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]).map(|[a, b]| [a.min(b), a.max(b)]).collect();
+        let mut edges: Vec<[u32; 2]> = triangles
+            .iter()
+            .flat_map(|t| [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]])
+            .map(|[a, b]| [a.min(b), a.max(b)])
+            .collect();
         edges.sort_unstable();
         edges.dedup();
         let mean_edge = if edges.is_empty() {
             0.0
         } else {
-            edges.iter().map(|&[a, b]| rest[a as usize].distance(rest[b as usize])).sum::<f32>() / edges.len() as f32
+            edges
+                .iter()
+                .map(|&[a, b]| rest[a as usize].distance(rest[b as usize]))
+                .sum::<f32>()
+                / edges.len() as f32
         };
 
         // Each vertex's neighbourhood: two hops over mesh edges and
@@ -232,7 +247,13 @@ impl Ogc {
         // than bending allows, and moves with the vertex; counting it
         // would hold every vertex to a fraction of an edge per detection.
         let mut links: Vec<Vec<u32>> = vec![Vec::new(); n];
-        for &[a, b] in edges.iter().chain(stitches.iter().map(|(a, b)| [*a, *b]).collect::<Vec<_>>().iter()) {
+        for &[a, b] in edges.iter().chain(
+            stitches
+                .iter()
+                .map(|(a, b)| [*a, *b])
+                .collect::<Vec<_>>()
+                .iter(),
+        ) {
             if a != b {
                 links[a as usize].push(b);
                 links[b as usize].push(a);
@@ -250,12 +271,19 @@ impl Ogc {
                 set
             })
             .collect();
-        let near = Csr::build(n, near.iter().enumerate().flat_map(|(v, set)| set.iter().map(move |&u| (v as u32, u))));
+        let near = Csr::build(
+            n,
+            near.iter()
+                .enumerate()
+                .flat_map(|(v, set)| set.iter().map(move |&u| (v as u32, u))),
+        );
 
         let rows = Csr::build(
             n,
             model.elements.iter().enumerate().flat_map(|(e, element)| {
-                (0..4).filter(move |&k| element.particles[k] != INVALID).map(move |k| (element.particles[k], (e as u32, k as u8)))
+                (0..4)
+                    .filter(move |&k| element.particles[k] != INVALID)
+                    .map(move |k| (element.particles[k], (e as u32, k as u8)))
             }),
         );
 
@@ -285,7 +313,15 @@ impl Ogc {
             colours[colour as usize].push(v as u32);
         }
 
-        Self { triangles, edges, near, mean_edge, rows, colours, ..Self::default() }
+        Self {
+            triangles,
+            edges,
+            near,
+            mean_edge,
+            rows,
+            colours,
+            ..Self::default()
+        }
     }
 
     /// Finds contacts afresh at the next sub-step (the body has moved, or
@@ -319,16 +355,24 @@ impl Ogc {
 
     fn detect_inner(&mut self, x: &[Vec3A], input: &StepInput<'_>, reach: &[f32]) {
         let (_, base) = self.radii(input.thickness);
-        let radius: Vec<f32> = reach.iter().map(|r| base.max(r / BOUND_FRACTION * 1.1).min(MAX_QUERY)).collect();
+        let radius: Vec<f32> = reach
+            .iter()
+            .map(|r| base.max(r / BOUND_FRACTION * 1.1).min(MAX_QUERY))
+            .collect();
         let n = x.len();
-        let face_radius: Vec<f32> = self.triangles.iter().map(|t| t.iter().map(|&i| radius[i as usize]).fold(0.0, f32::max)).collect();
+        let face_radius: Vec<f32> = self
+            .triangles
+            .iter()
+            .map(|t| t.iter().map(|&i| radius[i as usize]).fold(0.0, f32::max))
+            .collect();
         let face_boxes: Vec<Aabb> = self
             .triangles
             .iter()
             .zip(&face_radius)
             .map(|(t, &r)| Aabb::from_points(t.map(|i| x[i as usize])).expanded(r))
             .collect();
-        let refit = self.face_tree.primitive_count() == face_boxes.len() && self.since_build < REBUILD_INTERVAL;
+        let refit = self.face_tree.primitive_count() == face_boxes.len()
+            && self.since_build < REBUILD_INTERVAL;
         if refit {
             self.face_tree.refit(&face_boxes);
             self.since_build += 1;
@@ -337,9 +381,17 @@ impl Ogc {
             self.since_build = 0;
         }
         let faces = &self.face_tree;
-        let edge_radius: Vec<f32> = self.edges.iter().map(|e| radius[e[0] as usize].max(radius[e[1] as usize])).collect();
-        let edge_boxes: Vec<Aabb> =
-            self.edges.iter().zip(&edge_radius).map(|(e, &r)| Aabb::from_points(e.map(|i| x[i as usize])).expanded(r)).collect();
+        let edge_radius: Vec<f32> = self
+            .edges
+            .iter()
+            .map(|e| radius[e[0] as usize].max(radius[e[1] as usize]))
+            .collect();
+        let edge_boxes: Vec<Aabb> = self
+            .edges
+            .iter()
+            .zip(&edge_radius)
+            .map(|(e, &r)| Aabb::from_points(e.map(|i| x[i as usize])).expanded(r))
+            .collect();
         if refit && self.edge_tree.primitive_count() == edge_boxes.len() {
             self.edge_tree.refit(&edge_boxes);
         } else {
@@ -392,7 +444,10 @@ impl Ogc {
                         found.push((face, distance, feature));
                     }
                 });
-                found.into_iter().map(|(face, distance, _)| (face, distance)).collect()
+                found
+                    .into_iter()
+                    .map(|(face, distance, _)| (face, distance))
+                    .collect()
             })
             .collect();
 
@@ -412,7 +467,8 @@ impl Ogc {
                     if [c, d].iter().any(|&u| close(a, u) || close(b, u)) {
                         return;
                     }
-                    if let Some((s, t, distance)) = segment_segment(x[a as usize], x[b as usize], x[c as usize], x[d as usize])
+                    if let Some((s, t, distance)) =
+                        segment_segment(x[a as usize], x[b as usize], x[c as usize], x[d as usize])
                         && s > 1e-4
                         && s < 1.0 - 1e-4
                         && t > 1e-4
@@ -443,13 +499,20 @@ impl Ogc {
                 }
             }
         }
-        self.bound = nearest.iter().map(|d| (BOUND_FRACTION * d).max(MIN_BOUND)).collect();
+        self.bound = nearest
+            .iter()
+            .map(|d| (BOUND_FRACTION * d).max(MIN_BOUND))
+            .collect();
         // Only pairs that can come within the contact radius before the
         // next detection, their vertices staying within their bounds, are
         // worth evaluating while solving.
         let (r, _) = self.radii(input.thickness);
         let bound = &self.bound;
-        let reach = |ids: &[u32]| ids.iter().map(|&u| bound[u as usize]).fold(0.0f32, f32::max);
+        let reach = |ids: &[u32]| {
+            ids.iter()
+                .map(|&u| bound[u as usize])
+                .fold(0.0f32, f32::max)
+        };
         self.pairs.clear();
         for (v, found) in vertex_pairs.iter().enumerate() {
             for &(face, distance) in found {
@@ -461,7 +524,10 @@ impl Ogc {
         for (e, found) in edge_pairs.iter().enumerate() {
             for &(other, distance) in found {
                 if distance < r + reach(&edges[e]) + reach(&edges[other as usize]) {
-                    self.pairs.push(Pair::EdgeEdge { a: e as u32, b: other });
+                    self.pairs.push(Pair::EdgeEdge {
+                        a: e as u32,
+                        b: other,
+                    });
                 }
             }
         }
@@ -483,7 +549,12 @@ impl Ogc {
         };
         self.incident = Csr::build(
             n,
-            pairs.iter().enumerate().flat_map(|(i, pair)| vertices(pair).into_iter().enumerate().map(move |(k, v)| (v, (i as u32, k as u8)))),
+            pairs.iter().enumerate().flat_map(|(i, pair)| {
+                vertices(pair)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(k, v)| (v, (i as u32, k as u8)))
+            }),
         );
 
         self.stats.detections += 1;
@@ -495,7 +566,10 @@ impl Ogc {
         let clock = std::time::Instant::now();
         let n = x.len();
         let triangles = &self.triangles;
-        let face_boxes: Vec<Aabb> = triangles.iter().map(|t| Aabb::from_points(t.map(|i| x[i as usize]))).collect();
+        let face_boxes: Vec<Aabb> = triangles
+            .iter()
+            .map(|t| Aabb::from_points(t.map(|i| x[i as usize])))
+            .collect();
         let faces = Bvh::build(&face_boxes);
         // Skin points against cloth faces.
         self.body_pairs.clear();
@@ -523,9 +597,15 @@ impl Ogc {
                         // the gap between an arm and the torso, cloth on
                         // the torso is in front of the arm's skin too.
                         let agrees = field.is_none_or(|f| {
-                            f.sample(q.into()).is_some_and(|(_, g)| Vec3A::from(g).normalize_or_zero().dot(normal) > 0.7)
+                            f.sample(q.into()).is_some_and(|(_, g)| {
+                                Vec3A::from(g).normalize_or_zero().dot(normal) > 0.7
+                            })
                         });
-                        if height < margin && height > -margin && agrees && best.is_none_or(|(_, h)| height < h) {
+                        if height < margin
+                            && height > -margin
+                            && agrees
+                            && best.is_none_or(|(_, h)| height < h)
+                        {
                             best = Some((face, height));
                         }
                     });
@@ -534,12 +614,20 @@ impl Ogc {
                     // (Tested last: most skin points have no cloth face over
                     // them at all.)
                     if let Some(field) = field
-                        && field.sample((p + normal * CREASE).into()).is_none_or(|(d, _)| d < CREASE * 0.6)
+                        && field
+                            .sample((p + normal * CREASE).into())
+                            .is_none_or(|(d, _)| d < CREASE * 0.6)
                     {
                         return None;
                     }
-                    let velocity = field.map_or(Vec3A::ZERO, |f| Vec3A::from(f.velocity_at(p.into())));
-                    Some(BodyPair { point: p, normal, velocity, face })
+                    let velocity =
+                        field.map_or(Vec3A::ZERO, |f| Vec3A::from(f.velocity_at(p.into())));
+                    Some(BodyPair {
+                        point: p,
+                        normal,
+                        velocity,
+                        face,
+                    })
                 })
                 .collect();
             self.body_pairs = found;
@@ -547,10 +635,12 @@ impl Ogc {
         let body_pairs = &self.body_pairs;
         self.body_incident = Csr::build(
             n,
-            body_pairs
-                .iter()
-                .enumerate()
-                .flat_map(|(i, pair)| triangles[pair.face as usize].into_iter().enumerate().map(move |(k, v)| (v, (i as u32, k as u8)))),
+            body_pairs.iter().enumerate().flat_map(|(i, pair)| {
+                triangles[pair.face as usize]
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(k, v)| (v, (i as u32, k as u8)))
+            }),
         );
         self.body_stale = false;
         self.stats.detect_us += clock.elapsed().as_micros() as u64;
@@ -570,7 +660,9 @@ impl Ogc {
             Pair::EdgeEdge { a, b } => {
                 let ([p, q], [r, s]) = (self.edges[a as usize], self.edges[b as usize]);
                 let (xp, xq, xr, xs) = (x[p as usize], x[q as usize], x[r as usize], x[s as usize]);
-                let (s_, t_) = segment_segment(xp, xq, xr, xs).map_or((0.5, 0.5), |(s, t, _)| (s.clamp(0.0, 1.0), t.clamp(0.0, 1.0)));
+                let (s_, t_) = segment_segment(xp, xq, xr, xs).map_or((0.5, 0.5), |(s, t, _)| {
+                    (s.clamp(0.0, 1.0), t.clamp(0.0, 1.0))
+                });
                 let c = [1.0 - s_, s_, -(1.0 - t_), -t_];
                 (xp * c[0] + xq * c[1] + xr * c[2] + xs * c[3], c)
             }
@@ -614,7 +706,11 @@ impl Ogc {
             .collect();
 
         let reach = |target: &[Vec3A], from: &[Vec3A]| -> Vec<f32> {
-            target.iter().zip(from).map(|(a, b)| a.distance(*b) * LOOKAHEAD).collect()
+            target
+                .iter()
+                .zip(from)
+                .map(|(a, b)| a.distance(*b) * LOOKAHEAD)
+                .collect()
         };
         let mut detections = 0;
         if self.body_stale || self.anchor.len() != n {
@@ -627,7 +723,11 @@ impl Ogc {
         // the cloth and cost it its momentum.
         let outgrown = || {
             self.anchor.len() != n
-                || inertia.iter().zip(&self.anchor).zip(&self.bound).any(|((y, a), b)| y.distance_squared(*a) > b * b)
+                || inertia
+                    .iter()
+                    .zip(&self.anchor)
+                    .zip(&self.bound)
+                    .any(|((y, a), b)| y.distance_squared(*a) > b * b)
         };
         if self.stale || outgrown() {
             self.detect(&state.positions, input, &reach(&inertia, &start));
@@ -654,7 +754,8 @@ impl Ogc {
                 .with_min_len(512)
                 .map(|(&x, &w)| {
                     let velocity = Vec3A::from(field.velocity_at(x.into()));
-                    let (distance, gradient) = field.sample((x + velocity * (input.body_lag + input.h)).into())?;
+                    let (distance, gradient) =
+                        field.sample((x + velocity * (input.body_lag + input.h)).into())?;
                     // Cloth resting on the skin sits right at the margin,
                     // a hair outside it as often as inside.
                     if distance >= input.margin + GRIP_BAND || w <= 0.0 {
@@ -664,8 +765,14 @@ impl Ogc {
                     // At least its own weight pressing on the surface: the
                     // load of cloth that lies on it.
                     let weight = (-input.gravity.dot(normal)).max(0.0) / w;
-                    let load = (-body_energy(distance, input.margin).0).max(weight).min(MAX_FRICTION_LOAD);
-                    Some(Grip { normal, load, velocity })
+                    let load = (-body_energy(distance, input.margin).0)
+                        .max(weight)
+                        .min(MAX_FRICTION_LOAD);
+                    Some(Grip {
+                        normal,
+                        load,
+                        velocity,
+                    })
                 })
                 .collect(),
             _ => Vec::new(),
@@ -690,7 +797,15 @@ impl Ogc {
                 detections += 1;
             }
             let before = state.positions.clone();
-            truncated = self.sweep(model, &mut state.positions, &start, &inertia, &grip, input, &mut out);
+            truncated = self.sweep(
+                model,
+                &mut state.positions,
+                &start,
+                &inertia,
+                &grip,
+                input,
+                &mut out,
+            );
             // Chebyshev semi-iterative acceleration (Wang 2015, as in VBD):
             // extrapolate from the iterate before last.
             let rho = input.acceleration;
@@ -701,7 +816,13 @@ impl Ogc {
                     _ => 4.0 / (4.0 - rho * rho * omega),
                 };
                 if iteration > 1 && omega > 1.0 {
-                    for (i, ((x, &old), &w)) in state.positions.iter_mut().zip(&older).zip(&model.inverse_mass).enumerate() {
+                    for (i, ((x, &old), &w)) in state
+                        .positions
+                        .iter_mut()
+                        .zip(&older)
+                        .zip(&model.inverse_mass)
+                        .enumerate()
+                    {
                         if w > 0.0 {
                             *x = self.truncate(i, old + (*x - old) * omega).0;
                         }
@@ -722,18 +843,29 @@ impl Ogc {
                 continue;
             }
             for collider in input.colliders {
-                if let Some(corrected) = crate::cpu::push_out_of_ellipsoid(*x, collider, input.margin) {
+                if let Some(corrected) =
+                    crate::cpu::push_out_of_ellipsoid(*x, collider, input.margin)
+                {
                     *x = corrected;
                 }
             }
         }
-        for ((v, &x), &x0) in state.velocities.iter_mut().zip(&state.positions).zip(&start) {
+        for ((v, &x), &x0) in state
+            .velocities
+            .iter_mut()
+            .zip(&state.positions)
+            .zip(&start)
+        {
             *v = ((x - x0) / h).clamp_length_max(input.max_speed);
         }
         state.previous.clone_from(&start);
 
         let (r, _) = self.radii(input.thickness);
-        self.stats.self_contacts = self.pairs.iter().filter(|p| self.pair_vector(p, &state.positions).0.length() < r).count();
+        self.stats.self_contacts = self
+            .pairs
+            .iter()
+            .filter(|p| self.pair_vector(p, &state.positions).0.length() < r)
+            .count();
         self.stats.body_contacts = self
             .body_pairs
             .iter()
@@ -764,7 +896,9 @@ impl Ogc {
             let mut truncated = 0;
             for vertices in &self.colours {
                 out.clear();
-                out.extend(vertices.iter().map(|&v| self.solve_vertex(v as usize, model, positions, start, inertia, grip, input)));
+                out.extend(vertices.iter().map(|&v| {
+                    self.solve_vertex(v as usize, model, positions, start, inertia, grip, input)
+                }));
                 for (&v, &target) in vertices.iter().zip(out.iter()) {
                     let (moved, cut) = self.truncate(v as usize, target);
                     positions[v as usize] = moved;
@@ -779,9 +913,12 @@ impl Ogc {
             out.clear();
             out.resize(vertices.len(), Vec3A::ZERO);
             let x = &*positions;
-            out.par_iter_mut().zip(vertices).with_min_len(16).for_each(|(slot, &v)| {
-                *slot = self.solve_vertex(v as usize, model, x, start, inertia, grip, input);
-            });
+            out.par_iter_mut()
+                .zip(vertices)
+                .with_min_len(16)
+                .for_each(|(slot, &v)| {
+                    *slot = self.solve_vertex(v as usize, model, x, start, inertia, grip, input);
+                });
             for (&v, &target) in vertices.iter().zip(out.iter()) {
                 let (moved, cut) = self.truncate(v as usize, target);
                 positions[v as usize] = moved;
@@ -833,7 +970,13 @@ impl Ogc {
         for &(e, slot) in self.rows.of(i) {
             let element = &model.elements[e as usize];
             // The element's positions, once for all its rows.
-            let corners = element.particles.map(|p| if p != INVALID { x[p as usize] } else { Vec3A::ZERO });
+            let corners = element.particles.map(|p| {
+                if p != INVALID {
+                    x[p as usize]
+                } else {
+                    Vec3A::ZERO
+                }
+            });
             for row in &element.rows {
                 if row.flags & ROW_ACTIVE == 0 {
                     continue;
@@ -843,7 +986,8 @@ impl Ogc {
                     continue;
                 }
                 let w = row.weights;
-                let mut sum = corners[0] * w[0] + corners[1] * w[1] + corners[2] * w[2] + corners[3] * w[3];
+                let mut sum =
+                    corners[0] * w[0] + corners[1] * w[1] + corners[2] * w[2] + corners[3] * w[3];
                 // A done-up button (a seam row that closes to a gap): its hole
                 // belongs outside it, a fabric thickness further from the
                 // body. The row is measured from that point rather than
@@ -852,7 +996,8 @@ impl Ogc {
                 let mut lap = false;
                 if fastening
                     && let Some(field) = input.body
-                    && let Some((_, gradient)) = field.sample(x[element.particles[0] as usize].into())
+                    && let Some((_, gradient)) =
+                        field.sample(x[element.particles[0] as usize].into())
                     && let Some(out) = Vec3A::from(gradient).try_normalize()
                 {
                     // `sum` is button − hole; aim the hole at button + gap·out.
@@ -909,7 +1054,12 @@ impl Ogc {
         // Friction against relative tangential motion `u` this sub-step,
         // with normal force `normal_force`, for a vertex whose share of the
         // contact point is `share`.
-        let add_friction = |force: &mut Vec3A, hessian: &mut Mat3A, normal: Vec3A, normal_force: f32, motion: Vec3A, share: f32| {
+        let add_friction = |force: &mut Vec3A,
+                            hessian: &mut Mat3A,
+                            normal: Vec3A,
+                            normal_force: f32,
+                            motion: Vec3A,
+                            share: f32| {
             if friction <= 0.0 || normal_force <= 0.0 {
                 return;
             }
@@ -939,7 +1089,9 @@ impl Ogc {
             force -= normal * (slope * share);
             hessian += outer(normal) * (curvature * share * share);
             let ids = self.pair_vertices(pair);
-            let motion = (0..4).fold(Vec3A::ZERO, |m, k| m + (x[ids[k] as usize] - start[ids[k] as usize]) * c[k]);
+            let motion = (0..4).fold(Vec3A::ZERO, |m, k| {
+                m + (x[ids[k] as usize] - start[ids[k] as usize]) * c[k]
+            });
             add_friction(&mut force, &mut hessian, normal, -slope, motion, share);
         }
 
@@ -949,7 +1101,8 @@ impl Ogc {
         // body sweeps through the step instead of arriving all at once.
         if let Some(field) = input.body {
             let velocity = Vec3A::from(field.velocity_at(xi.into()));
-            if let Some((distance, gradient)) = field.sample((xi + velocity * input.body_lag).into())
+            if let Some((distance, gradient)) =
+                field.sample((xi + velocity * input.body_lag).into())
                 && distance < input.margin
                 && let Some(normal) = Vec3A::from(gradient).try_normalize()
             {
@@ -959,7 +1112,14 @@ impl Ogc {
             }
         }
         if let Some(Some(grip)) = grip.get(i) {
-            add_friction(&mut force, &mut hessian, grip.normal, grip.load, xi - start[i] - grip.velocity * h, 1.0);
+            add_friction(
+                &mut force,
+                &mut hessian,
+                grip.normal,
+                grip.load,
+                xi - start[i] - grip.velocity * h,
+                1.0,
+            );
         }
         // --- skin points against the faces this vertex is a corner of -----------
         for &(p, slot) in self.body_incident.of(i) {
@@ -986,7 +1146,9 @@ impl Ogc {
             let push = -slope;
             force += pair.normal * (push * share);
             hessian += outer(pair.normal) * (curvature * share * share);
-            let motion = (0..3).fold(Vec3A::ZERO, |m, k| m + (x[t[k] as usize] - start[t[k] as usize]) * weights[k]) - pair.velocity * h;
+            let motion = (0..3).fold(Vec3A::ZERO, |m, k| {
+                m + (x[t[k] as usize] - start[t[k] as usize]) * weights[k]
+            }) - pair.velocity * h;
             add_friction(&mut force, &mut hessian, pair.normal, push, motion, share);
         }
         // --- the floor -----------------------------------------------------------
@@ -1061,7 +1223,11 @@ pub fn segment_segment(p0: Vec3A, p1: Vec3A, q0: Vec3A, q1: Vec3A) -> Option<(f3
     }
     let (b, c) = (d1.dot(d2), d1.dot(r));
     let denominator = a * e - b * b;
-    let mut s = if denominator > 1e-12 { ((b * f - c * e) / denominator).clamp(0.0, 1.0) } else { 0.0 };
+    let mut s = if denominator > 1e-12 {
+        ((b * f - c * e) / denominator).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let mut t = (b * s + f) / e;
     if t < 0.0 {
         t = 0.0;

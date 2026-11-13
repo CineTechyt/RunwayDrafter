@@ -135,7 +135,11 @@ impl GpuBackend {
             label: Some("xpbd uniforms"),
             entries: &[
                 uniform(0, true, size_of::<FrameUniform>() as u64),
-                uniform(1, false, (size_of::<ColliderUniform>() * MAX_COLLIDERS) as u64),
+                uniform(
+                    1,
+                    false,
+                    (size_of::<ColliderUniform>() * MAX_COLLIDERS) as u64,
+                ),
                 uniform(2, true, 16),
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
@@ -153,7 +157,12 @@ impl GpuBackend {
         });
         let particle_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("xpbd particles"),
-            entries: &[storage(0, false), storage(1, false), storage(2, true), storage(3, true)],
+            entries: &[
+                storage(0, false),
+                storage(1, false),
+                storage(2, true),
+                storage(3, true),
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("xpbd layout"),
@@ -193,17 +202,39 @@ impl GpuBackend {
     }
 
     /// Creates the field texture; without a body, a disabled 1-voxel dummy.
-    fn upload_field(device: &wgpu::Device, queue: &wgpu::Queue, body: Option<&DistanceField>) -> FieldTexture {
+    fn upload_field(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        body: Option<&DistanceField>,
+    ) -> FieldTexture {
         let dummy = [0.0f32];
         let (dims, values, uniform) = match body {
             Some(field) => (
                 field.dims,
                 field.values.as_slice(),
-                BodyFieldUniform { origin: field.origin.to_array(), voxel: field.voxel, dims: field.dims, enabled: 1 },
+                BodyFieldUniform {
+                    origin: field.origin.to_array(),
+                    voxel: field.voxel,
+                    dims: field.dims,
+                    enabled: 1,
+                },
             ),
-            None => ([1; 3], dummy.as_slice(), BodyFieldUniform { origin: [0.0; 3], voxel: 1.0, dims: [1; 3], enabled: 0 }),
+            None => (
+                [1; 3],
+                dummy.as_slice(),
+                BodyFieldUniform {
+                    origin: [0.0; 3],
+                    voxel: 1.0,
+                    dims: [1; 3],
+                    enabled: 0,
+                },
+            ),
         };
-        let size = wgpu::Extent3d { width: dims[0], height: dims[1], depth_or_array_layers: dims[2] };
+        let size = wgpu::Extent3d {
+            width: dims[0],
+            height: dims[1],
+            depth_or_array_layers: dims[2],
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("xpbd body field"),
             size,
@@ -217,7 +248,11 @@ impl GpuBackend {
         queue.write_texture(
             texture.as_image_copy(),
             bytemuck::cast_slice(values),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * dims[0]), rows_per_image: Some(dims[1]) },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * dims[0]),
+                rows_per_image: Some(dims[1]),
+            },
             size,
         );
         FieldTexture {
@@ -233,7 +268,13 @@ impl GpuBackend {
 
     /// Uploads a model, its colliders and the state to start from. The
     /// body field is only re-uploaded when it is a different one.
-    pub fn bind(&mut self, model: &Model, state: &State, colliders: &[Ellipsoid], body: Option<&DistanceField>) {
+    pub fn bind(
+        &mut self,
+        model: &Model,
+        state: &State,
+        colliders: &[Ellipsoid],
+        body: Option<&DistanceField>,
+    ) {
         if self.field.source != body.map_or(0, |field| std::ptr::from_ref(field) as usize) {
             self.field = Self::upload_field(&self.device, &self.queue, body);
         }
@@ -248,26 +289,40 @@ impl GpuBackend {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size: particle_bytes * vectors,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             })
         };
         let init = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
+            })
         };
 
-        let elements = init("xpbd elements", bytemuck::cast_slice::<Element, u8>(&model.elements), wgpu::BufferUsages::STORAGE);
+        let elements = init(
+            "xpbd elements",
+            bytemuck::cast_slice::<Element, u8>(&model.elements),
+            wgpu::BufferUsages::STORAGE,
+        );
 
         // One 256-byte slot per colour: [first element, element count].
         let mut ranges = vec![0u8; SLOT as usize * model.colours.len().max(1)];
         for (slot, range) in model.colours.iter().enumerate() {
             let at = slot * SLOT as usize;
-            ranges[at..at + 8].copy_from_slice(bytemuck::bytes_of(&[range.start, range.end - range.start]));
+            ranges[at..at + 8]
+                .copy_from_slice(bytemuck::bytes_of(&[range.start, range.end - range.start]));
         }
         let ranges = init("xpbd colour ranges", &ranges, wgpu::BufferUsages::UNIFORM);
 
         if colliders.len() > MAX_COLLIDERS {
-            log::warn!("{} colliders given, the GPU solver uses the first {MAX_COLLIDERS}", colliders.len());
+            log::warn!(
+                "{} colliders given, the GPU solver uses the first {MAX_COLLIDERS}",
+                colliders.len()
+            );
         }
         let mut collider_data = [ColliderUniform::zeroed(); MAX_COLLIDERS];
         for (slot, e) in collider_data.iter_mut().zip(colliders) {
@@ -277,34 +332,69 @@ impl GpuBackend {
                 rotation: e.rotation.to_array(),
             };
         }
-        let collider_buffer = init("xpbd colliders", bytemuck::cast_slice(&collider_data), wgpu::BufferUsages::UNIFORM);
+        let collider_buffer = init(
+            "xpbd colliders",
+            bytemuck::cast_slice(&collider_data),
+            wgpu::BufferUsages::UNIFORM,
+        );
 
         let positions = particle_buffer("xpbd positions", 1);
         let motion = particle_buffer("xpbd motion", 2);
         // Zero-initialised: no contacts until the first detection.
         let planes = particle_buffer("xpbd contact planes", PLANES_PER_VERTEX as u64);
         fn sized(buffer: &wgpu::Buffer, size: u64) -> wgpu::BindingResource<'_> {
-            wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer, offset: 0, size: wgpu::BufferSize::new(size) })
+            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(size),
+            })
         }
         let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("xpbd uniforms"),
             layout: &self.uniform_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: sized(&self.frames, size_of::<FrameUniform>() as u64) },
-                wgpu::BindGroupEntry { binding: 1, resource: collider_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: sized(&ranges, 16) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.field.view) },
-                wgpu::BindGroupEntry { binding: 4, resource: self.field.uniform.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: sized(&self.frames, size_of::<FrameUniform>() as u64),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: collider_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: sized(&ranges, 16),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.field.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.field.uniform.as_entire_binding(),
+                },
             ],
         });
         let particles = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("xpbd particles"),
             layout: &self.particle_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: positions.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: motion.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: elements.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: planes.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: positions.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: motion.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: elements.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: planes.as_entire_binding(),
+                },
             ],
         });
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -331,16 +421,22 @@ impl GpuBackend {
     /// Overwrites the particle buffers, e.g. after the CPU backend ran.
     pub fn upload_state(&mut self, model: &Model, state: &State) {
         let Some(bound) = &self.bound else { return };
-        let positions: Vec<[f32; 4]> =
-            state.positions.iter().zip(&model.inverse_mass).map(|(p, &w)| [p.x, p.y, p.z, w]).collect();
+        let positions: Vec<[f32; 4]> = state
+            .positions
+            .iter()
+            .zip(&model.inverse_mass)
+            .map(|(p, &w)| [p.x, p.y, p.z, w])
+            .collect();
         let motion: Vec<[[f32; 4]; 2]> = state
             .previous
             .iter()
             .zip(&state.velocities)
             .map(|(p, v)| [[p.x, p.y, p.z, 0.0], [v.x, v.y, v.z, 0.0]])
             .collect();
-        self.queue.write_buffer(&bound.positions, 0, bytemuck::cast_slice(&positions));
-        self.queue.write_buffer(&bound.motion, 0, bytemuck::cast_slice(&motion));
+        self.queue
+            .write_buffer(&bound.positions, 0, bytemuck::cast_slice(&positions));
+        self.queue
+            .write_buffer(&bound.motion, 0, bytemuck::cast_slice(&motion));
     }
 
     /// Replaces the cloth-against-cloth contact planes; an empty slice
@@ -349,15 +445,23 @@ impl GpuBackend {
         let Some(bound) = &self.bound else { return };
         let mut data = vec![[0.0f32; 4]; bound.particle_count as usize * PLANES_PER_VERTEX];
         for (slot, plane) in data.iter_mut().zip(planes.iter().flatten()) {
-            *slot = [plane.normal[0], plane.normal[1], plane.normal[2], plane.offset];
+            *slot = [
+                plane.normal[0],
+                plane.normal[1],
+                plane.normal[2],
+                plane.offset,
+            ];
         }
-        self.queue.write_buffer(&bound.planes, 0, bytemuck::cast_slice(&data));
+        self.queue
+            .write_buffer(&bound.planes, 0, bytemuck::cast_slice(&data));
     }
 
     /// Runs one sub-step per entry of `substeps` and reads the positions
     /// back into `positions`. Returns `false` if nothing is bound.
     pub fn step(&mut self, substeps: &[SubstepParams], positions: &mut [Vec3A]) -> bool {
-        let Some(bound) = &self.bound else { return false };
+        let Some(bound) = &self.bound else {
+            return false;
+        };
         let substeps = &substeps[..substeps.len().min(MAX_SUBSTEPS)];
 
         let mut slots = vec![0u8; SLOT as usize * substeps.len()];
@@ -383,9 +487,16 @@ impl GpuBackend {
         }
         self.queue.write_buffer(&self.frames, 0, &slots);
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("xpbd step") });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("xpbd step"),
+            });
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("xpbd"), timestamp_writes: None });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("xpbd"),
+                timestamp_writes: None,
+            });
             pass.set_bind_group(1, &bound.particles, &[]);
             let particle_groups = bound.particle_count.div_ceil(WORKGROUP_SIZE);
             for substep in 0..substeps.len() as u32 {
@@ -396,7 +507,11 @@ impl GpuBackend {
 
                 pass.set_pipeline(&self.solve);
                 for (colour, &size) in bound.colour_sizes.iter().enumerate() {
-                    pass.set_bind_group(0, &bound.uniforms, &[frame_offset, colour as u32 * SLOT as u32]);
+                    pass.set_bind_group(
+                        0,
+                        &bound.uniforms,
+                        &[frame_offset, colour as u32 * SLOT as u32],
+                    );
                     pass.dispatch_workgroups(size.div_ceil(WORKGROUP_SIZE), 1, 1);
                 }
 
@@ -405,9 +520,17 @@ impl GpuBackend {
                 pass.dispatch_workgroups(particle_groups, 1, 1);
             }
         }
-        encoder.copy_buffer_to_buffer(&bound.positions, 0, &bound.readback, 0, bound.positions.size());
+        encoder.copy_buffer_to_buffer(
+            &bound.positions,
+            0,
+            &bound.readback,
+            0,
+            bound.positions.size(),
+        );
         self.queue.submit([encoder.finish()]);
-        self.read(&bound.readback, bound.positions.size(), |i, v| positions[i] = v);
+        self.read(&bound.readback, bound.positions.size(), |i, v| {
+            positions[i] = v
+        });
         true
     }
 
@@ -415,12 +538,22 @@ impl GpuBackend {
     /// backend can take over mid-simulation.
     pub fn download_motion(&mut self, state: &mut State) {
         let Some(bound) = &self.bound else { return };
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         encoder.copy_buffer_to_buffer(&bound.motion, 0, &bound.readback, 0, bound.motion.size());
         self.queue.submit([encoder.finish()]);
-        let State { previous, velocities, .. } = state;
+        let State {
+            previous,
+            velocities,
+            ..
+        } = state;
         self.read(&bound.readback, bound.motion.size(), |i, v| {
-            if i % 2 == 0 { previous[i / 2] = v } else { velocities[i / 2] = v }
+            if i % 2 == 0 {
+                previous[i / 2] = v
+            } else {
+                velocities[i / 2] = v
+            }
         });
     }
 

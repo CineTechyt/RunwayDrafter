@@ -86,7 +86,9 @@ pub fn fit(model: &BodyModel, params: &mut BodyParams, which: Measure, target: f
     }
 
     let morphs = controls(which);
-    let Some(&first) = morphs.first() else { return read(params) };
+    let Some(&first) = morphs.first() else {
+        return read(params);
+    };
     let mut trial = *params;
     let value = solve(
         |value| {
@@ -136,7 +138,11 @@ enum Control {
 
 impl Control {
     fn of(which: Measure) -> Self {
-        if which == Measure::Height { Control::Scale } else { Control::Morphs(controls(which)) }
+        if which == Measure::Height {
+            Control::Scale
+        } else {
+            Control::Morphs(controls(which))
+        }
     }
 
     fn get(self, params: &BodyParams) -> f32 {
@@ -175,7 +181,9 @@ impl Control {
 fn solve_linear(mut a: Vec<Vec<f32>>, mut b: Vec<f32>) -> Vec<f32> {
     let n = b.len();
     for column in 0..n {
-        let pivot = (column..n).max_by(|&i, &j| a[i][column].abs().total_cmp(&a[j][column].abs())).unwrap_or(column);
+        let pivot = (column..n)
+            .max_by(|&i, &j| a[i][column].abs().total_cmp(&a[j][column].abs()))
+            .unwrap_or(column);
         a.swap(column, pivot);
         b.swap(column, pivot);
         if a[column][column].abs() < 1e-12 {
@@ -192,7 +200,11 @@ fn solve_linear(mut a: Vec<Vec<f32>>, mut b: Vec<f32>) -> Vec<f32> {
     let mut x = vec![0.0; n];
     for row in (0..n).rev() {
         let rest: f32 = (row + 1..n).map(|k| a[row][k] * x[k]).sum();
-        x[row] = if a[row][row].abs() < 1e-12 { 0.0 } else { (b[row] - rest) / a[row][row] };
+        x[row] = if a[row][row].abs() < 1e-12 {
+            0.0
+        } else {
+            (b[row] - rest) / a[row][row]
+        };
     }
     x
 }
@@ -200,16 +212,29 @@ fn solve_linear(mut a: Vec<Vec<f32>>, mut b: Vec<f32>) -> Vec<f32> {
 /// Newton iterations on all controls at once. Returns the measured values.
 fn newton(model: &BodyModel, params: &mut BodyParams, targets: &[(Measure, f32)]) -> Vec<f32> {
     use rayon::prelude::*;
-    let controls: Vec<Control> = targets.iter().map(|(which, _)| Control::of(*which)).collect();
+    let controls: Vec<Control> = targets
+        .iter()
+        .map(|(which, _)| Control::of(*which))
+        .collect();
     let read = |params: &BodyParams| {
         let measured = measure(model, &model.build(params));
-        targets.iter().map(|(which, _)| measured.get(*which)).collect::<Vec<f32>>()
+        targets
+            .iter()
+            .map(|(which, _)| measured.get(*which))
+            .collect::<Vec<f32>>()
     };
     let n = targets.len();
     let mut measured = read(params);
     for _ in 0..10 {
-        let residual: Vec<f32> = targets.iter().zip(&measured).map(|((_, target), m)| target - m).collect();
-        if residual.iter().all(|r| r.abs() < 0.2 * FitReport::TOLERANCE) {
+        let residual: Vec<f32> = targets
+            .iter()
+            .zip(&measured)
+            .map(|((_, target), m)| target - m)
+            .collect();
+        if residual
+            .iter()
+            .all(|r| r.abs() < 0.2 * FitReport::TOLERANCE)
+        {
             break;
         }
         // Jacobian by finite differences, one column per control. Each
@@ -220,10 +245,18 @@ fn newton(model: &BodyModel, params: &mut BodyParams, targets: &[(Measure, f32)]
                 let (step, _) = control.steps();
                 let value = control.get(params);
                 // Step inwards when sitting on the upper bound.
-                let step = if value + step > control.bounds().1 { -step } else { step };
+                let step = if value + step > control.bounds().1 {
+                    -step
+                } else {
+                    step
+                };
                 let mut trial = *params;
                 control.set(&mut trial, value + step);
-                read(&trial).iter().zip(&measured).map(|(moved, base)| (moved - base) / step).collect()
+                read(&trial)
+                    .iter()
+                    .zip(&measured)
+                    .map(|(moved, base)| (moved - base) / step)
+                    .collect()
             })
             .collect();
 
@@ -267,16 +300,32 @@ fn newton(model: &BodyModel, params: &mut BodyParams, targets: &[(Measure, f32)]
 /// A girth can only move so far on its own. When girths end up out of
 /// reach, the body fat is adjusted, as that is what distinguishes such a
 /// body from the current one, and the solve is repeated.
-pub fn fit_all(model: &BodyModel, params: &mut BodyParams, targets: &[(Measure, f32)]) -> FitReport {
+pub fn fit_all(
+    model: &BodyModel,
+    params: &mut BodyParams,
+    targets: &[(Measure, f32)],
+) -> FitReport {
     if targets.is_empty() {
         return FitReport::default();
     }
-    const GIRTHS: [Measure; 7] = [Measure::Bust, Measure::Waist, Measure::Hips, Measure::Thigh, Measure::Calf, Measure::UpperArm, Measure::Neck];
+    const GIRTHS: [Measure; 7] = [
+        Measure::Bust,
+        Measure::Waist,
+        Measure::Hips,
+        Measure::Thigh,
+        Measure::Calf,
+        Measure::UpperArm,
+        Measure::Neck,
+    ];
     let start_weight = params.weight;
     let mut best: Option<(f32, BodyParams, Vec<f32>)> = None;
     for _ in 0..7 {
         let measured = newton(model, params, targets);
-        let worst = targets.iter().zip(&measured).map(|((_, t), m)| (t - m).abs()).fold(0.0, f32::max);
+        let worst = targets
+            .iter()
+            .zip(&measured)
+            .map(|((_, t), m)| (t - m).abs())
+            .fold(0.0, f32::max);
         if best.as_ref().is_none_or(|(error, ..)| worst < *error) {
             best = Some((worst, *params, measured.clone()));
         }
@@ -287,7 +336,9 @@ pub fn fit_all(model: &BodyModel, params: &mut BodyParams, targets: &[(Measure, 
         let pull: f32 = targets
             .iter()
             .zip(&measured)
-            .filter(|((which, target), m)| GIRTHS.contains(which) && (target - **m).abs() >= FitReport::TOLERANCE)
+            .filter(|((which, target), m)| {
+                GIRTHS.contains(which) && (target - **m).abs() >= FitReport::TOLERANCE
+            })
             .map(|((_, target), m)| (target - m).signum())
             .sum();
         let weight = (params.weight + 0.12 * pull.signum()).clamp(0.0, 1.0);

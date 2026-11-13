@@ -47,7 +47,13 @@ pub enum Motion {
 }
 
 impl Motion {
-    pub const ALL: [Motion; 5] = [Motion::Walk, Motion::StiffWalk, Motion::HipSwayWalk, Motion::SitOnChair, Motion::Yoga];
+    pub const ALL: [Motion; 5] = [
+        Motion::Walk,
+        Motion::StiffWalk,
+        Motion::HipSwayWalk,
+        Motion::SitOnChair,
+        Motion::Yoga,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -72,7 +78,9 @@ impl Motion {
     pub fn angles(self, time: f32) -> Angles {
         let t = time.rem_euclid(self.duration());
         let mut angles = match self {
-            Motion::Walk | Motion::StiffWalk | Motion::HipSwayWalk => walk_angles(&WalkPlan::of(self), t),
+            Motion::Walk | Motion::StiffWalk | Motion::HipSwayWalk => {
+                walk_angles(&WalkPlan::of(self), t)
+            }
             Motion::SitOnChair => sitting().sample(t),
             Motion::Yoga => yoga().sample(t),
         };
@@ -306,7 +314,9 @@ impl Angles {
 
         // --- pelvis: moves everything; legs and spine are set against it,
         // so their angles are relative to the room, not the pelvis.
-        let pelvis = Quat::from_rotation_y(a(Joint::PelvisTurn)) * Quat::from_rotation_z(a(Joint::PelvisList)) * Quat::from_rotation_x(a(Joint::PelvisTilt));
+        let pelvis = Quat::from_rotation_y(a(Joint::PelvisTurn))
+            * Quat::from_rotation_z(a(Joint::PelvisList))
+            * Quat::from_rotation_x(a(Joint::PelvisTilt));
         pose.set("root", Quat::from_rotation_y(a(Joint::Heading)) * pelvis);
         let undo = pelvis.inverse();
 
@@ -316,7 +326,13 @@ impl Angles {
                 * Quat::from_rotation_z(-a(Joint::SpineSide) * share)
                 * Quat::from_rotation_x(a(Joint::SpineFlex) * share)
         };
-        for (bone, share) in [("spine05", 0.14), ("spine04", 0.2), ("spine03", 0.22), ("spine02", 0.24), ("spine01", 0.2)] {
+        for (bone, share) in [
+            ("spine05", 0.14),
+            ("spine04", 0.2),
+            ("spine03", 0.22),
+            ("spine02", 0.24),
+            ("spine01", 0.2),
+        ] {
             let q = spine(share);
             pose.set(bone, if bone == "spine05" { undo * q } else { q });
         }
@@ -325,7 +341,12 @@ impl Angles {
                 * Quat::from_rotation_z(-a(Joint::NeckSide) * share)
                 * Quat::from_rotation_x(a(Joint::NeckFlex) * share)
         };
-        for (bone, share) in [("neck01", 0.3), ("neck02", 0.3), ("neck03", 0.15), ("head", 0.25)] {
+        for (bone, share) in [
+            ("neck01", 0.3),
+            ("neck02", 0.3),
+            ("neck03", 0.15),
+            ("head", 0.25),
+        ] {
             pose.set(bone, neck(share));
         }
 
@@ -340,21 +361,40 @@ impl Angles {
             let girdle_lift = 0.2 * (raise - 60.0).max(0.0) + 0.15 * (swing.abs() - 70.0).max(0.0);
             let delta = (raise - rig.arm_raise).to_radians();
             let shrug = (self.get(Joint::Shrug(side)) + girdle_lift * 0.5).to_radians();
-            pose.set(&bone("clavicle"), Quat::from_rotation_z(s * (shrug + 0.08 * delta)));
-            pose.set(&bone("shoulder01"), Quat::from_rotation_z(s * (girdle_lift * 0.5).to_radians() * 0.6 + s * 0.12 * delta));
-            let twist = Quat::from_axis_angle(rig.arm_axis[side as usize], -s * a(Joint::ArmTwist(side)));
-            let upper = Quat::from_rotation_x(-swing.to_radians()) * Quat::from_rotation_z(s * 0.8 * delta) * twist;
+            pose.set(
+                &bone("clavicle"),
+                Quat::from_rotation_z(s * (shrug + 0.08 * delta)),
+            );
+            pose.set(
+                &bone("shoulder01"),
+                Quat::from_rotation_z(
+                    s * (girdle_lift * 0.5).to_radians() * 0.6 + s * 0.12 * delta,
+                ),
+            );
+            let twist =
+                Quat::from_axis_angle(rig.arm_axis[side as usize], -s * a(Joint::ArmTwist(side)));
+            let upper = Quat::from_rotation_x(-swing.to_radians())
+                * Quat::from_rotation_z(s * 0.8 * delta)
+                * twist;
             pose.set(&bone("upperarm01"), upper);
             let elbow = (self.get(Joint::Elbow(side)) - rig.elbow).to_radians();
             let fold = rig.elbow_axis[side as usize];
             pose.set(&bone("lowerarm01"), Quat::from_axis_angle(fold, elbow));
-            pose.set(&bone("wrist"), Quat::from_axis_angle(fold, a(Joint::Wrist(side))));
+            pose.set(
+                &bone("wrist"),
+                Quat::from_axis_angle(fold, a(Joint::Wrist(side))),
+            );
 
             // --- leg.
             let spread = (self.get(Joint::HipSpread(side)) - rig.leg_spread).to_radians();
-            let leg = Quat::from_rotation_x(-a(Joint::HipFlex(side))) * Quat::from_rotation_z(s * spread) * Quat::from_rotation_y(s * a(Joint::HipTurn(side)));
+            let leg = Quat::from_rotation_x(-a(Joint::HipFlex(side)))
+                * Quat::from_rotation_z(s * spread)
+                * Quat::from_rotation_y(s * a(Joint::HipTurn(side)));
             pose.set(&bone("upperleg01"), undo * leg);
-            pose.set(&bone("lowerleg01"), Quat::from_rotation_x(a(Joint::Knee(side))));
+            pose.set(
+                &bone("lowerleg01"),
+                Quat::from_rotation_x(a(Joint::Knee(side))),
+            );
             pose.set(&bone("foot"), Quat::from_rotation_x(-a(Joint::Ankle(side))));
         }
 
@@ -380,10 +420,18 @@ struct Rig {
 impl Rig {
     fn new(model: &BodyModel, rest: &BodyMesh) -> Self {
         let joint = |name: &str| model.bone(name).map(|i| rest.joints[i].head);
-        let mut rig = Rig { arm_raise: 40.0, elbow: 0.0, leg_spread: 4.0, arm_axis: [Vec3::NEG_Y; 2], elbow_axis: [Vec3::X; 2] };
+        let mut rig = Rig {
+            arm_raise: 40.0,
+            elbow: 0.0,
+            leg_spread: 4.0,
+            arm_axis: [Vec3::NEG_Y; 2],
+            elbow_axis: [Vec3::X; 2],
+        };
         for side in Side::BOTH {
             let bone = |stem: &str| joint(&format!("{stem}.{}", side.suffix()));
-            if let (Some(shoulder), Some(elbow), Some(wrist)) = (bone("upperarm01"), bone("lowerarm01"), bone("wrist")) {
+            if let (Some(shoulder), Some(elbow), Some(wrist)) =
+                (bone("upperarm01"), bone("lowerarm01"), bone("wrist"))
+            {
                 let upper = (elbow - shoulder).normalize_or(Vec3::NEG_Y);
                 let fore = (wrist - elbow).normalize_or(upper);
                 rig.arm_axis[side as usize] = upper;
@@ -415,7 +463,10 @@ struct Keys {
 
 impl Keys {
     fn new() -> Self {
-        Self { times: Vec::new(), poses: Vec::new() }
+        Self {
+            times: Vec::new(),
+            poses: Vec::new(),
+        }
     }
 
     /// Adds a key at `time`; `edit` changes a copy of the previous pose.
@@ -456,7 +507,11 @@ impl Keys {
         if t >= self.times[n - 1] {
             return value(n - 1);
         }
-        let k = self.times.windows(2).position(|w| t < w[1]).unwrap_or(n - 2);
+        let k = self
+            .times
+            .windows(2)
+            .position(|w| t < w[1])
+            .unwrap_or(n - 2);
         let (t0, t1) = (self.times[k], self.times[k + 1]);
         let h = (t1 - t0).max(1e-4);
         // Fritsch-Carlson slopes: zero at a turning point or a hold.
@@ -466,12 +521,19 @@ impl Keys {
             }
             let before = (value(k) - value(k - 1)) / (self.times[k] - self.times[k - 1]).max(1e-4);
             let after = (value(k + 1) - value(k)) / (self.times[k + 1] - self.times[k]).max(1e-4);
-            if before * after <= 0.0 { 0.0 } else { 2.0 / (1.0 / before + 1.0 / after) }
+            if before * after <= 0.0 {
+                0.0
+            } else {
+                2.0 / (1.0 / before + 1.0 / after)
+            }
         };
         let (p0, p1, m0, m1) = (value(k), value(k + 1), slope(k) * h, slope(k + 1) * h);
         let u = (t - t0) / h;
         let (u2, u3) = (u * u, u * u * u);
-        (2.0 * u3 - 3.0 * u2 + 1.0) * p0 + (u3 - 2.0 * u2 + u) * m0 + (-2.0 * u3 + 3.0 * u2) * p1 + (u3 - u2) * m1
+        (2.0 * u3 - 3.0 * u2 + 1.0) * p0
+            + (u3 - 2.0 * u2 + u) * m0
+            + (-2.0 * u3 + 3.0 * u2) * p1
+            + (u3 - u2) * m1
     }
 }
 
@@ -630,10 +692,16 @@ impl Gait {
             );
             a.set(
                 Joint::Ankle(side),
-                self.ankle * (-6.0 * bump(p, 0.06, 0.04) + 9.0 * bump(p, 0.42, 0.11) - 15.0 * bump(p, 0.62, 0.05) + 5.0 * bump(p, 0.84, 0.08)),
+                self.ankle
+                    * (-6.0 * bump(p, 0.06, 0.04) + 9.0 * bump(p, 0.42, 0.11)
+                        - 15.0 * bump(p, 0.62, 0.05)
+                        + 5.0 * bump(p, 0.84, 0.08)),
             );
             // Feet land towards the centre line, and come back out in the swing.
-            a.set(Joint::HipSpread(side), 4.0 - self.cross * (1.0 - bump(p, 0.72, 0.14)));
+            a.set(
+                Joint::HipSpread(side),
+                4.0 - self.cross * (1.0 - bump(p, 0.72, 0.14)),
+            );
             // Flat on the floor between rolling down off the heel (10 % of
             // the stride) and the heel rising (38 %); see `foot_roll`.
             let planted = smoothstep(0.04, 0.1, p) * (1.0 - smoothstep(0.38, 0.44, p));
@@ -644,13 +712,25 @@ impl Gait {
             let arm = swing(0.0);
             a.set(Joint::ArmSwing(side), arm);
             let forearm = swing(0.05 * self.loose);
-            a.set(Joint::Elbow(side), self.elbow + self.elbow_swing * (forearm / self.arm.max(1.0)).max(0.0));
+            a.set(
+                Joint::Elbow(side),
+                self.elbow + self.elbow_swing * (forearm / self.arm.max(1.0)).max(0.0),
+            );
             let hand = swing(0.1 * self.loose);
-            a.set(Joint::Wrist(side), 4.0 + 10.0 * self.loose * (hand - arm) / self.arm.max(1.0));
-            a.set(Joint::ArmRaise(side), self.arm_out + 2.0 * self.loose * bump(p, 0.25, 0.1));
+            a.set(
+                Joint::Wrist(side),
+                4.0 + 10.0 * self.loose * (hand - arm) / self.arm.max(1.0),
+            );
+            a.set(
+                Joint::ArmRaise(side),
+                self.arm_out + 2.0 * self.loose * bump(p, 0.25, 0.1),
+            );
             a.set(Joint::ArmTwist(side), 6.0);
             // The shoulder rises a little as its arm swings forward.
-            a.set(Joint::Shrug(side), self.shrug + self.shoulder_roll * 0.5 * (1.0 + (arm - 3.0) / self.arm.max(1.0)));
+            a.set(
+                Joint::Shrug(side),
+                self.shrug + self.shoulder_roll * 0.5 * (1.0 + (arm - 3.0) / self.arm.max(1.0)),
+            );
         }
         let left = wave(phase);
         let stance = (TAU * phase).sin(); // + while on the left foot
@@ -664,7 +744,10 @@ impl Gait {
         a.set(Joint::NeckSide, -0.5 * self.pelvis_drop * stance);
         a.set(Joint::SpineFlex, self.lean);
         a.set(Joint::NeckFlex, -0.5 * self.lean);
-        a.set(Joint::PelvisTilt, 0.5 * self.lean + 2.0 * (2.0 * TAU * phase).cos());
+        a.set(
+            Joint::PelvisTilt,
+            0.5 * self.lean + 2.0 * (2.0 * TAU * phase).cos(),
+        );
         // The hips follow the feet; nothing else balances them.
         a.set(Joint::Balance, 0.0);
         a
@@ -680,7 +763,10 @@ struct Runway {
     radius: f32,
 }
 
-const RUNWAY: Runway = Runway { straight: 2.4, radius: 0.5 };
+const RUNWAY: Runway = Runway {
+    straight: 2.4,
+    radius: 0.5,
+};
 
 impl Runway {
     fn length(&self) -> f32 {
@@ -703,7 +789,10 @@ impl Runway {
             (Vec3::new(2.0 * r, 0.0, 0.5 * l - (d - l - arc)), PI)
         } else {
             let a = (d - 2.0 * l - arc) / r;
-            (Vec3::new(r + r * a.cos(), 0.0, -0.5 * l - r * a.sin()), PI + a)
+            (
+                Vec3::new(r + r * a.cos(), 0.0, -0.5 * l - r * a.sin()),
+                PI + a,
+            )
         };
         (point - Vec3::new(r, 0.0, 0.0), heading)
     }
@@ -735,7 +824,14 @@ impl WalkPlan {
             _ => (1.12, 0.07, 0.022, 0.026),
         };
         let strides = (RUNWAY.length() / stride).round().max(1.0);
-        WalkPlan { gait, stride: RUNWAY.length() / strides, strides, track, sway, bob }
+        WalkPlan {
+            gait,
+            stride: RUNWAY.length() / strides,
+            strides,
+            track,
+            sway,
+            bob,
+        }
     }
 
     fn duration(&self) -> f32 {
@@ -754,7 +850,10 @@ impl WalkPlan {
         let (point, heading) = RUNWAY.at(self.speed() * strike + 0.27 * self.stride);
         let left = Vec3::new(heading.cos(), 0.0, -heading.sin());
         // Toes turned out a little.
-        (point + left * side.sign() * self.track, heading + side.sign() * 6f32.to_radians())
+        (
+            point + left * side.sign() * self.track,
+            heading + side.sign() * 6f32.to_radians(),
+        )
     }
 }
 
@@ -781,17 +880,27 @@ fn foot_roll(p: f32) -> (f32, Pivot) {
     const PUSH: f32 = 50.0;
     if p < 0.1 {
         // Heel strike, rolling down onto the sole.
-        ((STRIKE * (1.0 - smoother(p / 0.1))).to_radians(), Pivot::Heel)
+        (
+            (STRIKE * (1.0 - smoother(p / 0.1))).to_radians(),
+            Pivot::Heel,
+        )
     } else if p < 0.38 {
         (0.0, Pivot::Heel)
     } else if p < 0.62 {
         // The heel rises and the foot peels off over the toes.
-        ((PUSH * smoother((p - 0.38) / 0.24)).to_radians(), Pivot::Toe)
+        (
+            (PUSH * smoother((p - 0.38) / 0.24)).to_radians(),
+            Pivot::Toe,
+        )
     } else {
         // In the air: from the push-off, through level, to the toes up for
         // the next heel strike.
         let u = (p - 0.62) / 0.38;
-        let tilt = if u < 0.45 { PUSH * (1.0 - smoother(u / 0.45)) } else { STRIKE * smoother((u - 0.45) / 0.55) };
+        let tilt = if u < 0.45 {
+            PUSH * (1.0 - smoother(u / 0.45))
+        } else {
+            STRIKE * smoother((u - 0.45) / 0.55)
+        };
         (tilt.to_radians(), Pivot::Ankle)
     }
 }
@@ -802,12 +911,20 @@ fn foot_roll(p: f32) -> (f32, Pivot) {
 
 fn seated_pose() -> Angles {
     let mut a = Angles::default();
-    a.both(Joint::HipFlex, 88.0).both(Joint::Knee, 92.0).both(Joint::Ankle, 6.0).both(Joint::HipSpread, 7.0).both(Joint::HipTurn, 8.0);
+    a.both(Joint::HipFlex, 88.0)
+        .both(Joint::Knee, 92.0)
+        .both(Joint::Ankle, 6.0)
+        .both(Joint::HipSpread, 7.0)
+        .both(Joint::HipTurn, 8.0);
     a.set(Joint::SpineFlex, 4.0).set(Joint::PelvisTilt, -6.0);
     // The chair carries the weight now.
     a.set(Joint::Balance, 0.0);
     // Hands resting on the thighs.
-    a.both(Joint::ArmSwing, 16.0).both(Joint::Elbow, 70.0).both(Joint::ArmRaise, 12.0).both(Joint::ArmTwist, -12.0).both(Joint::Wrist, -8.0);
+    a.both(Joint::ArmSwing, 16.0)
+        .both(Joint::Elbow, 70.0)
+        .both(Joint::ArmRaise, 12.0)
+        .both(Joint::ArmTwist, -12.0)
+        .both(Joint::Wrist, -8.0);
     a
 }
 
@@ -817,40 +934,61 @@ fn sitting() -> Keys {
     k.key(0.0, |_| {}).hold(1.0);
     // Glance down at the chair, a little weight onto the heels.
     k.key(1.6, |a| {
-        a.set(Joint::NeckFlex, 16.0).set(Joint::NeckTurn, 12.0).both(Joint::Knee, 8.0).both(Joint::HipFlex, 6.0).both(Joint::ArmSwing, 10.0);
+        a.set(Joint::NeckFlex, 16.0)
+            .set(Joint::NeckTurn, 12.0)
+            .both(Joint::Knee, 8.0)
+            .both(Joint::HipFlex, 6.0)
+            .both(Joint::ArmSwing, 10.0);
     });
     // Lean forward to keep the balance over the feet as the hips go back.
     k.key(2.4, |a| {
-        a.set(Joint::NeckFlex, 4.0).set(Joint::NeckTurn, 0.0).set(Joint::SpineFlex, 30.0);
-        a.both(Joint::HipFlex, 48.0).both(Joint::Knee, 52.0).both(Joint::Ankle, 16.0);
+        a.set(Joint::NeckFlex, 4.0)
+            .set(Joint::NeckTurn, 0.0)
+            .set(Joint::SpineFlex, 30.0);
+        a.both(Joint::HipFlex, 48.0)
+            .both(Joint::Knee, 52.0)
+            .both(Joint::Ankle, 16.0);
         a.both(Joint::ArmSwing, 28.0).both(Joint::Elbow, 30.0);
     });
     // Down onto the seat.
     k.key(3.3, |a| {
         *a = seated;
-        a.set(Joint::SpineFlex, 22.0).set(Joint::NeckFlex, 0.0).both(Joint::Ankle, 10.0);
+        a.set(Joint::SpineFlex, 22.0)
+            .set(Joint::NeckFlex, 0.0)
+            .both(Joint::Ankle, 10.0);
     });
     // Settle back and sit up.
     k.key(4.1, |a| *a = seated);
     k.hold(5.0);
     // Look around.
     k.key(5.8, |a| {
-        a.set(Joint::NeckTurn, 35.0).set(Joint::SpineTwist, 8.0).set(Joint::NeckSide, 4.0);
+        a.set(Joint::NeckTurn, 35.0)
+            .set(Joint::SpineTwist, 8.0)
+            .set(Joint::NeckSide, 4.0);
     });
     k.hold(6.3);
     k.key(7.0, |a| {
-        a.set(Joint::NeckTurn, -10.0).set(Joint::SpineTwist, -3.0).set(Joint::NeckSide, -2.0);
+        a.set(Joint::NeckTurn, -10.0)
+            .set(Joint::SpineTwist, -3.0)
+            .set(Joint::NeckSide, -2.0);
     });
     k.key(7.4, |a| {
-        a.set(Joint::NeckTurn, 0.0).set(Joint::SpineTwist, 0.0).set(Joint::NeckSide, 0.0);
+        a.set(Joint::NeckTurn, 0.0)
+            .set(Joint::SpineTwist, 0.0)
+            .set(Joint::NeckSide, 0.0);
     });
     // Lean forward, push up from the thighs, stand.
     k.key(7.9, |a| {
         a.set(Joint::SpineFlex, 34.0).set(Joint::NeckFlex, 6.0);
-        a.both(Joint::ArmSwing, 26.0).both(Joint::Elbow, 40.0).both(Joint::Ankle, 14.0);
+        a.both(Joint::ArmSwing, 26.0)
+            .both(Joint::Elbow, 40.0)
+            .both(Joint::Ankle, 14.0);
     });
     k.key(8.7, |a| {
-        a.set(Joint::SpineFlex, 16.0).both(Joint::HipFlex, 30.0).both(Joint::Knee, 30.0).both(Joint::Ankle, 8.0);
+        a.set(Joint::SpineFlex, 16.0)
+            .both(Joint::HipFlex, 30.0)
+            .both(Joint::Knee, 30.0)
+            .both(Joint::Ankle, 8.0);
         // Off the seat: the feet carry the weight again.
         a.set(Joint::Balance, 1.0);
         a.both(Joint::ArmSwing, 12.0).both(Joint::Elbow, 20.0);
@@ -866,16 +1004,28 @@ fn sitting() -> Keys {
 
 fn prayer(a: &mut Angles) {
     // Palms together in front of the chest.
-    a.both(Joint::ArmRaise, 30.0).both(Joint::ArmSwing, 46.0).both(Joint::ArmTwist, -60.0).both(Joint::Elbow, 128.0).both(Joint::Wrist, -30.0);
+    a.both(Joint::ArmRaise, 30.0)
+        .both(Joint::ArmSwing, 46.0)
+        .both(Joint::ArmTwist, -60.0)
+        .both(Joint::Elbow, 128.0)
+        .both(Joint::Wrist, -30.0);
 }
 
 fn overhead(a: &mut Angles) {
-    a.both(Joint::ArmRaise, 172.0).both(Joint::ArmSwing, 6.0).both(Joint::ArmTwist, 20.0).both(Joint::Elbow, 4.0).both(Joint::Wrist, 0.0);
+    a.both(Joint::ArmRaise, 172.0)
+        .both(Joint::ArmSwing, 6.0)
+        .both(Joint::ArmTwist, 20.0)
+        .both(Joint::Elbow, 4.0)
+        .both(Joint::Wrist, 0.0);
 }
 
 fn mountain(a: &mut Angles) {
     *a = Angles::default();
-    a.both(Joint::ArmRaise, 13.0).both(Joint::ArmTwist, 14.0).both(Joint::Elbow, 6.0).both(Joint::HipSpread, 3.0).both(Joint::HipTurn, 3.0);
+    a.both(Joint::ArmRaise, 13.0)
+        .both(Joint::ArmTwist, 14.0)
+        .both(Joint::Elbow, 6.0)
+        .both(Joint::HipSpread, 3.0)
+        .both(Joint::HipTurn, 3.0);
 }
 
 /// Shifts the weight onto the left foot, lifts the right and puts it
@@ -884,17 +1034,26 @@ fn step_right(k: &mut Keys, at: f32, spread: f32, reach: f32) -> f32 {
     use Side::Right;
     // Off the right foot: the hips move over the left one.
     k.key(at + 0.7, |a| {
-        a.set(Joint::Plant(Right), 0.0).set(Joint::Reach(Right), reach);
+        a.set(Joint::Plant(Right), 0.0)
+            .set(Joint::Reach(Right), reach);
     });
     k.key(at + 1.3, |a| {
-        a.set(Joint::HipFlex(Right), 18.0).set(Joint::Knee(Right), 34.0).set(Joint::Ankle(Right), -8.0);
-        a.set(Joint::HipSpread(Right), 0.5 * (a.get(Joint::HipSpread(Right)) + spread));
+        a.set(Joint::HipFlex(Right), 18.0)
+            .set(Joint::Knee(Right), 34.0)
+            .set(Joint::Ankle(Right), -8.0);
+        a.set(
+            Joint::HipSpread(Right),
+            0.5 * (a.get(Joint::HipSpread(Right)) + spread),
+        );
         // Decided as the foot leaves the floor, held until it is down.
         a.set(Joint::Reach(Right), reach);
     });
     // The foot lands with the knee a little bent, as feet do.
     k.key(at + 1.95, |a| {
-        a.set(Joint::HipFlex(Right), 2.0).set(Joint::Knee(Right), 5.0).set(Joint::Ankle(Right), 0.0).set(Joint::HipSpread(Right), spread);
+        a.set(Joint::HipFlex(Right), 2.0)
+            .set(Joint::Knee(Right), 5.0)
+            .set(Joint::Ankle(Right), 0.0)
+            .set(Joint::HipSpread(Right), spread);
         a.set(Joint::Reach(Right), reach);
     });
     // Down, and the weight comes back onto it, gradually.
@@ -914,7 +1073,9 @@ fn yoga() -> Keys {
 
     // Upward salute: arms sweep up the sides on the in-breath.
     k.key(3.0, |a| {
-        a.both(Joint::ArmRaise, 95.0).both(Joint::ArmTwist, 45.0).both(Joint::Elbow, 4.0);
+        a.both(Joint::ArmRaise, 95.0)
+            .both(Joint::ArmTwist, 45.0)
+            .both(Joint::Elbow, 4.0);
     });
     k.key(4.4, |a| {
         overhead(a);
@@ -931,42 +1092,72 @@ fn yoga() -> Keys {
     // Step the right foot out wide, opening the arms.
     let down = step_right(&mut k, 7.6, 40.0, 0.6);
     k.key(down + 0.8, |a| {
-        a.both(Joint::ArmRaise, 88.0).both(Joint::ArmSwing, 0.0).both(Joint::ArmTwist, -5.0).both(Joint::Elbow, 4.0).both(Joint::Wrist, 0.0);
+        a.both(Joint::ArmRaise, 88.0)
+            .both(Joint::ArmSwing, 0.0)
+            .both(Joint::ArmTwist, -5.0)
+            .both(Joint::Elbow, 4.0)
+            .both(Joint::Wrist, 0.0);
         a.set(Joint::NeckFlex, 0.0);
     });
     // Pivot the front foot out, then sink into Warrior II over the left
     // leg: the front knee over the ankle, the back leg straight, the gaze
     // over the front hand.
     k.key(down + 1.5, |a| {
-        a.set(Joint::HipTurn(Left), 80.0).set(Joint::HipTurn(Right), -10.0);
+        a.set(Joint::HipTurn(Left), 80.0)
+            .set(Joint::HipTurn(Right), -10.0);
     });
     k.key(down + 2.9, |a| {
-        a.set(Joint::Knee(Left), 76.0).set(Joint::Ankle(Left), 8.0).set(Joint::HipSpread(Left), 40.0);
+        a.set(Joint::Knee(Left), 76.0)
+            .set(Joint::Ankle(Left), 8.0)
+            .set(Joint::HipSpread(Left), 40.0);
         // The hips sink, the weight towards the front foot.
         a.set(Joint::HipDrop, 0.03).set(Joint::ShiftX, 0.2);
-        a.set(Joint::NeckTurn, 72.0).set(Joint::PelvisList, -3.0).set(Joint::SpineSide, 2.0);
+        a.set(Joint::NeckTurn, 72.0)
+            .set(Joint::PelvisList, -3.0)
+            .set(Joint::SpineSide, 2.0);
     });
     let mut t = down + 4.9;
     k.hold(t);
     // Reverse warrior: the front arm sweeps up and back, the back hand
     // slides down the back leg.
     k.key(t + 1.6, |a| {
-        a.set(Joint::ArmRaise(Left), 158.0).set(Joint::ArmTwist(Left), 30.0);
-        a.set(Joint::ArmRaise(Right), 24.0).set(Joint::ArmSwing(Right), -6.0).set(Joint::Elbow(Right), 8.0);
-        a.set(Joint::SpineSide, -16.0).set(Joint::NeckTurn, 25.0).set(Joint::NeckFlex, -18.0).set(Joint::NeckSide, 0.0);
+        a.set(Joint::ArmRaise(Left), 158.0)
+            .set(Joint::ArmTwist(Left), 30.0);
+        a.set(Joint::ArmRaise(Right), 24.0)
+            .set(Joint::ArmSwing(Right), -6.0)
+            .set(Joint::Elbow(Right), 8.0);
+        a.set(Joint::SpineSide, -16.0)
+            .set(Joint::NeckTurn, 25.0)
+            .set(Joint::NeckFlex, -18.0)
+            .set(Joint::NeckSide, 0.0);
     });
     k.hold(t + 2.8);
     k.key(t + 4.2, |a| {
-        a.both(Joint::ArmRaise, 88.0).both(Joint::ArmTwist, -5.0).both(Joint::ArmSwing, 0.0).both(Joint::Elbow, 4.0);
-        a.set(Joint::SpineSide, 2.0).set(Joint::NeckTurn, 72.0).set(Joint::NeckFlex, 0.0).set(Joint::NeckSide, 0.0);
+        a.both(Joint::ArmRaise, 88.0)
+            .both(Joint::ArmTwist, -5.0)
+            .both(Joint::ArmSwing, 0.0)
+            .both(Joint::Elbow, 4.0);
+        a.set(Joint::SpineSide, 2.0)
+            .set(Joint::NeckTurn, 72.0)
+            .set(Joint::NeckFlex, 0.0)
+            .set(Joint::NeckSide, 0.0);
     });
     // Straighten up, arms down, step back in.
     t += 5.6;
     k.key(t, |a| {
-        a.set(Joint::Knee(Left), 0.0).set(Joint::Ankle(Left), 0.0).set(Joint::HipTurn(Left), 4.0).set(Joint::HipSpread(Left), 4.0);
-        a.set(Joint::HipTurn(Right), 4.0).set(Joint::NeckTurn, 0.0).set(Joint::PelvisList, 0.0).set(Joint::SpineSide, 0.0);
+        a.set(Joint::Knee(Left), 0.0)
+            .set(Joint::Ankle(Left), 0.0)
+            .set(Joint::HipTurn(Left), 4.0)
+            .set(Joint::HipSpread(Left), 4.0);
+        a.set(Joint::HipTurn(Right), 4.0)
+            .set(Joint::NeckTurn, 0.0)
+            .set(Joint::PelvisList, 0.0)
+            .set(Joint::SpineSide, 0.0);
         a.set(Joint::HipDrop, 0.0).set(Joint::ShiftX, 0.0);
-        a.both(Joint::ArmRaise, 13.0).both(Joint::ArmTwist, 14.0).both(Joint::Elbow, 6.0).both(Joint::ArmSwing, 3.0);
+        a.both(Joint::ArmRaise, 13.0)
+            .both(Joint::ArmTwist, 14.0)
+            .both(Joint::Elbow, 6.0)
+            .both(Joint::ArmSwing, 3.0);
     });
     let down = step_right(&mut k, t, 3.0, 0.0);
     k.key(down + 0.6, mountain);
@@ -980,8 +1171,13 @@ fn yoga() -> Keys {
         a.set(Joint::Plant(Right), 0.0).set(Joint::PelvisList, 2.0);
     });
     k.key(t + 3.2, |a| {
-        a.set(Joint::HipFlex(Right), 34.0).set(Joint::HipSpread(Right), 46.0).set(Joint::HipTurn(Right), 62.0).set(Joint::Knee(Right), 128.0);
-        a.set(Joint::Ankle(Right), -18.0).set(Joint::PelvisList, 3.0).set(Joint::SpineSide, 2.0);
+        a.set(Joint::HipFlex(Right), 34.0)
+            .set(Joint::HipSpread(Right), 46.0)
+            .set(Joint::HipTurn(Right), 62.0)
+            .set(Joint::Knee(Right), 128.0);
+        a.set(Joint::Ankle(Right), -18.0)
+            .set(Joint::PelvisList, 3.0)
+            .set(Joint::SpineSide, 2.0);
     });
     k.hold(t + 4.2);
     // Branches up.
@@ -993,8 +1189,14 @@ fn yoga() -> Keys {
     // Down from the tree.
     k.key(t + 9.8, prayer);
     k.key(t + 11.4, |a| {
-        a.set(Joint::HipFlex(Right), 2.0).set(Joint::HipSpread(Right), 3.0).set(Joint::HipTurn(Right), 3.0).set(Joint::Knee(Right), 5.0);
-        a.set(Joint::Ankle(Right), 0.0).set(Joint::PelvisList, 0.0).set(Joint::SpineSide, 0.0).set(Joint::NeckFlex, 0.0);
+        a.set(Joint::HipFlex(Right), 2.0)
+            .set(Joint::HipSpread(Right), 3.0)
+            .set(Joint::HipTurn(Right), 3.0)
+            .set(Joint::Knee(Right), 5.0);
+        a.set(Joint::Ankle(Right), 0.0)
+            .set(Joint::PelvisList, 0.0)
+            .set(Joint::SpineSide, 0.0)
+            .set(Joint::NeckFlex, 0.0);
     });
     k.key(t + 11.6, |a| {
         a.set(Joint::Plant(Right), 0.02);
@@ -1011,12 +1213,14 @@ fn yoga() -> Keys {
     });
     k.key(t + 3.4, |a| {
         a.set(Joint::SpineSide, 22.0).set(Joint::NeckSide, 6.0);
-        a.set(Joint::ArmRaise(Right), 178.0).set(Joint::ArmRaise(Left), 160.0);
+        a.set(Joint::ArmRaise(Right), 178.0)
+            .set(Joint::ArmRaise(Left), 160.0);
     });
     k.hold(t + 4.2);
     k.key(t + 6.2, |a| {
         a.set(Joint::SpineSide, -22.0).set(Joint::NeckSide, -6.0);
-        a.set(Joint::ArmRaise(Left), 178.0).set(Joint::ArmRaise(Right), 160.0);
+        a.set(Joint::ArmRaise(Left), 178.0)
+            .set(Joint::ArmRaise(Right), 160.0);
     });
     k.hold(t + 7.0);
     k.key(t + 8.4, |a| {
@@ -1042,11 +1246,32 @@ fn yoga() -> Keys {
 const SEGMENTS: [(&str, End, &str, End, f32, f32); 8] = [
     ("head", End::Head, "head", End::Tail, 0.081, 0.5),
     ("spine05", End::Head, "neck01", End::Head, 0.497, 0.5),
-    ("upperarm01.?", End::Head, "lowerarm01.?", End::Head, 0.028, 0.436),
+    (
+        "upperarm01.?",
+        End::Head,
+        "lowerarm01.?",
+        End::Head,
+        0.028,
+        0.436,
+    ),
     ("lowerarm01.?", End::Head, "wrist.?", End::Head, 0.016, 0.43),
     ("wrist.?", End::Head, "wrist.?", End::Tail, 0.006, 0.5),
-    ("upperleg01.?", End::Head, "lowerleg01.?", End::Head, 0.1, 0.433),
-    ("lowerleg01.?", End::Head, "foot.?", End::Head, 0.0465, 0.433),
+    (
+        "upperleg01.?",
+        End::Head,
+        "lowerleg01.?",
+        End::Head,
+        0.1,
+        0.433,
+    ),
+    (
+        "lowerleg01.?",
+        End::Head,
+        "foot.?",
+        End::Head,
+        0.0465,
+        0.433,
+    ),
     ("foot.?", End::Head, "foot.?", End::Tail, 0.0145, 0.5),
 ];
 
@@ -1070,10 +1295,21 @@ impl Skeleton {
     fn new(model: &BodyModel) -> Option<Self> {
         let mut segments = Vec::new();
         for &(from, from_end, to, to_end, mass, along) in &SEGMENTS {
-            let sides: &[&str] = if from.contains('?') { &["L", "R"] } else { &[""] };
+            let sides: &[&str] = if from.contains('?') {
+                &["L", "R"]
+            } else {
+                &[""]
+            };
             for side in sides {
                 let name = |n: &str| n.replace('?', side);
-                segments.push((model.bone(&name(from))?, from_end, model.bone(&name(to))?, to_end, mass, along));
+                segments.push((
+                    model.bone(&name(from))?,
+                    from_end,
+                    model.bone(&name(to))?,
+                    to_end,
+                    mass,
+                    along,
+                ));
             }
         }
         let mut legs = [[0; 3]; 2];
@@ -1088,7 +1324,12 @@ impl Skeleton {
                 names[side as usize][k] = name;
             }
         }
-        Some(Self { segments, legs, leg_parents, names })
+        Some(Self {
+            segments,
+            legs,
+            leg_parents,
+            names,
+        })
     }
 
     fn point(rest: &BodyMesh, bones: &[Affine3A], bone: usize, end: End) -> Vec3 {
@@ -1102,7 +1343,10 @@ impl Skeleton {
     fn centre_of_mass(&self, rest: &BodyMesh, bones: &[Affine3A]) -> Vec3 {
         let (mut sum, mut mass) = (Vec3::ZERO, 0.0);
         for &(from, from_end, to, to_end, m, along) in &self.segments {
-            let (a, b) = (Self::point(rest, bones, from, from_end), Self::point(rest, bones, to, to_end));
+            let (a, b) = (
+                Self::point(rest, bones, from, from_end),
+                Self::point(rest, bones, to, to_end),
+            );
             sum += (a + (b - a) * along) * m;
             mass += m;
         }
@@ -1133,7 +1377,17 @@ fn rotation(transform: &Affine3A) -> Quat {
 /// with the keyframed ones by `weight`; the foot lies flat as far as
 /// `flatten` says.
 #[allow(clippy::too_many_arguments)]
-fn reach(pose: &mut Pose, skeleton: &Skeleton, rest: &BodyMesh, bones: &[Affine3A], side: usize, target: Vec3, offset: Vec3, weight: f32, flatten: f32) {
+fn reach(
+    pose: &mut Pose,
+    skeleton: &Skeleton,
+    rest: &BodyMesh,
+    bones: &[Affine3A],
+    side: usize,
+    target: Vec3,
+    offset: Vec3,
+    weight: f32,
+    flatten: f32,
+) {
     // A foot on the floor lies flat on it, turned the way the keyframes
     // turn it. The turn is read off the foot's sideways axis, which stays
     // level however far the toes point down (at toe-off the foot's length
@@ -1144,12 +1398,24 @@ fn reach(pose: &mut Pose, skeleton: &Skeleton, rest: &BodyMesh, bones: &[Affine3
     let across = bones[foot].transform_vector3(Vec3::X);
     let yaw = (-across.z).atan2(across.x);
     let foot_world = blend(rotation(&bones[foot]), Quat::from_rotation_y(yaw), flatten);
-    reach_with(pose, skeleton, rest, bones, side, target, offset, weight, foot_world);
+    reach_with(
+        pose, skeleton, rest, bones, side, target, offset, weight, foot_world,
+    );
 }
 
 /// Like [`reach`], with the foot's orientation in the world given.
 #[allow(clippy::too_many_arguments)]
-fn reach_with(pose: &mut Pose, skeleton: &Skeleton, rest: &BodyMesh, bones: &[Affine3A], side: usize, target: Vec3, offset: Vec3, weight: f32, foot_world: Quat) {
+fn reach_with(
+    pose: &mut Pose,
+    skeleton: &Skeleton,
+    rest: &BodyMesh,
+    bones: &[Affine3A],
+    side: usize,
+    target: Vec3,
+    offset: Vec3,
+    weight: f32,
+    foot_world: Quat,
+) {
     let [thigh, shin, foot] = skeleton.legs[side];
     let hip = Skeleton::point(rest, bones, thigh, End::Head) + offset;
     let knee = Skeleton::point(rest, bones, shin, End::Head) + offset;
@@ -1167,7 +1433,11 @@ fn reach_with(pose: &mut Pose, skeleton: &Skeleton, rest: &BodyMesh, bones: &[Af
     let full = upper + lower;
     let (soft, most) = (0.97 * full, 0.99 * full);
     let wanted = reach.length();
-    let eased = if wanted > soft { soft + (most - soft) * (1.0 - (-(wanted - soft) / (most - soft)).exp()) } else { wanted };
+    let eased = if wanted > soft {
+        soft + (most - soft) * (1.0 - (-(wanted - soft) / (most - soft)).exp())
+    } else {
+        wanted
+    };
     let distance = eased.max((upper - lower).abs() + 1e-3);
     let along = reach.normalize_or(Vec3::NEG_Y);
     // Which way the knee points: along the thigh's own forward axis, so
@@ -1175,14 +1445,18 @@ fn reach_with(pose: &mut Pose, skeleton: &Skeleton, rest: &BodyMesh, bones: &[Af
     // flip as the leg straightens.
     let pole = bones[thigh].transform_vector3(Vec3::Z);
     let pole = (pole - along * pole.dot(along)).normalize_or(Vec3::Z);
-    let cos = ((upper * upper + distance * distance - lower * lower) / (2.0 * upper * distance)).clamp(-1.0, 1.0);
+    let cos = ((upper * upper + distance * distance - lower * lower) / (2.0 * upper * distance))
+        .clamp(-1.0, 1.0);
     let new_knee = hip + (along * cos + pole * (1.0 - cos * cos).sqrt()) * upper;
     let new_ankle = hip + along * distance;
 
     let swing_thigh = Quat::from_rotation_arc((knee - hip) / upper, (new_knee - hip) / upper);
     let thigh_world = swing_thigh * rotation(&bones[thigh]);
     let shin_dir = swing_thigh * ((ankle - knee) / lower);
-    let swing_shin = Quat::from_rotation_arc(shin_dir.normalize(), (new_ankle - new_knee).normalize_or(shin_dir));
+    let swing_shin = Quat::from_rotation_arc(
+        shin_dir.normalize(),
+        (new_ankle - new_knee).normalize_or(shin_dir),
+    );
     let shin_world = swing_shin * swing_thigh * rotation(&bones[shin]);
 
     // Back to rotations relative to each bone's parent. The bones between
@@ -1219,21 +1493,49 @@ fn place_feet(
     }
     for &(side, target, near) in landing {
         let swing = skeleton.ankle(rest, keyed, side) + offset;
-        reach(pose, skeleton, rest, keyed, side, swing + (target - swing) * near, offset, near, near);
+        reach(
+            pose,
+            skeleton,
+            rest,
+            keyed,
+            side,
+            swing + (target - swing) * near,
+            offset,
+            near,
+            near,
+        );
     }
     for (side, release) in released.iter().enumerate() {
         if let Some((lock, fade)) = release {
             // From where it stood, at rest, onto its keyframed swing.
             let swing = skeleton.ankle(rest, keyed, side) + offset;
             let left = smooth(*fade);
-            reach(pose, skeleton, rest, keyed, side, swing + (*lock - swing) * left, offset, left, left);
+            reach(
+                pose,
+                skeleton,
+                rest,
+                keyed,
+                side,
+                swing + (*lock - swing) * left,
+                offset,
+                left,
+                left,
+            );
         }
     }
 }
 
 /// Where a foot coming down will touch the floor: below where the leg
 /// points, or `Reach` metres out from the hip in that direction.
-fn landing_target(skeleton: &Skeleton, rest: &BodyMesh, bones: &[Affine3A], angles: &Angles, side: usize, offset: Vec3, ground: Option<f32>) -> Vec3 {
+fn landing_target(
+    skeleton: &Skeleton,
+    rest: &BodyMesh,
+    bones: &[Affine3A],
+    angles: &Angles,
+    side: usize,
+    offset: Vec3,
+    ground: Option<f32>,
+) -> Vec3 {
     let mut target = skeleton.ankle(rest, bones, side) + offset;
     let reach = angles.get(Joint::Reach(Side::BOTH[side]));
     if reach > 0.0 {
@@ -1279,10 +1581,20 @@ fn relax(a: &mut Angles, t: f32, idle: f32) {
 fn sway(t: f32, single: f32) -> Vec3 {
     use std::f32::consts::TAU;
     let wave = |periods: [f32; 3], phase: f32| {
-        (t * TAU / periods[0] + phase).sin() + 0.6 * (t * TAU / periods[1] + 2.0 * phase).sin() + 0.35 * (t * TAU / periods[2] + 3.0 * phase).sin()
+        (t * TAU / periods[0] + phase).sin()
+            + 0.6 * (t * TAU / periods[1] + 2.0 * phase).sin()
+            + 0.35 * (t * TAU / periods[2] + 3.0 * phase).sin()
     };
-    let calm = Vec3::new(0.0035 * wave([6.7, 2.9, 1.3], 0.3), 0.0, 0.0055 * wave([8.3, 3.7, 1.7], 1.1));
-    let wobble = Vec3::new(0.005 * wave([1.1, 0.71, 0.43], 2.0), 0.0, 0.004 * wave([1.3, 0.83, 0.52], 0.7));
+    let calm = Vec3::new(
+        0.0035 * wave([6.7, 2.9, 1.3], 0.3),
+        0.0,
+        0.0055 * wave([8.3, 3.7, 1.7], 1.1),
+    );
+    let wobble = Vec3::new(
+        0.005 * wave([1.1, 0.71, 0.43], 2.0),
+        0.0,
+        0.004 * wave([1.3, 0.83, 0.52], 0.7),
+    );
     calm + wobble * single
 }
 
@@ -1315,9 +1627,15 @@ impl Performance {
 
     pub fn bake(motion: Motion, model: &BodyModel, rest: &BodyMesh) -> Self {
         let Some(skeleton) = Skeleton::new(model) else {
-            return Self { motion, frames: Vec::new() };
+            return Self {
+                motion,
+                frames: Vec::new(),
+            };
         };
-        if matches!(motion, Motion::Walk | Motion::StiffWalk | Motion::HipSwayWalk) {
+        if matches!(
+            motion,
+            Motion::Walk | Motion::StiffWalk | Motion::HipSwayWalk
+        ) {
             return Self::bake_walk(motion, &skeleton, model, rest);
         }
         let keys = motion.keys();
@@ -1357,14 +1675,19 @@ impl Performance {
                     if let Some((_, fade)) = &mut released[side] {
                         // A walking foot swings away at once; a foot
                         // stepping in a pose lets go more slowly.
-                        let time = if angles.get(Joint::Balance) < 0.5 { 0.25 } else { 0.6 };
+                        let time = if angles.get(Joint::Balance) < 0.5 {
+                            0.25
+                        } else {
+                            0.6
+                        };
                         *fade -= Self::STEP / time;
                         if *fade <= 0.0 {
                             released[side] = None;
                         }
                     }
                 } else if locks[side].is_none() {
-                    let mut lock = landing_target(&skeleton, rest, &bones, &angles, side, previous, None);
+                    let mut lock =
+                        landing_target(&skeleton, rest, &bones, &angles, side, previous, None);
                     match ground {
                         Some(floor) => lock.y = floor,
                         None => ground = Some(lock.y),
@@ -1387,17 +1710,26 @@ impl Performance {
                         let (mut early, mut late) = (coarse - 0.05, coarse);
                         for _ in 0..12 {
                             let mid = 0.5 * (early + late);
-                            if touches(mid) { late = mid } else { early = mid }
+                            if touches(mid) {
+                                late = mid
+                            } else {
+                                early = mid
+                            }
                         }
                         // A walking foot is set down in a fifth of a second.
-                        let window = if angles.get(Joint::Balance) < 0.5 { 0.3 } else { 0.4 };
+                        let window = if angles.get(Joint::Balance) < 0.5 {
+                            0.3
+                        } else {
+                            0.4
+                        };
                         Some((side, smooth((1.0 - late / window).clamp(0.0, 1.0))))
                     })
                     .collect(),
                 None => Vec::new(),
             };
-            let planted: Vec<(usize, Vec3, f32)> =
-                (0..2).filter_map(|side| Some((side, locks[side]?, weights[side]))).collect();
+            let planted: Vec<(usize, Vec3, f32)> = (0..2)
+                .filter_map(|side| Some((side, locks[side]?, weights[side])))
+                .collect();
             let mut offset = Vec3::new(angles.get(Joint::ShiftX), 0.0, angles.get(Joint::ShiftZ));
             if !planted.is_empty() {
                 offset = previous;
@@ -1405,12 +1737,14 @@ impl Performance {
                 let balance = angles.get(Joint::Balance).clamp(0.0, 1.0);
                 // Where the weight goes: between the feet that carry it,
                 // towards the standing leg when at ease, swaying.
-                let mut support = planted.iter().map(|&(_, lock, w)| lock * w).sum::<Vec3>() / total;
+                let mut support =
+                    planted.iter().map(|&(_, lock, w)| lock * w).sum::<Vec3>() / total;
                 if planted.len() == 2 {
                     let side = weight_side(t);
                     let standing = if side > 0.0 { locks[0] } else { locks[1] };
                     if let Some(foot) = standing {
-                        support += (foot - support) * (0.32 * side.abs() * idle * weights[0].min(weights[1]));
+                        support += (foot - support)
+                            * (0.32 * side.abs() * idle * weights[0].min(weights[1]));
                     }
                 }
                 // Shifts move the weight, not the feet.
@@ -1421,7 +1755,11 @@ impl Performance {
                 for _ in 0..3 {
                     // Feet where they were put down, the hips at the height
                     // the legs hold them...
-                    let follow = planted.iter().map(|&(side, lock, w)| (lock - skeleton.ankle(rest, &bones, side)) * w).sum::<Vec3>() / total;
+                    let follow = planted
+                        .iter()
+                        .map(|&(side, lock, w)| (lock - skeleton.ankle(rest, &bones, side)) * w)
+                        .sum::<Vec3>()
+                        / total;
                     // ...and over the feet as far as the body balances.
                     let com = skeleton.centre_of_mass(rest, &bones);
                     let centred = support - com;
@@ -1438,62 +1776,118 @@ impl Performance {
                         .map(|&(side, lock, w)| {
                             let [thigh, _, foot] = skeleton.legs[side];
                             let hip = Skeleton::point(rest, &keyframed, thigh, End::Head);
-                            let extension = (hip.distance(Skeleton::point(rest, &keyframed, foot, End::Head)) - 0.0008).max(0.05);
-                            let across = Vec2::new(lock.x - hip.x - offset.x, lock.z - hip.z - offset.z).length().min(extension);
-                            (lock.y + (extension * extension - across * across).sqrt() - hip.y, w)
+                            let extension =
+                                (hip.distance(Skeleton::point(rest, &keyframed, foot, End::Head))
+                                    - 0.0008)
+                                    .max(0.05);
+                            let across =
+                                Vec2::new(lock.x - hip.x - offset.x, lock.z - hip.z - offset.z)
+                                    .length()
+                                    .min(extension);
+                            (
+                                lock.y + (extension * extension - across * across).sqrt() - hip.y,
+                                w,
+                            )
                         })
                         .collect();
                     let sharpness = 80.0;
                     let top = wanted.iter().map(|h| h.0).fold(f32::MIN, f32::max);
-                    offset.y = top + (wanted.iter().map(|&(y, w)| w * (sharpness * (y - top)).exp()).sum::<f32>() / total).ln() / sharpness
+                    offset.y = top
+                        + (wanted
+                            .iter()
+                            .map(|&(y, w)| w * (sharpness * (y - top)).exp())
+                            .sum::<f32>()
+                            / total)
+                            .ln()
+                            / sharpness
                         - angles.get(Joint::HipDrop);
                     let keyed = &keyframed;
                     // Low enough that every foot on (or reaching for) the
                     // floor can get there: a wide stance lowers the hips.
                     let landing_targets: Vec<(usize, Vec3, f32)> = landing
                         .iter()
-                        .map(|&(side, near)| (side, landing_target(&skeleton, rest, keyed, &angles, side, offset, ground), near))
+                        .map(|&(side, near)| {
+                            (
+                                side,
+                                landing_target(
+                                    &skeleton, rest, keyed, &angles, side, offset, ground,
+                                ),
+                                near,
+                            )
+                        })
                         .collect();
                     // Feet on the floor hold the hips down fully; one just
                     // lifting off lets go of them gradually.
                     let holding: Vec<(usize, Vec3, f32)> = planted
                         .iter()
                         .map(|&(side, lock, _)| (side, lock, 1.0))
-                        .chain(released.iter().enumerate().filter_map(|(side, r)| r.map(|(lock, fade)| (side, lock, smooth(fade)))))
+                        .chain(released.iter().enumerate().filter_map(|(side, r)| {
+                            r.map(|(lock, fade)| (side, lock, smooth(fade)))
+                        }))
                         .chain(landing_targets.iter().copied())
                         .collect();
                     for &(side, target, weight) in &holding {
                         let [thigh, shin, foot] = skeleton.legs[side];
                         let point = |bone: usize| Skeleton::point(rest, keyed, bone, End::Head);
-                        let length = 0.99 * (point(thigh).distance(point(shin)) + point(shin).distance(point(foot)));
+                        let length = 0.99
+                            * (point(thigh).distance(point(shin))
+                                + point(shin).distance(point(foot)));
                         let hip = point(thigh) + offset;
                         // A foot further out than the leg reaches from here
                         // pulls the hips down until it does (a long step bends
                         // the standing knee).
-                        let across = Vec3::new(target.x - hip.x, 0.0, target.z - hip.z).length().min(0.97 * length);
-                        let highest = target.y + (length * length - across * across).sqrt() - point(thigh).y;
+                        let across = Vec3::new(target.x - hip.x, 0.0, target.z - hip.z)
+                            .length()
+                            .min(0.97 * length);
+                        let highest =
+                            target.y + (length * length - across * across).sqrt() - point(thigh).y;
                         if highest < offset.y {
                             offset.y += (highest - offset.y) * weight;
                         }
                     }
                     pose = angles.to_pose(model, rest);
-                    place_feet(&mut pose, &skeleton, rest, keyed, offset, &planted, &landing_targets, &released);
+                    place_feet(
+                        &mut pose,
+                        &skeleton,
+                        rest,
+                        keyed,
+                        offset,
+                        &planted,
+                        &landing_targets,
+                        &released,
+                    );
                     bones = model.bone_transforms(rest, &pose);
                 }
                 // Through the spring, then the legs reach the feet again from
                 // where the hips actually are.
                 let (position, velocity) = hips.get_or_insert((offset, Vec3::ZERO));
                 let omega = std::f32::consts::TAU * 4.0;
-                *velocity += (omega * omega * (offset - *position) - 2.0 * omega * *velocity) * Self::STEP;
+                *velocity +=
+                    (omega * omega * (offset - *position) - 2.0 * omega * *velocity) * Self::STEP;
                 *position += *velocity * Self::STEP;
                 offset = *position;
                 let keyed = model.bone_transforms(rest, &angles.to_pose(model, rest));
                 pose = angles.to_pose(model, rest);
                 let landing_targets: Vec<(usize, Vec3, f32)> = landing
                     .iter()
-                    .map(|&(side, near)| (side, landing_target(&skeleton, rest, &keyed, &angles, side, offset, ground), near))
+                    .map(|&(side, near)| {
+                        (
+                            side,
+                            landing_target(&skeleton, rest, &keyed, &angles, side, offset, ground),
+                            near,
+                        )
+                    })
                     .collect();
-                place_feet(&mut pose, &skeleton, rest, &keyed, offset, &planted, &landing_targets, &released);
+                place_feet(
+                    &mut pose,
+                    &skeleton,
+                    rest,
+                    &keyed,
+                    offset,
+                    &planted,
+                    &landing_targets,
+                    &released,
+                );
             } else {
                 hips = None;
             }
@@ -1513,14 +1907,20 @@ impl Performance {
         use std::f32::consts::TAU;
         let plan = WalkPlan::of(motion);
         let period = plan.gait.period;
-        let root = model.bone("root").map_or(Vec3::new(0.0, 0.9, 0.0), |i| rest.joints[i].head);
+        let root = model
+            .bone("root")
+            .map_or(Vec3::new(0.0, 0.9, 0.0), |i| rest.joints[i].head);
         // The foot's shape in the modelled pose: ankle, ball of the foot
         // and heel, relative to the ankle.
         let shape = Side::BOTH.map(|side| {
             let joint = rest.joints[skeleton.legs[side as usize][2]];
             let ankle = joint.head;
             let heel = Vec3::new(ankle.x, 0.0, ankle.z - 0.06);
-            (ankle, Vec3::new(joint.tail.x, 0.0, joint.tail.z) - ankle, heel - ankle)
+            (
+                ankle,
+                Vec3::new(joint.tail.x, 0.0, joint.tail.z) - ankle,
+                heel - ankle,
+            )
         });
         // Where the ankle is when the foot rests on `print` tilted by
         // `tilt` about `pivot`.
@@ -1588,9 +1988,12 @@ impl Performance {
                 let point = |bone: usize| Skeleton::point(rest, &keyed, bone, End::Head);
                 // A little short of straight: a leg pushing off is already
                 // bending at the knee.
-                let length = 0.955 * (point(thigh).distance(point(shin)) + point(shin).distance(point(foot)));
+                let length = 0.955
+                    * (point(thigh).distance(point(shin)) + point(shin).distance(point(foot)));
                 let hip = point(thigh) + offset;
-                let across = Vec2::new(ankle.x - hip.x, ankle.z - hip.z).length().min(0.97 * length);
+                let across = Vec2::new(ankle.x - hip.x, ankle.z - hip.z)
+                    .length()
+                    .min(0.97 * length);
                 let highest = ankle.y + (length * length - across * across).sqrt() - point(thigh).y;
                 // A soft minimum: no corner where the limit takes over.
                 let k = 120.0;
@@ -1603,7 +2006,8 @@ impl Performance {
                 *position = offset;
             }
             let omega = TAU * 6.0;
-            *velocity += (omega * omega * (offset - *position) - 2.0 * omega * *velocity) * Self::STEP;
+            *velocity +=
+                (omega * omega * (offset - *position) - 2.0 * omega * *velocity) * Self::STEP;
             *position += *velocity * Self::STEP;
             let offset = *position;
             if frame < count {
@@ -1613,10 +2017,16 @@ impl Performance {
             let mut pose = angles.to_pose(model, rest);
             for (side, &(ankle, yaw, tilt)) in feet.iter().enumerate() {
                 let foot_world = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(tilt);
-                reach_with(&mut pose, skeleton, rest, &keyed, side, ankle, offset, 1.0, foot_world);
+                reach_with(
+                    &mut pose, skeleton, rest, &keyed, side, ankle, offset, 1.0, foot_world,
+                );
             }
             let legs = [0, 1].map(|side| skeleton.names[side].clone().map(|name| pose.get(&name)));
-            frames.push(Frame { legs, offset, idle: 0.0 });
+            frames.push(Frame {
+                legs,
+                offset,
+                idle: 0.0,
+            });
         }
         Self { motion, frames }
     }
@@ -1653,7 +2063,11 @@ impl Performance {
 /// How still and at ease the keyframed body is at `t`: standing on both
 /// feet, legs straight, and barely moving.
 fn stillness(keys: &Keys, t: f32) -> f32 {
-    let (before, now, after) = (keys.sample((t - 0.3).max(0.0)), keys.sample(t), keys.sample(t + 0.3));
+    let (before, now, after) = (
+        keys.sample((t - 0.3).max(0.0)),
+        keys.sample(t),
+        keys.sample(t + 0.3),
+    );
     let speed = (0..COUNT)
         .filter(|&i| !(3..=4).contains(&i))
         .map(|i| (after.0[i] - before.0[i]).abs() / 0.6)
@@ -1712,9 +2126,16 @@ mod tests {
                 let mut difference = (start.0[index] - end.0[index]).abs();
                 if index == Joint::Heading.index() {
                     // 0° and 360° face the same way.
-                    difference = difference.rem_euclid(360.0).min(360.0 - difference.rem_euclid(360.0));
+                    difference = difference
+                        .rem_euclid(360.0)
+                        .min(360.0 - difference.rem_euclid(360.0));
                 }
-                assert!(difference < tolerance, "{motion:?} joint {index}: {} vs {}", start.0[index], end.0[index]);
+                assert!(
+                    difference < tolerance,
+                    "{motion:?} joint {index}: {} vs {}",
+                    start.0[index],
+                    end.0[index]
+                );
             }
         }
     }

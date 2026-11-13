@@ -29,7 +29,10 @@ pub struct EdgeSpan {
 
 impl EdgeSpan {
     pub const fn single(edge: u32) -> Self {
-        Self { first: edge, count: 1 }
+        Self {
+            first: edge,
+            count: 1,
+        }
     }
 
     /// Whether `edge` is part of the span in an outline of `n` edges.
@@ -53,14 +56,22 @@ impl EdgeSpan {
         if n == 0 {
             return None;
         }
-        let covered: Vec<bool> = (0..n).map(|e| self.contains(e, n) || other.contains(e, n)).collect();
+        let covered: Vec<bool> = (0..n)
+            .map(|e| self.contains(e, n) || other.contains(e, n))
+            .collect();
         let count = covered.iter().filter(|&&c| c).count() as u32;
         if count == n {
-            return Some(Self { first: self.first, count: n });
+            return Some(Self {
+                first: self.first,
+                count: n,
+            });
         }
         // The run starts after the one uncovered edge that precedes a covered one.
-        let first = (0..n).find(|&e| covered[e as usize] && !covered[((e + n - 1) % n) as usize])?;
-        let run = (0..n).take_while(|k| covered[((first + k) % n) as usize]).count() as u32;
+        let first =
+            (0..n).find(|&e| covered[e as usize] && !covered[((e + n - 1) % n) as usize])?;
+        let run = (0..n)
+            .take_while(|k| covered[((first + k) % n) as usize])
+            .count() as u32;
         (run == count).then_some(Self { first, count })
     }
 }
@@ -115,7 +126,9 @@ impl Outline {
     }
 
     pub fn span_length(&self, span: EdgeSpan) -> f32 {
-        span.edges(self.edge_count()).map(|e| self.curve(e).length(0.1)).sum()
+        span.edges(self.edge_count())
+            .map(|e| self.curve(e).length(0.1))
+            .sum()
     }
 
     /// Arc-length position of `p` along a span, from 0 (start) to 1 (end).
@@ -126,7 +139,11 @@ impl Outline {
         for pair in points.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             let d = b - a;
-            let t = if d.length_squared() > 0.0 { ((p - a).dot(d) / d.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+            let t = if d.length_squared() > 0.0 {
+                ((p - a).dot(d) / d.length_squared()).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             let distance = (a + d * t).distance(p);
             if distance < best_distance {
                 best_distance = distance;
@@ -180,21 +197,34 @@ impl Outline {
 
         let mut points: Vec<ControlPoint> = Vec::new();
         let mut segments: Vec<Segment> = Vec::new();
-        let mut emit_run = |start: usize, count: usize, start_kind: PointKind, closed_loop: bool| {
-            let span = EdgeSpan { first: start as u32, count: count as u32 };
+        let mut emit_run = |start: usize,
+                            count: usize,
+                            start_kind: PointKind,
+                            closed_loop: bool| {
+            let span = EdgeSpan {
+                first: start as u32,
+                count: count as u32,
+            };
             let raw = source.span_points(span, tolerance * 0.25);
             let length = geometry::polyline_length(&raw);
             // Evenly spaced samples: the fitter weighs every sample alike.
-            let samples = geometry::resample_polyline(&raw, ((length / 2.0).ceil() as u32).clamp(2, 4000));
+            let samples =
+                geometry::resample_polyline(&raw, ((length / 2.0).ceil() as u32).clamp(2, 4000));
             let mut t1 = tangent_out(start);
-            let mut t2 = -source.curve(((start + count - 1) % n) as u32).end_direction();
+            let mut t2 = -source
+                .curve(((start + count - 1) % n) as u32)
+                .end_direction();
             if closed_loop {
                 // A loop without corners: one shared tangent where it closes.
-                let shared = (tangent_in(start) + tangent_out(start)).normalize_or(tangent_out(start));
+                let shared =
+                    (tangent_in(start) + tangent_out(start)).normalize_or(tangent_out(start));
                 t1 = shared;
                 t2 = -shared;
             }
-            points.push(ControlPoint { position: source.points()[start].position, kind: start_kind });
+            points.push(ControlPoint {
+                position: source.points()[start].position,
+                kind: start_kind,
+            });
             if count == 1 && !closed_loop {
                 // Already a single segment: nothing to simplify.
                 segments.push(source.segments()[start]);
@@ -207,9 +237,15 @@ impl Outline {
             let cubics = fit::fit_cubics(&samples, t1, t2, tolerance);
             for (k, cubic) in cubics.iter().enumerate() {
                 if k > 0 {
-                    points.push(ControlPoint { position: cubic.p0, kind: PointKind::Smooth });
+                    points.push(ControlPoint {
+                        position: cubic.p0,
+                        kind: PointKind::Smooth,
+                    });
                 }
-                segments.push(Segment::Cubic { ctrl1: cubic.p1, ctrl2: cubic.p2 });
+                segments.push(Segment::Cubic {
+                    ctrl1: cubic.p1,
+                    ctrl2: cubic.p2,
+                });
             }
         };
 
@@ -218,7 +254,11 @@ impl Outline {
         } else {
             for (k, &start) in corners.iter().enumerate() {
                 let next = corners[(k + 1) % corners.len()];
-                let count = if next > start { next - start } else { next + n - start };
+                let count = if next > start {
+                    next - start
+                } else {
+                    next + n - start
+                };
                 emit_run(start, count, PointKind::Corner, false);
             }
         }
@@ -246,9 +286,16 @@ impl Outline {
         // The point at arc length `s` (wrapping).
         let at = |s: f32| {
             let s = s.rem_euclid(total);
-            let i = along.partition_point(|&a| a <= s).saturating_sub(1).min(count - 1);
+            let i = along
+                .partition_point(|&a| a <= s)
+                .saturating_sub(1)
+                .min(count - 1);
             let segment = along[i + 1] - along[i];
-            let t = if segment > 0.0 { (s - along[i]) / segment } else { 0.0 };
+            let t = if segment > 0.0 {
+                (s - along[i]) / segment
+            } else {
+                0.0
+            };
             points[i].lerp(points[(i + 1) % count], t)
         };
         (0..self.edge_count())
@@ -270,7 +317,10 @@ impl Outline {
             if n <= 3 {
                 return;
             }
-            let Some(mut edge) = (0..n).find(|&e| self.curve(e as u32).length(0.05) < min_length) else { return };
+            let Some(mut edge) = (0..n).find(|&e| self.curve(e as u32).length(0.05) < min_length)
+            else {
+                return;
+            };
             let mut points = self.points().to_vec();
             let mut segments = self.segments().to_vec();
             if edge == n - 1 {
@@ -304,7 +354,11 @@ impl Outline {
             .map(|anchor| {
                 let incoming = self.curve(((anchor + n - 1) % n) as u32).end_direction();
                 let outgoing = self.curve(anchor as u32).start_direction();
-                if incoming.dot(outgoing) >= cos { PointKind::Smooth } else { PointKind::Corner }
+                if incoming.dot(outgoing) >= cos {
+                    PointKind::Smooth
+                } else {
+                    PointKind::Corner
+                }
             })
             .collect();
         let mut points = self.points().to_vec();
@@ -319,7 +373,9 @@ impl Outline {
     /// into one). The shape does not change. Returns whether it changed.
     pub fn set_point_kind(&mut self, anchor: u32, kind: PointKind) -> bool {
         let mut points = self.points().to_vec();
-        let Some(point) = points.get_mut(anchor as usize) else { return false };
+        let Some(point) = points.get_mut(anchor as usize) else {
+            return false;
+        };
         if point.kind == kind {
             return false;
         }
@@ -341,7 +397,10 @@ impl Outline {
             .map(|segment| match *segment {
                 Segment::Line => Segment::Line,
                 Segment::Quadratic { ctrl } => Segment::Quadratic { ctrl: map(ctrl) },
-                Segment::Cubic { ctrl1, ctrl2 } => Segment::Cubic { ctrl1: map(ctrl1), ctrl2: map(ctrl2) },
+                Segment::Cubic { ctrl1, ctrl2 } => Segment::Cubic {
+                    ctrl1: map(ctrl1),
+                    ctrl2: map(ctrl2),
+                },
             })
             .collect();
         *self = Outline::new(points, segments);
@@ -357,10 +416,16 @@ trait Directions {
 
 impl Directions for crate::geometry::CurveSegment {
     fn start_direction(&self) -> Vec2 {
-        [0.0, 0.01, 0.1].iter().find_map(|&t| self.tangent(t).try_normalize()).unwrap_or(Vec2::X)
+        [0.0, 0.01, 0.1]
+            .iter()
+            .find_map(|&t| self.tangent(t).try_normalize())
+            .unwrap_or(Vec2::X)
     }
     fn end_direction(&self) -> Vec2 {
-        [1.0, 0.99, 0.9].iter().find_map(|&t| self.tangent(t).try_normalize()).unwrap_or(Vec2::X)
+        [1.0, 0.99, 0.9]
+            .iter()
+            .find_map(|&t| self.tangent(t).try_normalize())
+            .unwrap_or(Vec2::X)
     }
 }
 
@@ -377,7 +442,12 @@ mod tests {
             let t = x / 200.0;
             points.push(Vec2::new(x, 100.0 + 80.0 * t * (1.0 - t)));
         }
-        Outline::polygon(points.into_iter().filter(|p| *p != Vec2::new(0.0, 100.0)).chain([Vec2::new(0.0, 100.0)]))
+        Outline::polygon(
+            points
+                .into_iter()
+                .filter(|p| *p != Vec2::new(0.0, 100.0))
+                .chain([Vec2::new(0.0, 100.0)]),
+        )
     }
 
     #[test]
@@ -387,7 +457,14 @@ mod tests {
         let simple = source.simplified(0.3, 15.0);
         assert!(simple.edge_count() <= 6, "{} edges", simple.edge_count());
         // Four turn points; the curve is one line.
-        assert_eq!(simple.points().iter().filter(|p| p.kind == PointKind::Corner).count(), 4);
+        assert_eq!(
+            simple
+                .points()
+                .iter()
+                .filter(|p| p.kind == PointKind::Corner)
+                .count(),
+            4
+        );
         assert_eq!(simple.lines().len(), 4);
         // Same shape: the areas agree.
         assert!((simple.signed_area() - source.signed_area()).abs() < 0.01 * source.signed_area());
@@ -404,7 +481,11 @@ mod tests {
         }
         points.extend([Vec2::new(100.0, 100.0), Vec2::new(0.0, 100.0)]);
         let simple = Outline::polygon(points).simplified(0.25, 15.0);
-        assert_eq!(simple.lines().len(), 4, "four sides, the fillet does not merge two of them");
+        assert_eq!(
+            simple.lines().len(),
+            4,
+            "four sides, the fillet does not merge two of them"
+        );
     }
 
     #[test]
@@ -415,34 +496,56 @@ mod tests {
             assert_eq!(outline.line_span(edge), curve);
         }
         // Mark everything as turn points: every edge is its own line again.
-        let points: Vec<ControlPoint> =
-            outline.points().iter().map(|p| ControlPoint { kind: PointKind::Corner, ..*p }).collect();
+        let points: Vec<ControlPoint> = outline
+            .points()
+            .iter()
+            .map(|p| ControlPoint {
+                kind: PointKind::Corner,
+                ..*p
+            })
+            .collect();
         outline = Outline::new(points, outline.segments().to_vec());
         assert_eq!(outline.lines().len() as u32, outline.edge_count());
 
         let span = EdgeSpan { first: 4, count: 3 };
         assert!(span.contains(0, 6) && span.contains(5, 6) && !span.contains(1, 6));
         assert_eq!(span.edges(6).collect::<Vec<_>>(), vec![4, 5, 0]);
-        assert_eq!(span.union(&EdgeSpan::single(1), 6), Some(EdgeSpan { first: 4, count: 4 }));
+        assert_eq!(
+            span.union(&EdgeSpan::single(1), 6),
+            Some(EdgeSpan { first: 4, count: 4 })
+        );
         assert_eq!(span.union(&EdgeSpan::single(2), 6), None);
     }
 
     #[test]
     fn joining_two_lines_at_their_turn_point_makes_one() {
-        let mut square = Outline::polygon([Vec2::ZERO, Vec2::new(100.0, 0.0), Vec2::new(100.0, 100.0), Vec2::new(0.0, 100.0)]);
+        let mut square = Outline::polygon([
+            Vec2::ZERO,
+            Vec2::new(100.0, 0.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(0.0, 100.0),
+        ]);
         assert_eq!(square.lines().len(), 4);
         // Anchor 1 is where edge 0 (bottom) meets edge 1 (right side).
         assert!(square.set_point_kind(1, PointKind::Smooth));
         assert_eq!(square.line_span(0), EdgeSpan { first: 0, count: 2 });
         assert_eq!(square.lines().len(), 3);
-        assert!(!square.set_point_kind(1, PointKind::Smooth), "nothing to change");
+        assert!(
+            !square.set_point_kind(1, PointKind::Smooth),
+            "nothing to change"
+        );
         assert!(square.set_point_kind(1, PointKind::Corner));
         assert_eq!(square.lines().len(), 4);
     }
 
     #[test]
     fn span_fraction_measures_along_the_line() {
-        let outline = Outline::polygon([Vec2::ZERO, Vec2::new(100.0, 0.0), Vec2::new(100.0, 100.0), Vec2::new(0.0, 100.0)]);
+        let outline = Outline::polygon([
+            Vec2::ZERO,
+            Vec2::new(100.0, 0.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(0.0, 100.0),
+        ]);
         let span = EdgeSpan { first: 0, count: 2 };
         assert!((outline.span_fraction(span, Vec2::new(50.0, -3.0)) - 0.25).abs() < 1e-3);
         assert!((outline.span_fraction(span, Vec2::new(103.0, 50.0)) - 0.75).abs() < 1e-3);

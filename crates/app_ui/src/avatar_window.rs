@@ -60,8 +60,12 @@ fn colour_row(ui: &mut egui::Ui, colour: &mut [f32; 3], swatches: &[(&str, [u8; 
         ui.spacing_mut().item_spacing.x = 3.0;
         for &(name, [r, g, b]) in swatches {
             let value = linear(r, g, b);
-            let selected = value.iter().zip(colour.iter()).all(|(a, b)| (a - b).abs() < 1e-3);
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+            let selected = value
+                .iter()
+                .zip(colour.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-3);
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
             let painter = ui.painter();
             painter.rect_filled(rect.shrink(2.0), 3.0, egui::Color32::from_rgb(r, g, b));
             let stroke = if selected {
@@ -78,7 +82,10 @@ fn colour_row(ui: &mut egui::Ui, colour: &mut [f32; 3], swatches: &[(&str, [u8; 
             }
         }
         ui.add_space(4.0);
-        changed |= ui.color_edit_button_rgb(colour).on_hover_text("Any other colour").changed();
+        changed |= ui
+            .color_edit_button_rgb(colour)
+            .on_hover_text("Any other colour")
+            .changed();
     });
     changed
 }
@@ -88,7 +95,10 @@ fn animation(ui: &mut egui::Ui, state: &mut crate::state::AnimationState, output
     use avatar::Motion;
     ui.horizontal_wrapped(|ui| {
         for motion in Motion::ALL {
-            if ui.selectable_label(state.motion == Some(motion), motion.label()).clicked() {
+            if ui
+                .selectable_label(state.motion == Some(motion), motion.label())
+                .clicked()
+            {
                 if state.motion != Some(motion) {
                     state.time = 0.0;
                 }
@@ -102,15 +112,34 @@ fn animation(ui: &mut egui::Ui, state: &mut crate::state::AnimationState, output
         return;
     };
     ui.horizontal(|ui| {
-        if ui.button(if state.playing { "⏸ Pause" } else { "▶ Play" }).clicked() {
+        if ui
+            .button(if state.playing {
+                "⏸ Pause"
+            } else {
+                "▶ Play"
+            })
+            .clicked()
+        {
             state.playing = !state.playing;
         }
-        if ui.button("⏹ Stop").on_hover_text("Back to the edited pose").clicked() {
-            *state = crate::state::AnimationState { garment_follows: state.garment_follows, speed: state.speed, ..Default::default() };
+        if ui
+            .button("⏹ Stop")
+            .on_hover_text("Back to the edited pose")
+            .clicked()
+        {
+            *state = crate::state::AnimationState {
+                garment_follows: state.garment_follows,
+                speed: state.speed,
+                ..Default::default()
+            };
         }
         let duration = motion.duration();
         let mut time = state.time.rem_euclid(duration);
-        let scrub = ui.add(egui::Slider::new(&mut time, 0.0..=duration).suffix(" s").fixed_decimals(1));
+        let scrub = ui.add(
+            egui::Slider::new(&mut time, 0.0..=duration)
+                .suffix(" s")
+                .fixed_decimals(1),
+        );
         // Only a hand on the slider scrubs: the slider rounding the time it
         // shows must not stop playback.
         if scrub.changed() && (scrub.dragged() || scrub.clicked() || scrub.has_focus()) {
@@ -120,19 +149,33 @@ fn animation(ui: &mut egui::Ui, state: &mut crate::state::AnimationState, output
     });
     ui.horizontal(|ui| {
         ui.label("Speed");
-        ui.add(egui::Slider::new(&mut state.speed, 0.25..=2.0).suffix("×").fixed_decimals(2));
+        ui.add(
+            egui::Slider::new(&mut state.speed, 0.25..=2.0)
+                .suffix("×")
+                .fixed_decimals(2),
+        );
     });
     ui.checkbox(&mut state.garment_follows, "Garment moves with the body");
     if state.garment_follows {
         use crate::state::GarmentStatus;
         match state.garment {
             GarmentStatus::Simulating(done) => {
-                ui.add(egui::ProgressBar::new(done).show_percentage().text(format!("Simulating the garment… {:.0} %", done * 100.0)));
+                ui.add(
+                    egui::ProgressBar::new(done)
+                        .show_percentage()
+                        .text(format!("Simulating the garment… {:.0} %", done * 100.0)),
+                );
             }
             GarmentStatus::Simulated => {
                 ui.horizontal(|ui| {
                     ui.label("✔ Garment simulated");
-                    if ui.small_button("Again").on_hover_text("Simulate it once more, after changing the garment or the body").clicked() {
+                    if ui
+                        .small_button("Again")
+                        .on_hover_text(
+                            "Simulate it once more, after changing the garment or the body",
+                        )
+                        .clicked()
+                    {
                         output.commands.push(UiCommand::SimulateGarmentMotion);
                     }
                 });
@@ -168,56 +211,72 @@ fn animation(ui: &mut egui::Ui, state: &mut crate::state::AnimationState, output
 fn appearance(ui: &mut egui::Ui, looks: &mut avatar::Appearance) {
     use avatar::HairStyle;
 
-    egui::Grid::new("avatar looks").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Skin");
-        colour_row(ui, &mut looks.skin, &SKIN_TONES);
-        ui.end_row();
-        ui.label("Eyes");
-        colour_row(ui, &mut looks.eyes, &EYE_COLOURS);
-        ui.end_row();
+    egui::Grid::new("avatar looks")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Skin");
+            colour_row(ui, &mut looks.skin, &SKIN_TONES);
+            ui.end_row();
+            ui.label("Eyes");
+            colour_row(ui, &mut looks.eyes, &EYE_COLOURS);
+            ui.end_row();
 
-        let hair = &mut looks.hair;
-        ui.label("Hair");
-        ui.horizontal_wrapped(|ui| {
-            for style in HairStyle::ALL {
-                if ui.selectable_label(hair.style == style, style.label()).clicked() && hair.style != style {
-                    hair.style = style;
-                    if style.has_length() {
-                        hair.length = style.default_length();
+            let hair = &mut looks.hair;
+            ui.label("Hair");
+            ui.horizontal_wrapped(|ui| {
+                for style in HairStyle::ALL {
+                    if ui
+                        .selectable_label(hair.style == style, style.label())
+                        .clicked()
+                        && hair.style != style
+                    {
+                        hair.style = style;
+                        if style.has_length() {
+                            hair.length = style.default_length();
+                        }
                     }
+                }
+            });
+            ui.end_row();
+            if hair.style != HairStyle::Bald {
+                ui.label("Hair colour");
+                colour_row(ui, &mut hair.color, &HAIR_COLOURS);
+                ui.end_row();
+                if hair.style.has_length() {
+                    ui.label("Length");
+                    let mut centimetres = hair.length * 100.0;
+                    let range = if hair.style == HairStyle::Bob {
+                        16.0..=34.0
+                    } else {
+                        20.0..=90.0
+                    };
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut centimetres, range)
+                                .suffix(" cm")
+                                .fixed_decimals(0),
+                        )
+                        .on_hover_text("From the crown down")
+                        .changed()
+                    {
+                        hair.length = centimetres / 100.0;
+                    }
+                    ui.end_row();
+                }
+                if hair.style != HairStyle::Buzz {
+                    ui.label("Volume");
+                    ui.add(egui::Slider::new(&mut hair.volume, 0.0..=1.0).show_value(false))
+                        .on_hover_text("Sleek to full");
+                    ui.end_row();
+                }
+                if hair.style.takes_fringe() {
+                    ui.label("");
+                    ui.checkbox(&mut hair.fringe, "Fringe");
+                    ui.end_row();
                 }
             }
         });
-        ui.end_row();
-        if hair.style != HairStyle::Bald {
-            ui.label("Hair colour");
-            colour_row(ui, &mut hair.color, &HAIR_COLOURS);
-            ui.end_row();
-            if hair.style.has_length() {
-                ui.label("Length");
-                let mut centimetres = hair.length * 100.0;
-                let range = if hair.style == HairStyle::Bob { 16.0..=34.0 } else { 20.0..=90.0 };
-                if ui
-                    .add(egui::Slider::new(&mut centimetres, range).suffix(" cm").fixed_decimals(0))
-                    .on_hover_text("From the crown down")
-                    .changed()
-                {
-                    hair.length = centimetres / 100.0;
-                }
-                ui.end_row();
-            }
-            if hair.style != HairStyle::Buzz {
-                ui.label("Volume");
-                ui.add(egui::Slider::new(&mut hair.volume, 0.0..=1.0).show_value(false)).on_hover_text("Sleek to full");
-                ui.end_row();
-            }
-            if hair.style.takes_fringe() {
-                ui.label("");
-                ui.checkbox(&mut hair.fringe, "Fringe");
-                ui.end_row();
-            }
-        }
-    });
     ui.weak("Looks are for display: the hair does not touch the garment.");
 }
 
@@ -260,15 +319,25 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
     // --- presets ---------------------------------------------------------------
     ui.horizontal(|ui| {
         let params = &mut avatar.params;
-        if ui.selectable_label(params.gender <= 0.0, "♀ Woman").clicked() {
+        if ui
+            .selectable_label(params.gender <= 0.0, "♀ Woman")
+            .clicked()
+        {
             *params = BodyParams::female();
         }
         if ui.selectable_label(params.gender >= 1.0, "♂ Man").clicked() {
             *params = BodyParams::male();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Reset shape").on_hover_text("Average body of the current gender; clears all measurements").clicked() {
-                *params = BodyParams { gender: params.gender, ..BodyParams::female() };
+            if ui
+                .button("Reset shape")
+                .on_hover_text("Average body of the current gender; clears all measurements")
+                .clicked()
+            {
+                *params = BodyParams {
+                    gender: params.gender,
+                    ..BodyParams::female()
+                };
                 avatar.targets = [None; Measure::ALL.len()];
             }
         });
@@ -339,7 +408,11 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
         ui.end_row();
     });
     ui.horizontal(|ui| {
-        if ui.button("Hold all").on_hover_text("Hold every measurement at its current value").clicked() {
+        if ui
+            .button("Hold all")
+            .on_hover_text("Hold every measurement at its current value")
+            .clicked()
+        {
             for measure in Measure::ALL {
                 avatar.targets[measure as usize].get_or_insert(avatar.measurements.get(measure));
             }
@@ -352,7 +425,10 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
                 if fit.exact() {
                     ui.weak(format!("matched to {:.1} mm", fit.worst_error * 1000.0));
                 } else {
-                    ui.colored_label(ui.visuals().warn_fg_color, format!("{} out of reach", fit.unreachable.len()));
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("{} out of reach", fit.unreachable.len()),
+                    );
                 }
             }
             _ => {}
@@ -369,55 +445,105 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
             }
         }
     });
-    egui::Grid::new("avatar pose").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-        let (modelled_arm, modelled_leg) = avatar.modelled_angles;
-        let pose = &mut avatar.pose;
-        let mut angle = |ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, hint: &str| {
-            ui.label(label);
-            let changed = track(ui.add(egui::Slider::new(value, range).suffix("°").fixed_decimals(0))).on_hover_text(hint).changed();
-            ui.end_row();
-            changed
-        };
-        let mut arm = pose.arm_angle.unwrap_or(modelled_arm);
-        if angle(ui, "Arms raised", &mut arm, 5.0..=120.0, "Angle between arm and body: 90° is a T-pose.") {
-            pose.arm_angle = Some(arm);
-        }
-        angle(ui, "Arms forward", &mut pose.arm_forward, -30.0..=90.0, "Swings the arms to the front (or back).");
-        angle(ui, "Elbows bent", &mut pose.elbow_bend, 0.0..=130.0, "");
-        let mut leg = pose.leg_angle.unwrap_or(modelled_leg);
-        if angle(ui, "Legs apart", &mut leg, 0.0..=35.0, "Angle between each leg and the vertical.") {
-            pose.leg_angle = Some(leg);
-        }
-        angle(ui, "Knees bent", &mut pose.knee_bend, 0.0..=120.0, "");
-    });
+    egui::Grid::new("avatar pose")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            let (modelled_arm, modelled_leg) = avatar.modelled_angles;
+            let pose = &mut avatar.pose;
+            let mut angle = |ui: &mut egui::Ui,
+                             label: &str,
+                             value: &mut f32,
+                             range: std::ops::RangeInclusive<f32>,
+                             hint: &str| {
+                ui.label(label);
+                let changed = track(
+                    ui.add(
+                        egui::Slider::new(value, range)
+                            .suffix("°")
+                            .fixed_decimals(0),
+                    ),
+                )
+                .on_hover_text(hint)
+                .changed();
+                ui.end_row();
+                changed
+            };
+            let mut arm = pose.arm_angle.unwrap_or(modelled_arm);
+            if angle(
+                ui,
+                "Arms raised",
+                &mut arm,
+                5.0..=120.0,
+                "Angle between arm and body: 90° is a T-pose.",
+            ) {
+                pose.arm_angle = Some(arm);
+            }
+            angle(
+                ui,
+                "Arms forward",
+                &mut pose.arm_forward,
+                -30.0..=90.0,
+                "Swings the arms to the front (or back).",
+            );
+            angle(ui, "Elbows bent", &mut pose.elbow_bend, 0.0..=130.0, "");
+            let mut leg = pose.leg_angle.unwrap_or(modelled_leg);
+            if angle(
+                ui,
+                "Legs apart",
+                &mut leg,
+                0.0..=35.0,
+                "Angle between each leg and the vertical.",
+            ) {
+                pose.leg_angle = Some(leg);
+            }
+            angle(ui, "Knees bent", &mut pose.knee_bend, 0.0..=120.0, "");
+        });
 
     // --- animation -----------------------------------------------------------------------
     ui.add_space(8.0);
-    egui::CollapsingHeader::new("Animation").default_open(true).show(ui, |ui| animation(ui, &mut avatar.animation, output));
+    egui::CollapsingHeader::new("Animation")
+        .default_open(true)
+        .show(ui, |ui| animation(ui, &mut avatar.animation, output));
 
     // --- looks ---------------------------------------------------------------------------
     ui.add_space(8.0);
-    egui::CollapsingHeader::new("Appearance").default_open(true).show(ui, |ui| appearance(ui, &mut avatar.appearance));
+    egui::CollapsingHeader::new("Appearance")
+        .default_open(true)
+        .show(ui, |ui| appearance(ui, &mut avatar.appearance));
 
     // --- details -----------------------------------------------------------------------
     ui.add_space(8.0);
-    egui::CollapsingHeader::new("Shape details").default_open(false).show(ui, |ui| {
-        egui::Grid::new("avatar details").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            for morph in DETAIL_MORPHS {
-                ui.label(morph.label());
-                let mut value = avatar.params.morph(morph);
-                if track(ui.add(egui::Slider::new(&mut value, -1.0..=1.0).show_value(false))).changed() {
-                    avatar.params.set_morph(morph, value);
-                }
-                ui.end_row();
-            }
+    egui::CollapsingHeader::new("Shape details")
+        .default_open(false)
+        .show(ui, |ui| {
+            egui::Grid::new("avatar details")
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    for morph in DETAIL_MORPHS {
+                        ui.label(morph.label());
+                        let mut value = avatar.params.morph(morph);
+                        if track(
+                            ui.add(egui::Slider::new(&mut value, -1.0..=1.0).show_value(false)),
+                        )
+                        .changed()
+                        {
+                            avatar.params.set_morph(morph, value);
+                        }
+                        ui.end_row();
+                    }
+                });
         });
-    });
     avatar.dragging = dragging;
 
     ui.add_space(8.0);
     ui.separator();
-    if ui.button("Arrange garment around avatar").on_hover_text("Puts every piece back around the body and resets the drape").clicked() {
+    if ui
+        .button("Arrange garment around avatar")
+        .on_hover_text("Puts every piece back around the body and resets the drape")
+        .clicked()
+    {
         editor.timeline.stop();
         output.commands.push(UiCommand::ArrangePieces);
     }
@@ -433,11 +559,17 @@ mod tests {
         let ctx = egui::Context::default();
         let mut editor = EditorState::default();
         editor.avatar.available = true;
-        editor.avatar.animation =
-            crate::state::AnimationState { motion: Some(avatar::Motion::Walk), playing: true, time: 1.234_567, ..Default::default() };
+        editor.avatar.animation = crate::state::AnimationState {
+            motion: Some(avatar::Motion::Walk),
+            playing: true,
+            time: 1.234_567,
+            ..Default::default()
+        };
         for frame in 0..5 {
             let mut output = UiOutput::default();
-            let mut full = ctx.run_ui(egui::RawInput::default(), |ui| show(ui.ctx(), &mut editor, &mut output));
+            let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
+                show(ui.ctx(), &mut editor, &mut output)
+            });
             full.textures_delta.clear();
             assert!(editor.avatar.animation.playing, "paused on frame {frame}");
             editor.avatar.animation.time += 0.033;

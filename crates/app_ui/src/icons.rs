@@ -30,7 +30,14 @@ pub const BUTTON: f32 = 30.0;
 
 /// An icon button. `active` shows it pressed (the current tool).
 pub fn button(ui: &mut Ui, icon: Icon, active: bool, enabled: bool, tooltip: &str) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(BUTTON), if enabled { Sense::click() } else { Sense::hover() });
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::splat(BUTTON),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
     let visuals = ui.visuals();
     let hovered = enabled && response.hovered();
     let fill = if active {
@@ -73,7 +80,8 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
     let thin = Stroke::new(1.0 * s.max(0.7), color);
     let line = |a: Pos2, b: Pos2| painter.line_segment([a, b], stroke);
     let polyline = |points: Vec<Pos2>| painter.add(Shape::line(points, stroke));
-    let dashed = |a: Pos2, b: Pos2| painter.extend(Shape::dashed_line(&[a, b], thin, 1.6 * s, 1.4 * s));
+    let dashed =
+        |a: Pos2, b: Pos2| painter.extend(Shape::dashed_line(&[a, b], thin, 1.6 * s, 1.4 * s));
     // An arc about `c`, from `from` to `to` degrees (0 = right, clockwise
     // on screen), with an arrowhead at its end.
     let arc_arrow = |c: Pos2, r: f32, from: f32, to: f32| {
@@ -91,7 +99,11 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         let side = vec2(-direction.y, direction.x);
         let back = end - direction * 3.2 * s;
         painter.add(Shape::convex_polygon(
-            vec![end + direction * 1.2 * s, back + side * 2.6 * s, back - side * 2.6 * s],
+            vec![
+                end + direction * 1.2 * s,
+                back + side * 2.6 * s,
+                back - side * 2.6 * s,
+            ],
             color,
             Stroke::NONE,
         ));
@@ -100,8 +112,20 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
     match icon {
         Icon::Select => {
             // A mouse pointer.
-            let points = vec![p(3.0, 1.5), p(3.0, 13.5), p(6.2, 10.4), p(8.4, 15.0), p(10.2, 14.2), p(8.0, 9.6), p(12.5, 9.6)];
-            painter.add(Shape::convex_polygon(points.clone(), color.gamma_multiply(0.25), Stroke::NONE));
+            let points = vec![
+                p(3.0, 1.5),
+                p(3.0, 13.5),
+                p(6.2, 10.4),
+                p(8.4, 15.0),
+                p(10.2, 14.2),
+                p(8.0, 9.6),
+                p(12.5, 9.6),
+            ];
+            painter.add(Shape::convex_polygon(
+                points.clone(),
+                color.gamma_multiply(0.25),
+                Stroke::NONE,
+            ));
             painter.add(Shape::closed_line(points, stroke));
         }
         Icon::Points => {
@@ -112,8 +136,14 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                     let u = 1.0 - t;
                     let (a, b, c, d) = (p(2.0, 13.0), p(4.0, 3.0), p(11.0, 3.0), p(14.0, 12.0));
                     pos2(
-                        u * u * u * a.x + 3.0 * u * u * t * b.x + 3.0 * u * t * t * c.x + t * t * t * d.x,
-                        u * u * u * a.y + 3.0 * u * u * t * b.y + 3.0 * u * t * t * c.y + t * t * t * d.y,
+                        u * u * u * a.x
+                            + 3.0 * u * u * t * b.x
+                            + 3.0 * u * t * t * c.x
+                            + t * t * t * d.x,
+                        u * u * u * a.y
+                            + 3.0 * u * u * t * b.y
+                            + 3.0 * u * t * t * c.y
+                            + t * t * t * d.y,
                     )
                 })
                 .collect();
@@ -121,7 +151,11 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             painter.line_segment([p(2.0, 13.0), p(5.0, 4.0)], thin);
             painter.circle_filled(p(5.0, 4.0), 1.5 * s, color);
             for anchor in [p(2.0, 13.0), p(14.0, 12.0)] {
-                painter.rect_filled(Rect::from_center_size(anchor, Vec2::splat(3.6 * s)), 0.0, color);
+                painter.rect_filled(
+                    Rect::from_center_size(anchor, Vec2::splat(3.6 * s)),
+                    0.0,
+                    color,
+                );
             }
         }
         Icon::Sew => {
@@ -132,64 +166,105 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 let x = 1.5 + 4.5 * k as f32;
                 line(p(x, 15.0), p(x + 2.5, 15.0));
             }
-            painter.add(Shape::line(vec![p(3.5, 12.5), p(5.0, 14.2), p(6.5, 13.5)], thin));
+            painter.add(Shape::line(
+                vec![p(3.5, 12.5), p(5.0, 14.2), p(6.5, 13.5)],
+                thin,
+            ));
         }
-            Icon::SketchLine => {
-                polyline(vec![p(2.0, 13.0), p(6.0, 3.0), p(14.0, 12.0), p(2.0, 13.0)]);
-                for point in [p(2.0, 13.0), p(6.0, 3.0), p(14.0, 12.0)] {
-                    painter.circle_filled(point, 1.5 * s, color);
-                }
+        Icon::SketchLine => {
+            polyline(vec![p(2.0, 13.0), p(6.0, 3.0), p(14.0, 12.0), p(2.0, 13.0)]);
+            for point in [p(2.0, 13.0), p(6.0, 3.0), p(14.0, 12.0)] {
+                painter.circle_filled(point, 1.5 * s, color);
             }
-            Icon::SketchSpline => {
-                let curve: Vec<Pos2> = (0..=20)
-                    .map(|i| {
-                        let t = i as f32 / 20.0;
-                        let u = 1.0 - t;
-                        pos2(
-                            u * u * u * p(2.0, 12.0).x + 3.0 * u * u * t * p(5.0, 3.0).x + 3.0 * u * t * t * p(11.0, 14.0).x + t * t * t * p(14.0, 5.0).x,
-                            u * u * u * p(2.0, 12.0).y + 3.0 * u * u * t * p(5.0, 3.0).y + 3.0 * u * t * t * p(11.0, 14.0).y + t * t * t * p(14.0, 5.0).y,
-                        )
-                    })
-                    .collect();
-                polyline(curve);
-                painter.circle_filled(p(2.0, 12.0), 1.5 * s, color);
-                painter.circle_filled(p(14.0, 5.0), 1.5 * s, color);
-            }
-            Icon::Button => {
-                painter.circle_stroke(p(8.0, 8.0), 5.0 * s, stroke);
-                painter.circle_filled(p(6.2, 6.2), 0.9 * s, color);
-                painter.circle_filled(p(9.8, 6.2), 0.9 * s, color);
-                painter.circle_filled(p(6.2, 9.8), 0.9 * s, color);
-                painter.circle_filled(p(9.8, 9.8), 0.9 * s, color);
-            }
-            Icon::Buttonhole => {
-                painter.rect_stroke(Rect::from_center_size(p(8.0, 8.0), vec2(11.0 * s, 5.0 * s)), 2.5 * s, stroke, egui::StrokeKind::Middle);
-                line(p(5.5, 8.0), p(10.5, 8.0));
-            }
-            Icon::Pull => {
-                line(p(2.0, 8.0), p(13.0, 8.0));
-                painter.add(Shape::convex_polygon(vec![p(13.0, 8.0), p(9.0, 5.0), p(9.0, 11.0)], color, Stroke::NONE));
-                painter.circle_stroke(p(3.0, 8.0), 2.0 * s, thin);
-            }
+        }
+        Icon::SketchSpline => {
+            let curve: Vec<Pos2> = (0..=20)
+                .map(|i| {
+                    let t = i as f32 / 20.0;
+                    let u = 1.0 - t;
+                    pos2(
+                        u * u * u * p(2.0, 12.0).x
+                            + 3.0 * u * u * t * p(5.0, 3.0).x
+                            + 3.0 * u * t * t * p(11.0, 14.0).x
+                            + t * t * t * p(14.0, 5.0).x,
+                        u * u * u * p(2.0, 12.0).y
+                            + 3.0 * u * u * t * p(5.0, 3.0).y
+                            + 3.0 * u * t * t * p(11.0, 14.0).y
+                            + t * t * t * p(14.0, 5.0).y,
+                    )
+                })
+                .collect();
+            polyline(curve);
+            painter.circle_filled(p(2.0, 12.0), 1.5 * s, color);
+            painter.circle_filled(p(14.0, 5.0), 1.5 * s, color);
+        }
+        Icon::Button => {
+            painter.circle_stroke(p(8.0, 8.0), 5.0 * s, stroke);
+            painter.circle_filled(p(6.2, 6.2), 0.9 * s, color);
+            painter.circle_filled(p(9.8, 6.2), 0.9 * s, color);
+            painter.circle_filled(p(6.2, 9.8), 0.9 * s, color);
+            painter.circle_filled(p(9.8, 9.8), 0.9 * s, color);
+        }
+        Icon::Buttonhole => {
+            painter.rect_stroke(
+                Rect::from_center_size(p(8.0, 8.0), vec2(11.0 * s, 5.0 * s)),
+                2.5 * s,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            line(p(5.5, 8.0), p(10.5, 8.0));
+        }
+        Icon::Pull => {
+            line(p(2.0, 8.0), p(13.0, 8.0));
+            painter.add(Shape::convex_polygon(
+                vec![p(13.0, 8.0), p(9.0, 5.0), p(9.0, 11.0)],
+                color,
+                Stroke::NONE,
+            ));
+            painter.circle_stroke(p(3.0, 8.0), 2.0 * s, thin);
+        }
         // Screen angles grow clockwise: an arc with falling angles turns
         // counter-clockwise.
         Icon::RotateCcw => arc_arrow(p(8.0, 8.5), 5.5, 30.0, -240.0),
         Icon::RotateCw => arc_arrow(p(8.0, 8.5), 5.5, 150.0, 420.0),
         Icon::FlipHorizontal => {
             dashed(p(8.0, 1.0), p(8.0, 15.0));
-            painter.add(Shape::convex_polygon(vec![p(6.5, 3.0), p(6.5, 13.0), p(1.5, 13.0)], color, Stroke::NONE));
-            painter.add(Shape::closed_line(vec![p(9.5, 3.0), p(9.5, 13.0), p(14.5, 13.0)], stroke));
+            painter.add(Shape::convex_polygon(
+                vec![p(6.5, 3.0), p(6.5, 13.0), p(1.5, 13.0)],
+                color,
+                Stroke::NONE,
+            ));
+            painter.add(Shape::closed_line(
+                vec![p(9.5, 3.0), p(9.5, 13.0), p(14.5, 13.0)],
+                stroke,
+            ));
         }
         Icon::FlipVertical => {
             dashed(p(1.0, 8.0), p(15.0, 8.0));
-            painter.add(Shape::convex_polygon(vec![p(3.0, 6.5), p(13.0, 6.5), p(13.0, 1.5)], color, Stroke::NONE));
-            painter.add(Shape::closed_line(vec![p(3.0, 9.5), p(13.0, 9.5), p(13.0, 14.5)], stroke));
+            painter.add(Shape::convex_polygon(
+                vec![p(3.0, 6.5), p(13.0, 6.5), p(13.0, 1.5)],
+                color,
+                Stroke::NONE,
+            ));
+            painter.add(Shape::closed_line(
+                vec![p(3.0, 9.5), p(13.0, 9.5), p(13.0, 14.5)],
+                stroke,
+            ));
         }
         Icon::MirrorCopy => {
             // A piece and its mirror image, with a plus.
-            painter.add(Shape::closed_line(vec![p(1.5, 3.0), p(6.5, 3.0), p(6.5, 14.0), p(1.5, 11.0)], stroke));
+            painter.add(Shape::closed_line(
+                vec![p(1.5, 3.0), p(6.5, 3.0), p(6.5, 14.0), p(1.5, 11.0)],
+                stroke,
+            ));
             painter.extend(Shape::dashed_line(
-                &[p(9.5, 3.0), p(14.5, 3.0), p(14.5, 11.0), p(9.5, 14.0), p(9.5, 3.0)],
+                &[
+                    p(9.5, 3.0),
+                    p(14.5, 3.0),
+                    p(14.5, 11.0),
+                    p(9.5, 14.0),
+                    p(9.5, 3.0),
+                ],
                 thin,
                 1.6 * s,
                 1.4 * s,
@@ -201,7 +276,10 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             // A bin.
             line(p(2.5, 4.0), p(13.5, 4.0));
             polyline(vec![p(6.0, 4.0), p(6.0, 2.0), p(10.0, 2.0), p(10.0, 4.0)]);
-            painter.add(Shape::closed_line(vec![p(4.0, 4.0), p(5.0, 15.0), p(11.0, 15.0), p(12.0, 4.0)], stroke));
+            painter.add(Shape::closed_line(
+                vec![p(4.0, 4.0), p(5.0, 15.0), p(11.0, 15.0), p(12.0, 4.0)],
+                stroke,
+            ));
             painter.line_segment([p(7.0, 7.0), p(7.0, 12.5)], thin);
             painter.line_segment([p(9.0, 7.0), p(9.0, 12.5)], thin);
         }
@@ -216,21 +294,49 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 })
                 .collect();
             polyline([vec![q(3.5, 5.0)], hook, vec![q(5.0, 13.0)]].concat());
-            painter.add(Shape::convex_polygon(vec![q(1.0, 5.0), q(5.5, 1.8), q(5.5, 8.2)], color, Stroke::NONE));
+            painter.add(Shape::convex_polygon(
+                vec![q(1.0, 5.0), q(5.5, 1.8), q(5.5, 8.2)],
+                color,
+                Stroke::NONE,
+            ));
         }
         Icon::Tidy => {
             // Pieces in tidy rows.
-            for (x0, y0, x1, y1) in [(1.5, 1.5, 6.5, 8.0), (8.5, 1.5, 14.5, 6.0), (1.5, 10.0, 8.0, 14.5), (10.0, 8.0, 14.5, 14.5)] {
-                painter.rect_stroke(Rect::from_min_max(p(x0, y0), p(x1, y1)), 1.0, stroke, egui::StrokeKind::Middle);
+            for (x0, y0, x1, y1) in [
+                (1.5, 1.5, 6.5, 8.0),
+                (8.5, 1.5, 14.5, 6.0),
+                (1.5, 10.0, 8.0, 14.5),
+                (10.0, 8.0, 14.5, 14.5),
+            ] {
+                painter.rect_stroke(
+                    Rect::from_min_max(p(x0, y0), p(x1, y1)),
+                    1.0,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
             }
         }
         Icon::FitView => {
             // Four corners around a frame.
-            for (corner, dx, dy) in [((1.5, 1.5), 1.0, 1.0), ((14.5, 1.5), -1.0, 1.0), ((1.5, 14.5), 1.0, -1.0), ((14.5, 14.5), -1.0, -1.0)] {
+            for (corner, dx, dy) in [
+                ((1.5, 1.5), 1.0, 1.0),
+                ((14.5, 1.5), -1.0, 1.0),
+                ((1.5, 14.5), 1.0, -1.0),
+                ((14.5, 14.5), -1.0, -1.0),
+            ] {
                 let c = p(corner.0, corner.1);
-                polyline(vec![c + vec2(0.0, 4.0 * dy * s), c, c + vec2(4.0 * dx * s, 0.0)]);
+                polyline(vec![
+                    c + vec2(0.0, 4.0 * dy * s),
+                    c,
+                    c + vec2(4.0 * dx * s, 0.0),
+                ]);
             }
-            painter.rect_stroke(Rect::from_min_max(p(5.0, 5.0), p(11.0, 11.0)), 1.0, thin, egui::StrokeKind::Middle);
+            painter.rect_stroke(
+                Rect::from_min_max(p(5.0, 5.0), p(11.0, 11.0)),
+                1.0,
+                thin,
+                egui::StrokeKind::Middle,
+            );
         }
     }
 }

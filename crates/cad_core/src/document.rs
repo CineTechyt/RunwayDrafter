@@ -7,7 +7,10 @@ use crate::geometry;
 use crate::ids::{EdgeRef, FabricId, HandleRef, PieceId, SeamId};
 use crate::lines::EdgeSpan;
 use crate::material::Fabric;
-use crate::pattern::{Button, Buttonhole, ButtonholeRef, ControlPoint, Notch, NotchKind, Outline, PatternPiece, Segment};
+use crate::pattern::{
+    Button, Buttonhole, ButtonholeRef, ControlPoint, Notch, NotchKind, Outline, PatternPiece,
+    Segment,
+};
 
 /// Sews one run of edges to another: `a_count` edges starting at `a` to
 /// `b_count` edges starting at `b`. Usually each side is one *line* of its
@@ -33,11 +36,17 @@ impl Seam {
     }
 
     pub fn a_span(&self) -> EdgeSpan {
-        EdgeSpan { first: self.a.edge, count: self.a_count.max(1) }
+        EdgeSpan {
+            first: self.a.edge,
+            count: self.a_count.max(1),
+        }
     }
 
     pub fn b_span(&self) -> EdgeSpan {
-        EdgeSpan { first: self.b.edge, count: self.b_count.max(1) }
+        EdgeSpan {
+            first: self.b.edge,
+            count: self.b_count.max(1),
+        }
     }
 
     /// Whether the seam sews `edge`, given the edge count of its piece.
@@ -100,9 +109,15 @@ impl PatternDocument {
 
     // --- pieces ------------------------------------------------------------
 
-    pub fn add_piece(&mut self, name: impl Into<String>, outline: Outline, fabric: FabricId) -> PieceId {
+    pub fn add_piece(
+        &mut self,
+        name: impl Into<String>,
+        outline: Outline,
+        fabric: FabricId,
+    ) -> PieceId {
         let id = PieceId(self.alloc_id());
-        self.pieces.push(PatternPiece::new(id, name, outline, fabric));
+        self.pieces
+            .push(PatternPiece::new(id, name, outline, fabric));
         self.touch();
         id
     }
@@ -120,7 +135,11 @@ impl PatternDocument {
             copy.placement.angle = -copy.placement.angle;
         }
         copy.id = new_id;
-        copy.name = if mirrored { format!("{} mirrored", copy.name) } else { format!("{} copy", copy.name) };
+        copy.name = if mirrored {
+            format!("{} mirrored", copy.name)
+        } else {
+            format!("{} copy", copy.name)
+        };
         copy.outline.translate(offset);
         copy.grainline.origin += offset;
         copy.uv.origin += offset;
@@ -132,7 +151,9 @@ impl PatternDocument {
 
     /// Moves a piece in the 2D layout; its 3D placement stays.
     pub fn move_piece(&mut self, id: PieceId, delta: Vec2) -> bool {
-        let Some(piece) = self.piece_mut(id) else { return false };
+        let Some(piece) = self.piece_mut(id) else {
+            return false;
+        };
         piece.outline.translate(delta);
         piece.grainline.origin += delta;
         piece.uv.origin += delta;
@@ -145,10 +166,18 @@ impl PatternDocument {
     /// their order around the body (right back, right front, left front,
     /// left back), so that matching pieces end up next to each other.
     pub fn tidy_layout(&mut self, gap: f32) {
-        let mut order: Vec<(f32, usize)> = self.pieces.iter().enumerate().map(|(i, p)| (p.placement.angle, i)).collect();
+        let mut order: Vec<(f32, usize)> = self
+            .pieces
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.placement.angle, i))
+            .collect();
         order.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         let boxes: Vec<(Vec2, Vec2)> = self.pieces.iter().map(|p| p.outline.bounds()).collect();
-        let area: f32 = boxes.iter().map(|(lo, hi)| (hi.x - lo.x + gap) * (hi.y - lo.y + gap)).sum();
+        let area: f32 = boxes
+            .iter()
+            .map(|(lo, hi)| (hi.x - lo.x + gap) * (hi.y - lo.y + gap))
+            .sum();
         let widest = boxes.iter().map(|(lo, hi)| hi.x - lo.x).fold(0.0, f32::max);
         // Rows about twice as wide as the layout is tall.
         let row_width = (area * 2.0).sqrt().max(widest);
@@ -201,7 +230,9 @@ impl PatternDocument {
         };
         for button in self.pieces.iter_mut().flat_map(|p| &mut p.buttons) {
             match &mut button.fastened_to {
-                Some(r) if r.piece == piece && r.index as usize == index => button.fastened_to = None,
+                Some(r) if r.piece == piece && r.index as usize == index => {
+                    button.fastened_to = None
+                }
                 Some(r) if r.piece == piece && r.index as usize > index => r.index -= 1,
                 _ => {}
             }
@@ -212,7 +243,9 @@ impl PatternDocument {
 
     /// Every button that is done up, with its buttonhole:
     /// `(button piece, button, hole piece, hole)`.
-    pub fn fastenings(&self) -> impl Iterator<Item = (PieceId, &Button, PieceId, &Buttonhole)> + '_ {
+    pub fn fastenings(
+        &self,
+    ) -> impl Iterator<Item = (PieceId, &Button, PieceId, &Buttonhole)> + '_ {
         self.pieces.iter().flat_map(move |piece| {
             piece.buttons.iter().filter_map(move |button| {
                 let target = button.fastened_to?;
@@ -229,8 +262,12 @@ impl PatternDocument {
     /// cross pairs or reach for a hole on the wrong side as soon as two
     /// rows are a little offset. Returns how many buttons were fastened.
     pub fn fasten_buttons(&mut self, reach: f32) -> usize {
-        let mut taken: Vec<ButtonholeRef> =
-            self.pieces.iter().flat_map(|p| &p.buttons).filter_map(|b| b.fastened_to).collect();
+        let mut taken: Vec<ButtonholeRef> = self
+            .pieces
+            .iter()
+            .flat_map(|p| &p.buttons)
+            .filter_map(|b| b.fastened_to)
+            .collect();
         let mut fastened = 0;
         for piece_index in 0..self.pieces.len() {
             let piece = &self.pieces[piece_index];
@@ -251,16 +288,34 @@ impl PatternDocument {
                     .buttonholes
                     .iter()
                     .enumerate()
-                    .map(|(index, hole)| (ButtonholeRef { piece: other.id, index: index as u32 }, other.arrangement.place(hole.position)))
+                    .map(|(index, hole)| {
+                        (
+                            ButtonholeRef {
+                                piece: other.id,
+                                index: index as u32,
+                            },
+                            other.arrangement.place(hole.position),
+                        )
+                    })
                     .filter(|(r, _)| !taken.contains(r))
                     .collect();
                 if holes.is_empty() {
                     continue;
                 }
                 let pairs = pair_along_rows(&open, &holes);
-                let mean = pairs.iter().map(|&(b, h)| open[b].1.distance(holes[h].1)).sum::<f32>() / pairs.len().max(1) as f32;
+                let mean = pairs
+                    .iter()
+                    .map(|&(b, h)| open[b].1.distance(holes[h].1))
+                    .sum::<f32>()
+                    / pairs.len().max(1) as f32;
                 if mean <= reach && best.as_ref().is_none_or(|(d, _)| mean < *d) {
-                    best = Some((mean, pairs.into_iter().map(|(b, h)| (open[b].0, holes[h].0)).collect()));
+                    best = Some((
+                        mean,
+                        pairs
+                            .into_iter()
+                            .map(|(b, h)| (open[b].0, holes[h].0))
+                            .collect(),
+                    ));
                 }
             }
             if let Some((_, pairs)) = best {
@@ -305,7 +360,14 @@ impl PatternDocument {
 
     pub fn add_seam(&mut self, a: EdgeRef, b: EdgeRef, reversed: bool) -> SeamId {
         let id = SeamId(self.alloc_id());
-        self.seams.push(Seam { id, a, b, reversed, a_count: 1, b_count: 1 });
+        self.seams.push(Seam {
+            id,
+            a,
+            b,
+            reversed,
+            a_count: 1,
+            b_count: 1,
+        });
         self.touch();
         id
     }
@@ -320,7 +382,12 @@ impl PatternDocument {
 
     /// Sews a run of edges on one piece to a run on another (or the same)
     /// piece.
-    pub fn add_seam_spans(&mut self, a: (PieceId, EdgeSpan), b: (PieceId, EdgeSpan), reversed: bool) -> SeamId {
+    pub fn add_seam_spans(
+        &mut self,
+        a: (PieceId, EdgeSpan),
+        b: (PieceId, EdgeSpan),
+        reversed: bool,
+    ) -> SeamId {
         let id = SeamId(self.alloc_id());
         self.seams.push(Seam {
             id,
@@ -343,7 +410,9 @@ impl PatternDocument {
     /// Turns a seam around: the start of side A then meets the other end
     /// of side B.
     pub fn flip_seam(&mut self, id: SeamId) -> bool {
-        let Some(seam) = self.seams.iter_mut().find(|s| s.id == id) else { return false };
+        let Some(seam) = self.seams.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
         seam.reversed = !seam.reversed;
         self.touch();
         true
@@ -369,7 +438,12 @@ impl PatternDocument {
     /// pieces.
     pub fn add_layer_copy(&mut self, ease: f32, offset: Vec2) -> Vec<PieceId> {
         let layer = self.top_layer();
-        let sources: Vec<PatternPiece> = self.pieces.iter().filter(|p| p.layer == layer).cloned().collect();
+        let sources: Vec<PatternPiece> = self
+            .pieces
+            .iter()
+            .filter(|p| p.layer == layer)
+            .cloned()
+            .collect();
         let mut copies: Vec<(PieceId, PieceId)> = Vec::new();
         for source in &sources {
             let mut piece = source.clone();
@@ -386,11 +460,20 @@ impl PatternDocument {
             copies.push((source.id, piece.id));
             self.pieces.push(piece);
         }
-        let copy_of = |id: PieceId| copies.iter().find(|(from, _)| *from == id).map(|(_, to)| *to);
+        let copy_of = |id: PieceId| {
+            copies
+                .iter()
+                .find(|(from, _)| *from == id)
+                .map(|(_, to)| *to)
+        };
         let seams: Vec<Seam> = self.seams.clone();
         for seam in seams {
             if let (Some(a), Some(b)) = (copy_of(seam.a.piece), copy_of(seam.b.piece)) {
-                self.add_seam(EdgeRef::new(a, seam.a.edge), EdgeRef::new(b, seam.b.edge), seam.reversed);
+                self.add_seam(
+                    EdgeRef::new(a, seam.a.edge),
+                    EdgeRef::new(b, seam.b.edge),
+                    seam.reversed,
+                );
             }
         }
         self.touch();
@@ -400,7 +483,9 @@ impl PatternDocument {
     // --- picking -----------------------------------------------------------
 
     pub fn handle_position(&self, handle: HandleRef) -> Option<Vec2> {
-        self.piece(handle.piece)?.outline.handle_position(handle.kind)
+        self.piece(handle.piece)?
+            .outline
+            .handle_position(handle.kind)
     }
 
     /// Closest handle within `radius` (mm) of `pos`. Later pieces draw on top,
@@ -411,7 +496,13 @@ impl PatternDocument {
             for (kind, p) in piece.outline.handles() {
                 let d = p.distance(pos);
                 if d <= radius && best.is_none_or(|(bd, _)| d <= bd) {
-                    best = Some((d, HandleRef { piece: piece.id, kind }));
+                    best = Some((
+                        d,
+                        HandleRef {
+                            piece: piece.id,
+                            kind,
+                        },
+                    ));
                 }
             }
         }
@@ -425,7 +516,8 @@ impl PatternDocument {
             let flat = piece.outline.flatten(0.5);
             let n = flat.points.len();
             for k in 0..n {
-                let d = geometry::distance_to_segment(pos, flat.points[k], flat.points[(k + 1) % n]);
+                let d =
+                    geometry::distance_to_segment(pos, flat.points[k], flat.points[(k + 1) % n]);
                 if d <= radius && best.is_none_or(|(bd, _)| d < bd) {
                     best = Some((d, EdgeRef::new(piece.id, flat.edge_of[k])));
                 }
@@ -436,7 +528,11 @@ impl PatternDocument {
 
     /// Topmost piece whose interior contains `pos`.
     pub fn pick_piece(&self, pos: Vec2) -> Option<PieceId> {
-        self.pieces.iter().rev().find(|p| p.contains(pos)).map(|p| p.id)
+        self.pieces
+            .iter()
+            .rev()
+            .find(|p| p.contains(pos))
+            .map(|p| p.id)
     }
 
     // --- sample content ----------------------------------------------------
@@ -467,11 +563,20 @@ impl PatternDocument {
                 vec![
                     Segment::Line,
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(185.0, 440.0), ctrl2: v(170.0, 540.0) },
+                    Segment::Cubic {
+                        ctrl1: v(185.0, 440.0),
+                        ctrl2: v(170.0, 540.0),
+                    },
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(70.0, 660.0 - neck_drop), ctrl2: v(-70.0, 660.0 - neck_drop) },
+                    Segment::Cubic {
+                        ctrl1: v(70.0, 660.0 - neck_drop),
+                        ctrl2: v(-70.0, 660.0 - neck_drop),
+                    },
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(-170.0, 540.0), ctrl2: v(-185.0, 440.0) },
+                    Segment::Cubic {
+                        ctrl1: v(-170.0, 540.0),
+                        ctrl2: v(-185.0, 440.0),
+                    },
                     Segment::Line,
                 ],
             )
@@ -488,16 +593,36 @@ impl PatternDocument {
         let chest = Vec3::new(0.0, 1.15, 0.0);
         if let Some(p) = doc.piece_mut(front) {
             p.arrangement.translation = chest + Vec3::new(0.0, 0.0, 0.22);
-            p.notches.push(Notch { edge: 0, t: 0.5, kind: NotchKind::Slit, depth: 6.0 });
-            p.notches.push(Notch { edge: 2, t: 0.5, kind: NotchKind::V, depth: 6.0 });
-            p.notches.push(Notch { edge: 6, t: 0.5, kind: NotchKind::V, depth: 6.0 });
+            p.notches.push(Notch {
+                edge: 0,
+                t: 0.5,
+                kind: NotchKind::Slit,
+                depth: 6.0,
+            });
+            p.notches.push(Notch {
+                edge: 2,
+                t: 0.5,
+                kind: NotchKind::V,
+                depth: 6.0,
+            });
+            p.notches.push(Notch {
+                edge: 6,
+                t: 0.5,
+                kind: NotchKind::V,
+                depth: 6.0,
+            });
             p.seam_allowance.per_edge.insert(0, 25.0); // hem
         }
         if let Some(p) = doc.piece_mut(back) {
             p.arrangement.translation = chest + Vec3::new(0.0, 0.0, -0.22);
             p.arrangement.rotation = Quat::from_rotation_y(std::f32::consts::PI);
             p.placement.angle = 180.0;
-            p.notches.push(Notch { edge: 0, t: 0.5, kind: NotchKind::Slit, depth: 6.0 });
+            p.notches.push(Notch {
+                edge: 0,
+                t: 0.5,
+                kind: NotchKind::Slit,
+                depth: 6.0,
+            });
             p.seam_allowance.per_edge.insert(0, 25.0);
         }
 
@@ -552,13 +677,26 @@ impl PatternDocument {
             let p = |x: f32, y: f32| ControlPoint::corner(ox + x, y);
             let v = |x: f32, y: f32| Vec2::new(ox + x, y);
             Outline::new(
-                vec![p(-STAND, 0.0), p(250.0, 0.0), p(250.0, 420.0), p(190.0, 630.0), p(90.0, 660.0), p(-STAND, 380.0)],
+                vec![
+                    p(-STAND, 0.0),
+                    p(250.0, 0.0),
+                    p(250.0, 420.0),
+                    p(190.0, 630.0),
+                    p(90.0, 660.0),
+                    p(-STAND, 380.0),
+                ],
                 vec![
                     Segment::Line,
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(185.0, 440.0), ctrl2: v(170.0, 540.0) },
+                    Segment::Cubic {
+                        ctrl1: v(185.0, 440.0),
+                        ctrl2: v(170.0, 540.0),
+                    },
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(62.0, 570.0), ctrl2: v(10.0, 440.0) },
+                    Segment::Cubic {
+                        ctrl1: v(62.0, 570.0),
+                        ctrl2: v(10.0, 440.0),
+                    },
                     Segment::Line,
                 ],
             )
@@ -569,13 +707,26 @@ impl PatternDocument {
             let p = |x: f32, y: f32| ControlPoint::corner(ox + x, y);
             let v = |x: f32, y: f32| Vec2::new(ox + x, y);
             Outline::new(
-                vec![p(-250.0, 0.0), p(STAND, 0.0), p(STAND, 380.0), p(-90.0, 660.0), p(-190.0, 630.0), p(-250.0, 420.0)],
+                vec![
+                    p(-250.0, 0.0),
+                    p(STAND, 0.0),
+                    p(STAND, 380.0),
+                    p(-90.0, 660.0),
+                    p(-190.0, 630.0),
+                    p(-250.0, 420.0),
+                ],
                 vec![
                     Segment::Line,
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(-10.0, 440.0), ctrl2: v(-62.0, 570.0) },
+                    Segment::Cubic {
+                        ctrl1: v(-10.0, 440.0),
+                        ctrl2: v(-62.0, 570.0),
+                    },
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(-170.0, 540.0), ctrl2: v(-185.0, 440.0) },
+                    Segment::Cubic {
+                        ctrl1: v(-170.0, 540.0),
+                        ctrl2: v(-185.0, 440.0),
+                    },
                     Segment::Line,
                 ],
             )
@@ -585,15 +736,33 @@ impl PatternDocument {
             let p = |x: f32, y: f32| ControlPoint::corner(ox + x, y);
             let v = |x: f32, y: f32| Vec2::new(ox + x, y);
             Outline::new(
-                vec![p(-250.0, 0.0), p(250.0, 0.0), p(250.0, 420.0), p(190.0, 630.0), p(90.0, 660.0), p(-90.0, 660.0), p(-190.0, 630.0), p(-250.0, 420.0)],
+                vec![
+                    p(-250.0, 0.0),
+                    p(250.0, 0.0),
+                    p(250.0, 420.0),
+                    p(190.0, 630.0),
+                    p(90.0, 660.0),
+                    p(-90.0, 660.0),
+                    p(-190.0, 630.0),
+                    p(-250.0, 420.0),
+                ],
                 vec![
                     Segment::Line,
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(185.0, 440.0), ctrl2: v(170.0, 540.0) },
+                    Segment::Cubic {
+                        ctrl1: v(185.0, 440.0),
+                        ctrl2: v(170.0, 540.0),
+                    },
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(70.0, 620.0), ctrl2: v(-70.0, 620.0) },
+                    Segment::Cubic {
+                        ctrl1: v(70.0, 620.0),
+                        ctrl2: v(-70.0, 620.0),
+                    },
                     Segment::Line,
-                    Segment::Cubic { ctrl1: v(-170.0, 540.0), ctrl2: v(-185.0, 440.0) },
+                    Segment::Cubic {
+                        ctrl1: v(-170.0, 540.0),
+                        ctrl2: v(-185.0, 440.0),
+                    },
                     Segment::Line,
                 ],
             )
@@ -617,7 +786,10 @@ impl PatternDocument {
                 .iter()
                 .map(|&y| {
                     let hole = Buttonhole::for_button(Vec2::ZERO, diameter);
-                    Buttonhole { position: Vec2::new(right_x + 0.5 * hole.length - 2.0, y), ..hole }
+                    Buttonhole {
+                        position: Vec2::new(right_x + 0.5 * hole.length - 2.0, y),
+                        ..hole
+                    }
                 })
                 .collect();
         }
@@ -630,7 +802,10 @@ impl PatternDocument {
                     finish: ButtonFinish::Pearl,
                     color: [0.62, 0.58, 0.50],
                     thread_color: [0.02, 0.025, 0.04],
-                    fastened_to: Some(ButtonholeRef { piece: right, index: index as u32 }),
+                    fastened_to: Some(ButtonholeRef {
+                        piece: right,
+                        index: index as u32,
+                    }),
                     ..Button::new(Vec2::new(left_x, y), diameter)
                 })
                 .collect();
@@ -664,17 +839,38 @@ impl PatternDocument {
 /// along the direction the button row runs (vertical for a single button)
 /// and matched from the same end. Returns (button, hole) index pairs, as
 /// many as the shorter list.
-fn pair_along_rows(buttons: &[(usize, Vec3)], holes: &[(ButtonholeRef, Vec3)]) -> Vec<(usize, usize)> {
+fn pair_along_rows(
+    buttons: &[(usize, Vec3)],
+    holes: &[(ButtonholeRef, Vec3)],
+) -> Vec<(usize, usize)> {
     let along = |points: &[Vec3]| -> Vec3 {
-        let (first, last) = points.iter().fold((points[0], points[0]), |(lo, hi), &p| (if p.y > lo.y { p } else { lo }, if p.y < hi.y { p } else { hi }));
-        (first - last).try_normalize().filter(|d| d.y.abs() > 0.3).unwrap_or(Vec3::Y)
+        let (first, last) = points.iter().fold((points[0], points[0]), |(lo, hi), &p| {
+            (
+                if p.y > lo.y { p } else { lo },
+                if p.y < hi.y { p } else { hi },
+            )
+        });
+        (first - last)
+            .try_normalize()
+            .filter(|d| d.y.abs() > 0.3)
+            .unwrap_or(Vec3::Y)
     };
     let row: Vec<Vec3> = buttons.iter().map(|b| b.1).collect();
     let direction = along(&row);
     let mut b: Vec<usize> = (0..buttons.len()).collect();
     let mut h: Vec<usize> = (0..holes.len()).collect();
-    b.sort_by(|&i, &j| buttons[j].1.dot(direction).total_cmp(&buttons[i].1.dot(direction)));
-    h.sort_by(|&i, &j| holes[j].1.dot(direction).total_cmp(&holes[i].1.dot(direction)));
+    b.sort_by(|&i, &j| {
+        buttons[j]
+            .1
+            .dot(direction)
+            .total_cmp(&buttons[i].1.dot(direction))
+    });
+    h.sort_by(|&i, &j| {
+        holes[j]
+            .1
+            .dot(direction)
+            .total_cmp(&holes[i].1.dot(direction))
+    });
     b.into_iter().zip(h).collect()
 }
 
@@ -693,7 +889,10 @@ mod tests {
         let boxes: Vec<_> = doc.pieces().iter().map(|p| p.outline.bounds()).collect();
         for (i, a) in boxes.iter().enumerate() {
             for b in &boxes[i + 1..] {
-                let apart = a.1.x + 29.0 < b.0.x || b.1.x + 29.0 < a.0.x || a.1.y + 29.0 < b.0.y || b.1.y + 29.0 < a.0.y;
+                let apart = a.1.x + 29.0 < b.0.x
+                    || b.1.x + 29.0 < a.0.x
+                    || a.1.y + 29.0 < b.0.y
+                    || b.1.y + 29.0 < a.0.y;
                 assert!(apart, "{a:?} and {b:?} overlap");
             }
         }
@@ -703,15 +902,25 @@ mod tests {
     fn buttons_are_done_up_in_order_down_the_row() {
         let mut doc = PatternDocument::new();
         let fabric = doc.add_fabric("Test", [0.5; 3]);
-        let square = || Outline::polygon([Vec2::ZERO, Vec2::new(200.0, 0.0), Vec2::new(200.0, 400.0), Vec2::new(0.0, 400.0)]);
+        let square = || {
+            Outline::polygon([
+                Vec2::ZERO,
+                Vec2::new(200.0, 0.0),
+                Vec2::new(200.0, 400.0),
+                Vec2::new(0.0, 400.0),
+            ])
+        };
         let left = doc.add_piece("Left", square(), fabric);
         let right = doc.add_piece("Right", square(), fabric);
         // Buttons every 100 mm, added out of order; the holes sit 60 mm
         // lower. Nearest-first would give the lowest button the middle
         // hole and leave the middle button the bottom one.
-        doc.piece_mut(left).unwrap().buttons = [100.0, 300.0, 200.0].map(|y| Button::new(Vec2::new(190.0, y), 15.0)).to_vec();
-        doc.piece_mut(right).unwrap().buttonholes =
-            [240.0, 140.0, 40.0].map(|y| Buttonhole::for_button(Vec2::new(10.0, y), 15.0)).to_vec();
+        doc.piece_mut(left).unwrap().buttons = [100.0, 300.0, 200.0]
+            .map(|y| Button::new(Vec2::new(190.0, y), 15.0))
+            .to_vec();
+        doc.piece_mut(right).unwrap().buttonholes = [240.0, 140.0, 40.0]
+            .map(|y| Buttonhole::for_button(Vec2::new(10.0, y), 15.0))
+            .to_vec();
         // Side by side, the right piece just past the left one's edge.
         doc.piece_mut(right).unwrap().arrangement.translation = Vec3::new(0.19, 0.0, 0.01);
         assert_eq!(doc.fasten_buttons(0.25), 3);
@@ -719,7 +928,13 @@ mod tests {
         let right_piece = doc.piece(right).unwrap();
         for button in &left_piece.buttons {
             let hole = &right_piece.buttonholes[button.fastened_to.unwrap().index as usize];
-            assert_eq!(button.position.y - hole.position.y, 60.0, "button at {} done up through the hole at {}", button.position.y, hole.position.y);
+            assert_eq!(
+                button.position.y - hole.position.y,
+                60.0,
+                "button at {} done up through the hole at {}",
+                button.position.y,
+                hole.position.y
+            );
         }
     }
 
@@ -764,9 +979,14 @@ mod tests {
         let doc = PatternDocument::demo_top();
         let front = doc.pieces()[0].id;
         let hit = doc.pick_handle(Vec2::new(-568.0, 1.0), 5.0).unwrap();
-        assert_eq!(hit, HandleRef { piece: front, kind: HandleKind::Anchor(0) });
+        assert_eq!(
+            hit,
+            HandleRef {
+                piece: front,
+                kind: HandleKind::Anchor(0)
+            }
+        );
         assert!(doc.pick_handle(Vec2::new(-320.0, 300.0), 5.0).is_none());
         assert_eq!(doc.pick_piece(Vec2::new(-320.0, 300.0)), Some(front));
     }
 }
-
