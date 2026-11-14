@@ -39,6 +39,7 @@ use faer::sparse::linalg::solvers::{Llt, SymbolicLlt};
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
 use faer::{MatMut, Side};
 use glam::{DVec3, Vec3, Vec3A};
+use physics_collision::TriangleMesh;
 use rayon::prelude::*;
 use topology_sync::DistanceField;
 
@@ -54,8 +55,15 @@ const STICK_SPEED: f32 = 0.01;
 /// Largest pressure friction counts with, N per vertex.
 const MAX_FRICTION_LOAD: f32 = 0.05;
 /// A vertex this far inside the body after the solve is put back on the
-/// skin outright, metres.
-const TOO_DEEP: f32 = 0.002;
+/// skin outright, metres (unless it is pinched between two surfaces:
+/// out of one is into the other).
+const TOO_DEEP: f32 = 0.0005;
+/// How far around a vertex the skin is looked for, metres: further than
+/// cloth moves in one Newton step.
+const REACH: f32 = 0.02;
+/// Cloth this close to the skin beyond the margin still grips it with at
+/// least its own weight, metres.
+const GRIP_BAND: f32 = 0.001;
 /// Real fabric gives easily for the first few percent (the yarns
 /// straighten), then hardly at all (they would have to stretch): beyond
 /// this strain along warp or weft, and this one on the bias...
@@ -196,6 +204,9 @@ pub struct StepInput<'a> {
     /// this step that is: the body is where it will be then, less its
     /// velocity times that.
     pub body: Option<&'a DistanceField>,
+    /// The skin itself, preferred to the field where given: both sides of
+    /// a narrow gap (arm and torso) are found, which a field cannot do.
+    pub body_mesh: Option<&'a TriangleMesh>,
     pub body_lag: f32,
 }
 
@@ -214,8 +225,11 @@ impl StepInput<'_> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GlobalStats {
     pub contacts: usize,
+    /// Vertices squeezed between two sides of the body.
+    pub pinched: usize,
     pub factorisations: usize,
     pub halvings: usize,
+    pub detect_us: u64,
     pub assemble_us: u64,
     pub factor_us: u64,
     pub solve_us: u64,
@@ -235,6 +249,30 @@ struct Pair {
     /// Into `contributions`.
     terms: Range<u32>,
 }
+
+/// A surface a vertex touches, held fixed for one Newton step: the body
+/// is a plane there.
+#[derive(Debug, Clone, Copy, Default)]
+struct Plane {
+    point: Vec3A,
+    /// Unit, away from the surface.
+    normal: Vec3A,
+    /// How fast the surface moves, m/s.
+    velocity: Vec3A,
+    /// The pressure friction works with on this plane, N.
+    load: f32,
+}
+
+impl Plane {
+    #[inline]
+    fn distance(&self, p: Vec3A) -> f32 {
+        (p - self.point).dot(self.normal)
+    }
+}
+
+/// Up to two sides of the body (a vertex between arm and torso touches
+/// both) and the floor.
+type Planes = [Option<Plane>; 3];
 
 /// A vertex against the body (and the floor) at the current shape.
 #[derive(Debug, Clone, Copy, Default)]
@@ -457,82 +495,135 @@ impl Global {
             }
         }));
 
-        // Per vertex: the body's normal and velocity where the step began,
-        // which friction works against for the whole step.
-        let frame: Vec<Option<(Vec3A, Vec3A)>> = if input.friction > 0.0 {
-            self.start
-                .par_iter()
-                .zip(&self.load)
-                .map(|(&p, &load)| {
-                    if load <= 0.0 {
-                        return None;
+        let (start, previous_load, friction) = (&self.start, &self.load, input.friction);
+        let (mass, gravity) = (&self.mass, input.gravity);
+        // The surfaces vertex `i` at `p` touches, or may touch within the
+        // next Newton step.
+        let detect = |i: usize, p: Vec3A| -> Planes {
+            let mut planes: Planes = [None; 3];
+            let reach = margin + REACH;
+            if let Some(mesh) = input.body_mesh {
+                for (slot, side) in mesh.sides(p, reach).into_iter().enumerate() {
+                    if let Some(side) = side {
+                        planes[slot] = Some(Plane {
+                            // The mesh is the body at the end of the frame.
+                            point: side.point - side.velocity * input.body_lag,
+                            normal: side.normal,
+                            velocity: side.velocity,
+                            load: 0.0,
+                        });
                     }
-                    let (_, normal, velocity) = input.body_at(p)?;
-                    Some((normal, velocity))
-                })
-                .collect()
-        } else {
-            vec![None; n]
-        };
-        let (start, load, friction) = (&self.start, &self.load, input.friction);
-        // The body, the floor and friction on vertex `i` at `p`.
-        let contact = |i: usize, p: Vec3A| -> Contact {
-            let mut c = Contact::default();
-            let mut touch = |normal: Vec3A, depth: f32| {
-                c.pressure = BODY_STIFFNESS * depth;
-                c.gradient -= normal * c.pressure;
-                c.energy += 0.5 * BODY_STIFFNESS * depth * depth;
-                c.hessian = outer(normal, BODY_STIFFNESS);
-            };
-            if let Some((distance, normal, _)) = input.body_at(p)
-                && distance < margin
+                }
+            } else if let Some((distance, normal, velocity)) = input.body_at(p)
+                && distance < reach
             {
-                touch(normal, margin - distance);
-            } else if p.y < input.ground + margin {
-                touch(Vec3A::Y, input.ground + margin - p.y);
+                planes[0] = Some(Plane {
+                    point: p - normal * distance,
+                    normal,
+                    velocity,
+                    load: 0.0,
+                });
             }
-            if let Some((normal, velocity)) = frame[i] {
-                // How far the vertex has slid on the body since the step began.
-                let moved = p - start[i] - velocity * h;
+            if p.y < input.ground + reach {
+                planes[2] = Some(Plane {
+                    point: Vec3A::new(p.x, input.ground, p.z),
+                    normal: Vec3A::Y,
+                    velocity: Vec3A::ZERO,
+                    load: 0.0,
+                });
+            }
+            // Friction: the pressure of the last step, shared between the
+            // planes by how far each pushes now (so a still torso holds
+            // what a rising arm only brushes), and at least the vertex's
+            // weight on a plane it lies on.
+            if friction > 0.0 {
+                let depth = |plane: &Plane| (margin - plane.distance(p)).max(0.0);
+                // The pressure of the last step, or what the cloth presses
+                // with now if more (it may have just arrived).
+                let pressing: f32 = planes
+                    .iter()
+                    .flatten()
+                    .map(|q| BODY_STIFFNESS * depth(q))
+                    .sum();
+                let previous = previous_load[i].max(pressing);
+                let touching = |plane: &Plane| plane.distance(p) < margin + GRIP_BAND;
+                let total: f32 = planes.iter().flatten().map(depth).sum();
+                let count = planes.iter().flatten().filter(|q| touching(q)).count();
+                let shares: [f32; 3] = std::array::from_fn(|k| match &planes[k] {
+                    Some(plane) if touching(plane) => {
+                        if total > 1e-9 {
+                            depth(plane) / total
+                        } else {
+                            1.0 / count as f32
+                        }
+                    }
+                    _ => 0.0,
+                });
+                for (plane, share) in planes.iter_mut().zip(shares) {
+                    if let Some(plane) = plane
+                        && share > 0.0
+                    {
+                        let weight = mass[i] * (-gravity.dot(plane.normal)).max(0.0);
+                        plane.load = (previous * share).max(weight).min(MAX_FRICTION_LOAD);
+                    }
+                }
+            }
+            planes
+        };
+        // The energy of vertex `i` at `p` against its planes.
+        let contact = |i: usize, p: Vec3A, planes: &Planes| -> Contact {
+            let mut c = Contact::default();
+            for plane in planes.iter().flatten() {
+                let depth = margin - plane.distance(p);
+                if depth > 0.0 {
+                    let pressure = BODY_STIFFNESS * depth;
+                    c.pressure += pressure;
+                    c.gradient -= plane.normal * pressure;
+                    c.energy += 0.5 * BODY_STIFFNESS * depth * depth;
+                    for (sum, value) in c
+                        .hessian
+                        .iter_mut()
+                        .zip(outer(plane.normal, BODY_STIFFNESS))
+                    {
+                        *sum += value;
+                    }
+                }
+                if plane.load <= 0.0 {
+                    continue;
+                }
+                // How far the vertex has slid on this surface since the
+                // step began.
+                let normal = plane.normal;
+                let moved = p - start[i] - plane.velocity * h;
                 let slid = moved - normal * moved.dot(normal);
                 let distance = slid.length();
-                let limit = friction * load[i].min(MAX_FRICTION_LOAD);
+                let limit = friction * plane.load;
                 let (force, energy) = friction_curve(distance, stick);
                 c.energy += limit * energy;
-                if distance > 1e-9 {
-                    let along = slid / distance;
-                    c.gradient += along * (limit * force);
-                    // Across the slide: force / distance. Along it: the
-                    // curve's slope.
-                    let across = limit * force / distance;
-                    let slope = if distance < stick {
-                        limit * (2.0 - 2.0 * distance / stick) / stick
-                    } else {
-                        0.0
-                    };
-                    let (t, a, nn) = (
-                        outer(along, slope - across),
-                        outer(normal, -across),
-                        [across, 0.0, 0.0, across, 0.0, across],
-                    );
-                    for k in 0..6 {
-                        c.hessian[k] += t[k] + a[k] + nn[k];
-                    }
+                // Stiffness force / distance in the whole plane of the
+                // surface (Li et al. 2020): a Newton step on it lands where
+                // the slide matches the surface. The true curvature along
+                // the slide is lower (a sliding force does not grow), and
+                // a step with it would overshoot without bound.
+                let across = if distance > 1e-9 {
+                    c.gradient += slid * (limit * force / distance);
+                    limit * force / distance
                 } else {
-                    let across = limit * 2.0 / stick;
-                    let (a, nn) = (
-                        outer(normal, -across),
-                        [across, 0.0, 0.0, across, 0.0, across],
-                    );
-                    for k in 0..6 {
-                        c.hessian[k] += a[k] + nn[k];
-                    }
+                    limit * 2.0 / stick
+                };
+                let (a, nn) = (
+                    outer(normal, -across),
+                    [across, 0.0, 0.0, across, 0.0, across],
+                );
+                for k in 0..6 {
+                    c.hessian[k] += a[k] + nn[k];
                 }
             }
             c
         };
-        let (terms, mass, target) = (&self.terms, &self.mass, &self.target);
-        let energy = |x: &[Vec3A]| -> f64 {
+        let pinched = |planes: &Planes| planes[0].is_some() && planes[1].is_some();
+        let (terms, target) = (&self.terms, &self.target);
+        let energy = |x: &[Vec3A], planes: &[Planes]| -> f64 {
             let elastic: f64 = terms
                 .par_iter()
                 .with_min_len(1024)
@@ -543,7 +634,7 @@ impl Global {
                 .with_min_len(512)
                 .map(|i| {
                     f64::from(0.5 * mass[i] * inertia * (x[i] - target[i]).length_squared())
-                        + f64::from(contact(i, x[i]).energy)
+                        + f64::from(contact(i, x[i], &planes[i]).energy)
                 })
                 .sum();
             elastic + rest
@@ -551,11 +642,20 @@ impl Global {
 
         // The first step is taken from where the cloth is: there its forces
         // are (nearly) in balance, which is the best place to linearise.
-        let mut current = energy(&state.positions);
         let mut pressures = vec![0.0f32; n];
+        let mut factor: Option<Llt<usize, f64>> = None;
+        let mut last_scale = 1.0f32;
         for _ in 0..input.iterations.max(1) {
             let clock = Instant::now();
             let x = &state.positions;
+            let detecting = Instant::now();
+            let planes: Vec<Planes> = (0..n)
+                .into_par_iter()
+                .with_min_len(64)
+                .map(|i| detect(i, x[i]))
+                .collect();
+            self.stats.detect_us += detecting.elapsed().as_micros() as u64;
+            let current = energy(x, &planes);
             self.locals
                 .par_iter_mut()
                 .zip(terms)
@@ -565,9 +665,10 @@ impl Global {
             let contacts: Vec<Contact> = (0..n)
                 .into_par_iter()
                 .with_min_len(256)
-                .map(|i| contact(i, x[i]))
+                .map(|i| contact(i, x[i], &planes[i]))
                 .collect();
             self.stats.contacts = contacts.iter().filter(|c| c.pressure > 0.0).count();
+            self.stats.pinched = planes.iter().filter(|p| pinched(p)).count();
             for (pressure, c) in pressures.iter_mut().zip(&contacts) {
                 *pressure = c.pressure;
             }
@@ -581,91 +682,105 @@ impl Global {
                     }
                     let mut g = (x[i] - target[i]) * (mass[i] * inertia) + contacts[i].gradient;
                     for &(term, slot) in &incident[i] {
-                        g += locals[term as usize].force * terms[term as usize].weights[slot as usize];
+                        g += locals[term as usize].force
+                            * terms[term as usize].weights[slot as usize];
                     }
                     g
                 })
                 .collect();
-            // The matrix: every pair's block, summed over its terms.
-            let contributions = &self.contributions;
-            let blocks: Vec<[f64; 6]> = self
-                .pairs
-                .par_iter()
-                .with_min_len(256)
-                .map(|pair| {
-                    let (mut identity, mut dyad) = (0.0f64, [0.0f64; 6]);
-                    for &(term, weight) in
-                        &contributions[pair.terms.start as usize..pair.terms.end as usize]
-                    {
-                        let local = &locals[term as usize];
-                        identity += f64::from(weight * local.across);
-                        let d = local.direction;
-                        let scale = weight * (local.along - local.across);
-                        for (sum, value) in dyad.iter_mut().zip(outer(d, scale)) {
-                            *sum += f64::from(value);
+            // The matrix of a Newton step serves the next one while that
+            // went well (the whole step was taken): the cloth has moved
+            // little, and the energy check below keeps every step going
+            // downhill all the same. A step that had to be shortened ran
+            // into what the matrix did not know (new contacts): then it is
+            // made afresh.
+            if factor.is_none() || last_scale < 1.0 {
+                // The matrix: every pair's block, summed over its terms.
+                let contributions = &self.contributions;
+                let blocks: Vec<[f64; 6]> = self
+                    .pairs
+                    .par_iter()
+                    .with_min_len(256)
+                    .map(|pair| {
+                        let (mut identity, mut dyad) = (0.0f64, [0.0f64; 6]);
+                        for &(term, weight) in
+                            &contributions[pair.terms.start as usize..pair.terms.end as usize]
+                        {
+                            let local = &locals[term as usize];
+                            identity += f64::from(weight * local.across);
+                            let d = local.direction;
+                            let scale = weight * (local.along - local.across);
+                            for (sum, value) in dyad.iter_mut().zip(outer(d, scale)) {
+                                *sum += f64::from(value);
+                            }
+                        }
+                        dyad[0] += identity;
+                        dyad[3] += identity;
+                        dyad[5] += identity;
+                        dyad
+                    })
+                    .collect();
+                for (pair, block) in self.pairs.iter().zip(&blocks) {
+                    // xx yx zx yy zy zz, symmetric.
+                    let full = [
+                        [block[0], block[1], block[2]],
+                        [block[1], block[3], block[4]],
+                        [block[2], block[4], block[5]],
+                    ];
+                    for a in 0..3 {
+                        if pair.i == pair.j {
+                            for b in a..3 {
+                                self.values[pair.at[a] + b - a] = full[b][a];
+                            }
+                        } else {
+                            for b in 0..3 {
+                                self.values[pair.at[a] + b] = full[b][a];
+                            }
                         }
                     }
-                    dyad[0] += identity;
-                    dyad[3] += identity;
-                    dyad[5] += identity;
-                    dyad
-                })
-                .collect();
-            for (pair, block) in self.pairs.iter().zip(&blocks) {
-                // xx yx zx yy zy zz, symmetric.
-                let full = [
-                    [block[0], block[1], block[2]],
-                    [block[1], block[3], block[4]],
-                    [block[2], block[4], block[5]],
-                ];
-                for a in 0..3 {
-                    if pair.i == pair.j {
-                        for b in a..3 {
-                            self.values[pair.at[a] + b - a] = full[b][a];
-                        }
+                }
+                for i in 0..n {
+                    let pair = &self.pairs[self.own[i] as usize];
+                    // A pinned vertex is held by a mass no force moves.
+                    let m = if mass[i] > 0.0 {
+                        f64::from(mass[i] * inertia)
                     } else {
-                        for b in 0..3 {
-                            self.values[pair.at[a] + b] = full[b][a];
+                        1e12
+                    };
+                    let c = contacts[i].hessian.map(f64::from);
+                    let lower = [
+                        [c[0] + m, c[1], c[2]],
+                        [0.0, c[3] + m, c[4]],
+                        [0.0, 0.0, c[5] + m],
+                    ];
+                    for a in 0..3 {
+                        for b in a..3 {
+                            self.values[pair.at[a] + b - a] += lower[a][b];
                         }
                     }
                 }
-            }
-            for i in 0..n {
-                let pair = &self.pairs[self.own[i] as usize];
-                // A pinned vertex is held by a mass no force moves.
-                let m = if mass[i] > 0.0 {
-                    f64::from(mass[i] * inertia)
-                } else {
-                    1e12
-                };
-                let c = contacts[i].hessian.map(f64::from);
-                let lower = [[c[0] + m, c[1], c[2]], [0.0, c[3] + m, c[4]], [0.0, 0.0, c[5] + m]];
-                for a in 0..3 {
-                    for b in a..3 {
-                        self.values[pair.at[a] + b - a] += lower[a][b];
-                    }
-                }
-            }
-            self.stats.assemble_us += clock.elapsed().as_micros() as u64;
+                self.stats.assemble_us += clock.elapsed().as_micros() as u64;
 
-            let clock = Instant::now();
-            let matrix = SparseColMatRef::new(
-                SymbolicSparseColMatRef::new_checked(
-                    3 * n,
-                    3 * n,
-                    &self.col_ptr,
-                    None,
-                    &self.row_idx,
-                ),
-                &self.values,
-            );
-            let Ok(factor) = Llt::try_new_with_symbolic(symbolic.clone(), matrix, Side::Lower)
-            else {
-                log::warn!("global cloth solve: the matrix could not be factorised");
-                break;
-            };
-            self.stats.factorisations += 1;
-            self.stats.factor_us += clock.elapsed().as_micros() as u64;
+                let clock = Instant::now();
+                let matrix = SparseColMatRef::new(
+                    SymbolicSparseColMatRef::new_checked(
+                        3 * n,
+                        3 * n,
+                        &self.col_ptr,
+                        None,
+                        &self.row_idx,
+                    ),
+                    &self.values,
+                );
+                let Ok(fresh) = Llt::try_new_with_symbolic(symbolic.clone(), matrix, Side::Lower)
+                else {
+                    log::warn!("global cloth solve: the matrix could not be factorised");
+                    break;
+                };
+                factor = Some(fresh);
+                self.stats.factorisations += 1;
+                self.stats.factor_us += clock.elapsed().as_micros() as u64;
+            }
 
             let clock = Instant::now();
             for (i, g) in gradient.iter().enumerate() {
@@ -673,6 +788,7 @@ impl Global {
                 self.rhs[3 * i + 1] = -f64::from(g.y);
                 self.rhs[3 * i + 2] = -f64::from(g.z);
             }
+            let Some(factor) = &factor else { break };
             factor.solve_in_place(MatMut::from_column_major_slice_mut(&mut self.rhs, 3 * n, 1));
             let step = |i: usize| {
                 DVec3::new(self.rhs[3 * i], self.rhs[3 * i + 1], self.rhs[3 * i + 2]).as_vec3a()
@@ -691,18 +807,25 @@ impl Global {
                 self.trial.clear();
                 self.trial
                     .extend((0..n).map(|i| state.positions[i] + step(i) * scale));
-                if input.body.is_some() {
-                    self.trial.par_iter_mut().with_min_len(256).for_each(|p| {
-                        if let Some((distance, normal, _)) = input.body_at(*p)
-                            && distance < margin - STOP_DEPTH
-                        {
-                            *p += normal * (margin - STOP_DEPTH - distance);
+                // A vertex that would pass far into a surface stops at it.
+                // Not one held between two: out of one is into the other.
+                self.trial
+                    .par_iter_mut()
+                    .zip(&planes)
+                    .with_min_len(256)
+                    .for_each(|(p, planes)| {
+                        if pinched(planes) {
+                            return;
+                        }
+                        for plane in planes.iter().flatten() {
+                            let distance = plane.distance(*p);
+                            if distance < margin - STOP_DEPTH {
+                                *p += plane.normal * (margin - STOP_DEPTH - distance);
+                            }
                         }
                     });
-                }
-                let next = energy(&self.trial);
+                let next = energy(&self.trial, &planes);
                 if next <= current {
-                    current = next;
                     taken = true;
                     break;
                 }
@@ -713,23 +836,32 @@ impl Global {
                 break;
             }
             std::mem::swap(&mut state.positions, &mut self.trial);
+            last_scale = scale;
             self.stats.last_step = size * scale;
             if size * scale < CONVERGED {
                 break;
             }
         }
-        self.load.clone_from(&pressures);
-
-        // What the penalty left too deep is put on the skin.
-        if input.body.is_some() {
-            state.positions.par_iter_mut().for_each(|p| {
-                if let Some((distance, normal, _)) = input.body_at(*p)
-                    && distance < -TOO_DEEP
-                {
-                    *p -= normal * distance;
+        // What the penalty left too deep is put on the skin, unless it is
+        // squeezed between two surfaces.
+        state
+            .positions
+            .par_iter_mut()
+            .enumerate()
+            .with_min_len(64)
+            .for_each(|(i, p)| {
+                let planes = detect(i, *p);
+                if pinched(&planes) {
+                    return;
+                }
+                if let Some(plane) = &planes[0] {
+                    let distance = plane.distance(*p);
+                    if distance < -TOO_DEEP {
+                        *p -= plane.normal * distance;
+                    }
                 }
             });
-        }
+        self.load.clone_from(&pressures);
         for i in 0..n {
             state.velocities[i] = if self.mass[i] > 0.0 {
                 ((state.positions[i] - self.start[i]) / h).clamp_length_max(input.max_speed)
@@ -769,6 +901,7 @@ mod tests {
             max_speed: 20.0,
             iterations,
             body: None,
+            body_mesh: None,
             body_lag: 0.0,
         }
     }

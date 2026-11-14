@@ -21,6 +21,29 @@ pub struct SurfaceHit {
 /// metres: about where cloth under tension stops following a fold.
 const CREASE: f32 = 0.015;
 
+/// Where a point lies against the skin: the nearest point of one side
+/// of it. See [`TriangleMesh::sides`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfacePoint {
+    pub triangle: u32,
+    /// The nearest point of the surface.
+    pub point: Vec3A,
+    /// Unit direction away from the surface at `point`, towards the query
+    /// point when that is outside.
+    pub normal: Vec3A,
+    /// Signed distance along `normal`: negative inside.
+    pub distance: f32,
+    /// How fast the surface moves there, m/s.
+    pub velocity: Vec3A,
+}
+
+/// Two surfaces face each other (arm against torso, thigh against
+/// thigh) when their normals are further apart than this (cosine).
+const FACING: f32 = -0.3;
+/// A point is in front of a triangle when the direction to it is this
+/// close to the triangle's normal (cosine).
+const IN_FRONT: f32 = 0.5;
+
 /// The surface point nearest to a query point.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Clearance {
@@ -36,6 +59,8 @@ pub struct TriangleMesh {
     normals: Vec<Vec3A>,
     triangles: Vec<[u32; 3]>,
     bvh: Bvh,
+    /// Per vertex, m/s; empty for a surface that stands still.
+    velocities: Vec<Vec3A>,
 }
 
 impl TriangleMesh {
@@ -59,7 +84,112 @@ impl TriangleMesh {
             positions,
             normals,
             triangles,
+            velocities: Vec::new(),
         }
+    }
+
+    /// The same surface moving at `velocities` (m/s per vertex).
+    pub fn with_velocities(mut self, velocities: Vec<Vec3A>) -> Self {
+        if velocities.len() == self.positions.len() {
+            self.velocities = velocities;
+        }
+        self
+    }
+
+    /// The surface's velocity at the point with `weights` on `triangle`.
+    pub fn velocity_at(&self, triangle: u32, weights: [f32; 3]) -> Vec3A {
+        if self.velocities.is_empty() {
+            return Vec3A::ZERO;
+        }
+        let t = self.triangles[triangle as usize];
+        (0..3).fold(Vec3A::ZERO, |sum, k| {
+            sum + self.velocities[t[k] as usize] * weights[k]
+        })
+    }
+
+    /// The skin around `p`, within `radius`: the nearest point of it, and
+    /// the nearest point of a surface facing that one (the torso for a
+    /// point by the inside of the arm). A point squeezed between the two
+    /// can then be held by both, instead of being pushed out of whichever
+    /// is nearer, into the other.
+    pub fn sides(&self, p: Vec3A, radius: f32) -> [Option<SurfacePoint>; 2] {
+        struct Candidate {
+            triangle: u32,
+            point: Vec3A,
+            weights: [f32; 3],
+            length: f32,
+            face: Vec3A,
+        }
+        let mut found: Vec<Candidate> = Vec::new();
+        let query = Aabb::from_points([p]).expanded(radius);
+        self.bvh.query(&query, |triangle| {
+            let [a, b, c] = self.corners(triangle);
+            let (point, weights) = closest_point_on_triangle(p, a, b, c);
+            let length = point.distance(p);
+            if length <= radius {
+                found.push(Candidate {
+                    triangle,
+                    point,
+                    weights,
+                    length,
+                    face: (b - a).cross(c - a).normalize_or_zero(),
+                });
+            }
+        });
+        let Some(nearest) = found.iter().min_by(|a, b| a.length.total_cmp(&b.length)) else {
+            return [None, None];
+        };
+        // Inside or outside is told by the nearest point only, with the
+        // interpolated vertex normal there (at an edge or a corner the
+        // face normal is ambiguous). Further triangles would say "inside"
+        // for any point beside a curved surface.
+        let t = self.triangles[nearest.triangle as usize];
+        let smooth = (0..3)
+            .fold(Vec3A::ZERO, |sum, k| {
+                sum + self.normals[t[k] as usize] * nearest.weights[k]
+            })
+            .normalize_or_zero();
+        let reference = if smooth == Vec3A::ZERO {
+            nearest.face
+        } else {
+            smooth
+        };
+        let offset = p - nearest.point;
+        let (normal, distance) = if nearest.length > 1e-7 {
+            let direction = offset / nearest.length;
+            if direction.dot(reference) >= 0.0 {
+                (direction, nearest.length)
+            } else {
+                (-direction, -nearest.length)
+            }
+        } else {
+            (reference, 0.0)
+        };
+        let first = SurfacePoint {
+            triangle: nearest.triangle,
+            point: nearest.point,
+            normal,
+            distance,
+            velocity: self.velocity_at(nearest.triangle, nearest.weights),
+        };
+        // The other side: a surface the point is in front of, facing the
+        // first one.
+        let facing = found
+            .iter()
+            .filter(|c| c.length > 1e-7)
+            .filter(|c| {
+                let direction = (p - c.point) / c.length;
+                direction.dot(c.face) > IN_FRONT && direction.dot(first.normal) < FACING
+            })
+            .min_by(|a, b| a.length.total_cmp(&b.length))
+            .map(|c| SurfacePoint {
+                triangle: c.triangle,
+                point: c.point,
+                normal: (p - c.point) / c.length,
+                distance: c.length,
+                velocity: self.velocity_at(c.triangle, c.weights),
+            });
+        [Some(first), facing]
     }
 
     /// Vertex positions.
@@ -352,6 +482,48 @@ mod tests {
             .flat_map(|q| [[q[0], q[1], q[2]], [q[0], q[2], q[3]]])
             .collect();
         TriangleMesh::new(positions, triangles)
+    }
+
+    /// Two unit cubes side by side along X with a gap of `gap` between
+    /// them; the second moves at `velocity`.
+    fn two_cubes(gap: f32, velocity: Vec3A) -> TriangleMesh {
+        let one = cube();
+        let shift = Vec3A::new(1.0 + gap, 0.0, 0.0);
+        let mut positions = one.positions.clone();
+        positions.extend(one.positions.iter().map(|&p| p + shift));
+        let mut triangles = one.triangles.clone();
+        triangles.extend(one.triangles.iter().map(|t| t.map(|i| i + 8)));
+        let velocities = (0..16)
+            .map(|i| if i < 8 { Vec3A::ZERO } else { velocity })
+            .collect();
+        TriangleMesh::new(positions, triangles).with_velocities(velocities)
+    }
+
+    #[test]
+    fn a_point_between_two_surfaces_sees_both() {
+        let up = Vec3A::new(0.0, 1.0, 0.0);
+        let mesh = two_cubes(0.01, up);
+        // 4 mm off the first cube's +X face, 6 mm off the second's −X face.
+        let [near, far] = mesh.sides(Vec3A::new(0.504, 0.1, 0.2), 0.02);
+        let (near, far) = (near.expect("near side"), far.expect("far side"));
+        assert!((near.distance - 0.004).abs() < 1e-5, "{}", near.distance);
+        assert!((near.normal - Vec3A::X).length() < 1e-4);
+        assert_eq!(near.velocity, Vec3A::ZERO);
+        assert!((far.distance - 0.006).abs() < 1e-5, "{}", far.distance);
+        assert!((far.normal + Vec3A::X).length() < 1e-4);
+        assert!((far.velocity - up).length() < 1e-5);
+        // Inside the first cube, near its face: negative distance, the
+        // normal still pointing out.
+        let [inside, _] = mesh.sides(Vec3A::new(0.497, 0.1, 0.2), 0.02);
+        let inside = inside.expect("inside");
+        assert!(
+            (inside.distance + 0.003).abs() < 1e-5,
+            "{}",
+            inside.distance
+        );
+        assert!((inside.normal - Vec3A::X).length() < 1e-4);
+        // Far from the gap, only one side.
+        assert!(mesh.sides(Vec3A::new(0.0, 0.51, 0.0), 0.02)[1].is_none());
     }
 
     #[test]

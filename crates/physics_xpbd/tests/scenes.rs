@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use avatar::motion::Joint;
-use avatar::{Angles, BodyMesh, BodyModel, BodyParams, Motion, Performance, Pose, PoseParams, Side};
+use avatar::{
+    Angles, BodyMesh, BodyModel, BodyParams, Motion, Performance, Pose, PoseParams, Side,
+};
 use cad_core::PatternDocument;
 use glam::Vec3;
 use physics_xpbd::XpbdSolver;
@@ -75,8 +77,14 @@ fn side_stretch(t: f32) -> Angles {
     a.set(Joint::SpineSide, 28.0 * lean);
     a.set(Joint::ArmRaise(Side::Right), 13.0 + (165.0 - 13.0) * lean);
     a.set(Joint::ArmTwist(Side::Right), 20.0 * lean);
+    // The left hand comes away from the side the body bends over, as it
+    // would: kept by it, it would sink into the thigh.
+    a.set(Joint::ArmRaise(Side::Left), 13.0 + LEFT_ARM * lean);
     a
 }
+
+/// How far the left arm comes out in the side stretch, degrees.
+const LEFT_ARM: f32 = 25.0;
 
 fn standing(_: f32) -> Angles {
     Angles::default()
@@ -205,9 +213,8 @@ fn self_crossings(mesh: &GarmentMesh, edges: &[(u32, u32, f32)]) -> usize {
         sewn[s.a as usize].push(s.b);
         sewn[s.b as usize].push(s.a);
     }
-    let touches = |tri: &[u32], v: u32| {
-        tri.contains(&v) || sewn[v as usize].iter().any(|s| tri.contains(s))
-    };
+    let touches =
+        |tri: &[u32], v: u32| tri.contains(&v) || sewn[v as usize].iter().any(|s| tri.contains(s));
     let mut count = 0;
     let mut seen: Vec<u32> = Vec::new();
     for &(a, b, _) in edges {
@@ -229,7 +236,8 @@ fn self_crossings(mesh: &GarmentMesh, edges: &[(u32, u32, f32)]) -> usize {
                         if touches(tri, a) || touches(tri, b) {
                             continue;
                         }
-                        let [u, v, w] = [x[tri[0] as usize], x[tri[1] as usize], x[tri[2] as usize]];
+                        let [u, v, w] =
+                            [x[tri[0] as usize], x[tri[1] as usize], x[tri[2] as usize]];
                         count += usize::from(crosses(p, q, u, v, w));
                     }
                 }
@@ -251,6 +259,12 @@ struct Report {
     inside: (usize, f32),
     /// Cloth edges through cloth triangles, worst sampled frame.
     crossings: usize,
+    /// Vertices held between two sides of the body, worst frame (global
+    /// solver only).
+    pinched: usize,
+    /// Vertices inside the skin where it meets or overlaps itself, worst
+    /// frame.
+    trapped: usize,
     /// At the extreme pose: the hem's rise on the avatar's right and left,
     /// and the right underarm point's, metres.
     hem_rise: [f32; 2],
@@ -442,7 +456,10 @@ fn run(scene: &Scene, backend: SolverBackend, distance: f32) -> Report {
             .map(|(a, b)| *b - *a)
             .collect();
         let mean = moves.iter().copied().sum::<Vec3>() / moves.len().max(1) as f32;
-        let moved = moves.iter().map(|m| m.distance(mean)).fold(0.0f32, f32::max);
+        let moved = moves
+            .iter()
+            .map(|m| m.distance(mean))
+            .fold(0.0f32, f32::max);
         let pieces = ((moved / 0.012).ceil() as usize).clamp(1, 6);
         let mut frame_ms = 0.0;
         for piece in 1..=pieces {
@@ -463,7 +480,10 @@ fn run(scene: &Scene, backend: SolverBackend, distance: f32) -> Report {
                 .collect();
             body = then;
             field = field_of(&body, topology.mesh(), Some(&velocities));
-            collider = Arc::new(body.collider());
+            collider = Arc::new(
+                body.collider()
+                    .with_velocities(velocities.iter().map(|&v| v.into()).collect()),
+            );
             let clock = Instant::now();
             solver.step(topology.mesh_mut(), &ctx!(step));
             frame_ms += clock.elapsed().as_secs_f32() * 1e3;
@@ -471,19 +491,33 @@ fn run(scene: &Scene, backend: SolverBackend, distance: f32) -> Report {
         total_ms += frame_ms;
         report.ms.1 = report.ms.1.max(frame_ms);
 
+        if backend == SolverBackend::Global {
+            report.pinched = report.pinched.max(solver.global_stats().pinched);
+        }
         let x = &topology.mesh().positions;
         let (worst, typical) = stretch(x, &edges);
         report.stretch.0 = report.stretch.0.max(worst);
         report.stretch.1 = report.stretch.1.max(typical);
-        let (mut inside, mut deepest) = (0, 0.0f32);
+        // Against the skin itself: inside, unless squeezed where two
+        // surfaces of the body meet or overlap (the armpit with the arm
+        // down), where no place is outside both.
+        let (mut inside, mut deepest, mut trapped) = (0, 0.0f32, 0);
+        let margin = settings.collision_margin;
         for p in x {
-            if let Some((d, _)) = field.sample(*p)
-                && d < 0.0
-            {
+            let [near, other] = collider.sides((*p).into(), 0.03);
+            let Some(near) = near else { continue };
+            if near.distance >= 0.0 {
+                continue;
+            }
+            let squeezed = other.is_some_and(|o| o.distance + near.distance < 2.0 * margin);
+            if squeezed {
+                trapped += 1;
+            } else {
                 inside += 1;
-                deepest = deepest.max(-d);
+                deepest = deepest.max(-near.distance);
             }
         }
+        report.trapped = report.trapped.max(trapped);
         if inside > report.inside.0 {
             report.inside.0 = inside;
         }
@@ -506,11 +540,40 @@ fn run(scene: &Scene, backend: SolverBackend, distance: f32) -> Report {
             );
         }
         if frame % 5 == 0 {
-            report.crossings = report.crossings.max(self_crossings(topology.mesh(), &edges));
+            report.crossings = report
+                .crossings
+                .max(self_crossings(topology.mesh(), &edges));
         }
         if frame == LEAD {
             let (hem, underarm) = probes.heights(x);
             before = Some((x.clone(), hem, underarm));
+        }
+        if std::env::var("SCENE_DUMP")
+            .ok()
+            .and_then(|f| f.parse::<usize>().ok())
+            == Some(frame)
+        {
+            let mut worst: Vec<(f32, u32, u32)> = edges
+                .iter()
+                .map(|&(a, b, rest)| (x[a as usize].distance(x[b as usize]) / rest - 1.0, a, b))
+                .collect();
+            worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+            for &(strain, a, b) in worst.iter().take(8) {
+                let [near, other] = collider.sides(x[a as usize].into(), 0.03);
+                eprintln!(
+                    "    {:5.1}%  {a}-{b} at {:.3?} - {:.3?}, skin {:?} mm, other side {:?} mm",
+                    strain * 100.0,
+                    x[a as usize],
+                    x[b as usize],
+                    near.map(|s| (s.distance * 1e3).round()),
+                    other.map(|s| (s.distance * 1e3).round()),
+                );
+            }
+            for name in ["upperarm01.R", "upperarm01.L", "spine01"] {
+                if let Some(bone) = model.bone(name) {
+                    eprintln!("    joint {name} at {:.3?}", body.joints[bone].head);
+                }
+            }
         }
         if frame == extreme
             && let Some((_, hem, underarm)) = &before
@@ -538,7 +601,8 @@ fn run(scene: &Scene, backend: SolverBackend, distance: f32) -> Report {
                     );
                 }
                 // Where the stretched edges are: height bands of 5 cm.
-                let mut bands: std::collections::BTreeMap<i32, (usize, usize, f32)> = Default::default();
+                let mut bands: std::collections::BTreeMap<i32, (usize, usize, f32)> =
+                    Default::default();
                 for &(a, b, rest) in &edges {
                     let (p, q) = (x[a as usize], x[b as usize]);
                     let strain = p.distance(q) / rest - 1.0;
@@ -592,8 +656,15 @@ fn run(scene: &Scene, backend: SolverBackend, distance: f32) -> Report {
     if backend == SolverBackend::Global {
         let s = solver.global_stats();
         eprintln!(
-            "  last step: {} factorisations {} us, solves {} us, assembly {} us, {} contacts, {} halvings, moved {:.5}",
-            s.factorisations, s.factor_us, s.solve_us, s.assemble_us, s.contacts, s.halvings, s.last_step
+            "  last step: {} factorisations {} us, solves {} us, assembly {} us (contact search {} us), {} contacts, {} halvings, moved {:.5}",
+            s.factorisations,
+            s.factor_us,
+            s.solve_us,
+            s.assemble_us,
+            s.detect_us,
+            s.contacts,
+            s.halvings,
+            s.last_step
         );
     }
     report
@@ -620,7 +691,7 @@ fn scenes() {
         .and_then(|d| d.parse().ok())
         .unwrap_or(20.0);
     println!(
-        "{:<13}{:<9}{:>8}{:>8}{:>9}{:>8}{:>8}{:>8}{:>7}{:>9}{:>9}{:>9}{:>8}{:>9}{:>9}",
+        "{:<13}{:<9}{:>8}{:>8}{:>9}{:>8}{:>8}{:>8}{:>8}{:>7}{:>7}{:>9}{:>9}{:>9}{:>8}{:>9}{:>9}",
         "scene",
         "solver",
         "ms/frm",
@@ -629,7 +700,9 @@ fn scenes() {
         "p99",
         "inside",
         "deep mm",
+        "trapped",
         "cross",
+        "pinch",
         "hem R cm",
         "hem L cm",
         "arm cm",
@@ -638,13 +711,16 @@ fn scenes() {
         "still mm"
     );
     for scene in &SCENES {
-        if only.as_ref().is_some_and(|o| !scene.name.contains(o.as_str())) {
+        if only
+            .as_ref()
+            .is_some_and(|o| !scene.name.contains(o.as_str()))
+        {
             continue;
         }
         for (name, backend) in backends() {
             let r = run(scene, backend, distance);
             println!(
-                "{:<13}{:<9}{:>8.1}{:>8.1}{:>8.1}%{:>7.1}%{:>8}{:>8.1}{:>7}{:>9.1}{:>9.1}{:>9.1}{:>8.1}{:>9.1}{:>9.3}",
+                "{:<13}{:<9}{:>8.1}{:>8.1}{:>8.1}%{:>7.1}%{:>8}{:>8.1}{:>8}{:>7}{:>7}{:>9.1}{:>9.1}{:>9.1}{:>8.1}{:>9.1}{:>9.3}",
                 scene.name,
                 name,
                 r.ms.0,
@@ -653,7 +729,9 @@ fn scenes() {
                 r.stretch.1 * 100.0,
                 r.inside.0,
                 r.inside.1 * 1e3,
+                r.trapped,
                 r.crossings,
+                r.pinched,
                 r.hem_rise[0] * 100.0,
                 r.hem_rise[1] * 100.0,
                 r.underarm_rise * 100.0,
@@ -662,5 +740,47 @@ fn scenes() {
                 r.still * 1e3,
             );
         }
+    }
+}
+
+/// How deep the left hand reaches into the rest of the body during the
+/// side stretch: skin of the hand inside the torso or thigh.
+#[test]
+#[ignore = "a diagnostic"]
+fn side_stretch_hand_against_hip() {
+    let model = model();
+    let rest = model.build(&BodyParams::female());
+    let arm = model.arm_vertices();
+    for t in [0.0f32, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0] {
+        let body = model.pose(&rest, &side_stretch(t).to_pose(&model, &rest));
+        // The rest of the body without the arms, as a collider.
+        let others: Vec<[u32; 3]> = body
+            .skin()
+            .iter()
+            .filter(|t| t.iter().all(|&v| !arm[v as usize]))
+            .copied()
+            .collect();
+        let collider = physics_collision::TriangleMesh::new(
+            body.positions.iter().map(|&p| p.into()).collect(),
+            others,
+        );
+        let mut deepest = 0.0f32;
+        let mut count = 0;
+        for (v, p) in body.positions.iter().enumerate() {
+            // The left hand and forearm (+X), below the elbow height.
+            if !arm[v] || p.x < 0.0 || p.y > 1.05 {
+                continue;
+            }
+            if let [Some(near), _] = collider.sides((*p).into(), 0.03)
+                && near.distance < 0.0
+            {
+                count += 1;
+                deepest = deepest.max(-near.distance);
+            }
+        }
+        println!(
+            "t {t:.1}: {count} hand vertices inside the body, deepest {:.1} mm",
+            deepest * 1e3
+        );
     }
 }

@@ -5,15 +5,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use glam::{Vec3, Vec3A};
-use rayon::prelude::*;
 use physics_collision::{ClothContacts, ContactParams};
+use rayon::prelude::*;
 use topology_sync::{
     ClothSolver, DistanceField, GarmentMesh, SolverBackend, SolverContext, SolverStats,
 };
 
 use crate::cpu::{self, Ellipsoid, State, SubstepParams};
-use crate::model::Model;
 use crate::global::Global;
+use crate::model::Model;
 use crate::ogc::{Ogc, StepInput};
 
 /// Speed limit in m/s; far above anything cloth does under gravity.
@@ -22,7 +22,7 @@ const MAX_SUBSTEPS: u32 = 64;
 /// Iterations per sub-step of the contact solver.
 const CONTACT_ITERATIONS: usize = 2;
 /// Newton steps per part of a step of the global solver, at most.
-const GLOBAL_ITERATIONS: usize = 2;
+const GLOBAL_ITERATIONS: usize = 3;
 /// The global solver splits a step so that the body moves no further
 /// than this in a part, metres...
 const GLOBAL_STRIDE: f32 = 0.004;
@@ -602,7 +602,6 @@ impl XpbdSolver {
         self.gpu_current = false;
         let settings = ctx.settings;
         let Some(p) = substeps.last() else { return };
-        let setting = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<usize>().ok());
         // A step is one linear solve, which holds while the cloth only
         // turns a little: where the body pushes it far, the step is split
         // and the body swept through the parts.
@@ -622,9 +621,7 @@ impl XpbdSolver {
                 })
                 .reduce(|| 0.0f32, f32::max)
         });
-        let count = setting("GLOBAL_SUBSTEPS")
-            .unwrap_or((moved / GLOBAL_STRIDE).ceil() as usize)
-            .clamp(1, GLOBAL_MAX_SUBSTEPS);
+        let count = ((moved / GLOBAL_STRIDE).ceil() as usize).clamp(1, GLOBAL_MAX_SUBSTEPS);
         let h = ctx.dt / count as f32;
         let mut s = crate::global::GlobalStats::default();
         for index in 0..count {
@@ -637,19 +634,22 @@ impl XpbdSolver {
                 margin: p.margin,
                 ground: p.ground,
                 max_speed: p.max_speed,
-                iterations: setting("GLOBAL_ITERATIONS").unwrap_or(GLOBAL_ITERATIONS),
+                iterations: GLOBAL_ITERATIONS,
                 body: self.body.as_deref(),
+                body_mesh: ctx.body_mesh.map(|m| &**m),
                 body_lag: h * (count - 1 - index) as f32,
             };
             self.global.step(&mut self.state, &input);
             let step = self.global.stats;
             s.contacts = step.contacts;
+            s.pinched = step.pinched;
             s.last_step = step.last_step;
             s.factorisations += step.factorisations;
             s.halvings += step.halvings;
             s.factor_us += step.factor_us;
             s.solve_us += step.solve_us;
             s.assemble_us += step.assemble_us;
+            s.detect_us += step.detect_us;
         }
         self.global.stats = s;
         log::trace!(
@@ -660,17 +660,13 @@ impl XpbdSolver {
             s.assemble_us,
             s.last_step
         );
-        let mut stopped = 0;
-        if settings.continuous_body_collision
-            && let Some(body) = ctx.body_mesh
-        {
-            let margin = settings.collision_margin.max(0.0);
-            for (i, normal) in body.sweep_all(&self.step_start, &mut self.state.positions, margin) {
-                let v = &mut self.state.velocities[i as usize];
-                *v -= normal * v.dot(normal).min(0.0);
-                stopped += 1;
-            }
-        }
+        // No sweep of the paths here, unlike the other solvers: the step is
+        // split so finely that cloth cannot pass through a limb within it,
+        // and what ends a step inside the skin is put back on it by the
+        // solver. Swept against the body where it ended up, paths of cloth
+        // between two moving parts (a hand by the hip) were stopped short
+        // by skin that had only swept past, tearing the cloth.
+        let stopped = 0;
         self.stats.cloth_contacts = 0;
         self.stats.cloth_crossings = 0;
         self.stats.body_stops = s.contacts + stopped;

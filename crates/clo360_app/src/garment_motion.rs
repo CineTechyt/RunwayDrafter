@@ -288,7 +288,10 @@ fn run(job: Job, sender: &Sender<Message>) {
                 ));
                 timing[1] += clock.elapsed();
                 let clock = std::time::Instant::now();
-                collider = Arc::new(body.collider());
+                collider = Arc::new(
+                    body.collider()
+                        .with_velocities(velocities.iter().map(|&v| v.into()).collect()),
+                );
                 timing[2] += clock.elapsed();
             }
             let clock = std::time::Instant::now();
