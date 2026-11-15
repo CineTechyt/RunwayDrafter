@@ -7,6 +7,7 @@ mod garment_motion;
 mod project;
 mod screenshot;
 mod session;
+mod simulation;
 
 use winit::event_loop::{ControlFlow, EventLoop};
 

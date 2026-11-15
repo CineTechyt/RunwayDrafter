@@ -97,6 +97,15 @@ pub fn show(ctx: &egui::Context, editor: &mut EditorState, output: &mut UiOutput
                             ui.checkbox(&mut import.flip_y, "Flip Y");
                             ui.end_row();
 
+                            ui.label("Tiled pages");
+                            ui.checkbox(&mut import.join_pages, "Join A4 / Letter pages")
+                                .on_hover_text(
+                                    "For patterns printed on many small sheets: find which \
+                                     page joins which and tape them together into one sheet. \
+                                     Press Inspect again after changing this.",
+                                );
+                            ui.end_row();
+
                             ui.label("Default seam allowance");
                             ui.add(
                                 egui::DragValue::new(&mut import.default_allowance_mm)

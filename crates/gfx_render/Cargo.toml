@@ -16,6 +16,7 @@ log.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 pollster.workspace = true
 physics_xpbd.workspace = true
 avatar.workspace = true

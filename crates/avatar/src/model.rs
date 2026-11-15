@@ -182,6 +182,15 @@ pub struct Joint {
     pub tail: Vec3,
 }
 
+/// Bones of the skeleton that garment placement needs, as indices into
+/// [`BodyMesh::joints`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Limbs {
+    /// Upper arm and forearm of the left arm (+x), then the right.
+    pub arms: [Option<(usize, usize)>; 2],
+    pub neck: Option<usize>,
+}
+
 /// One bone of the skeleton. Its joints are defined by marker vertices of
 /// the base mesh, so they follow every morph.
 #[derive(Debug, Clone)]
@@ -205,11 +214,24 @@ pub struct BodyMesh {
     pub shoulder_points: [u32; 2],
     /// One entry per bone of the model's skeleton, in the same order.
     pub joints: Vec<Joint>,
+    /// The bones garment placement wraps sleeves and collars around.
+    pub limbs: Limbs,
     /// Centres of rotation for skinning, worked out on first posing.
     pub(crate) centres: std::sync::OnceLock<std::sync::Arc<Vec<Vec3>>>,
 }
 
 impl BodyMesh {
+    /// The shoulder and elbow joints of the left (`true`) or right arm.
+    pub fn arm_axis(&self, left: bool) -> Option<(Vec3, Vec3)> {
+        let (upper, lower) = self.limbs.arms[usize::from(!left)]?;
+        Some((self.joints.get(upper)?.head, self.joints.get(lower)?.head))
+    }
+
+    /// The base of the neck: the head of the neck's first bone.
+    pub fn neck_base(&self) -> Option<Vec3> {
+        Some(self.joints.get(self.limbs.neck?)?.head)
+    }
+
     /// A body from plain geometry (an imported avatar): no skeleton, and
     /// every triangle counts as skin.
     pub fn from_triangles(
@@ -224,6 +246,7 @@ impl BodyMesh {
             triangles,
             shoulder_points: [0; 2],
             joints: Vec::new(),
+            limbs: Limbs::default(),
             centres: Default::default(),
         }
     }
@@ -548,8 +571,19 @@ impl BodyModel {
             .collect();
         positions.truncate(self.mesh_vertices);
 
+        let arm = |side: &str| {
+            Some((
+                self.bone(&format!("upperarm01.{side}"))?,
+                self.bone(&format!("lowerarm01.{side}"))?,
+            ))
+        };
+        let limbs = Limbs {
+            arms: [arm("L"), arm("R")],
+            neck: self.bone("neck01"),
+        };
         let mut mesh = BodyMesh {
             joints,
+            limbs,
             positions,
             normals: Vec::new(),
             triangles: self.triangles.clone(),

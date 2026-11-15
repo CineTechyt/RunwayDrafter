@@ -321,6 +321,22 @@ impl Panel for PatternPropertiesPanel {
                         }
                     });
                     property_grid(ui, "placement", |ui| {
+                        ui.label("On");
+                        egui::ComboBox::from_id_salt("placement_part")
+                            .selected_text(piece.placement.part.label())
+                            .show_ui(ui, |ui| {
+                                for part in cad_core::BodyPart::ALL {
+                                    changed |= ui
+                                        .selectable_value(&mut piece.placement.part, part, part.label())
+                                        .changed();
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "What the piece is wrapped around before sewing: the torso, an arm \
+                                 (sleeves: the top of the piece at the shoulder) or the neck (collars, bands)",
+                            );
+                        ui.end_row();
                         ui.label("Around body");
                         changed |= ui
                             .add(egui::DragValue::new(&mut piece.placement.angle).range(-180.0..=180.0).speed(1.0).suffix("°"))

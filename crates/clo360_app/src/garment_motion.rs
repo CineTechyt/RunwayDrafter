@@ -16,6 +16,11 @@
 //! second while the garment settles: jumping there in one frame would put
 //! arms straight through the cloth. The last frames blend into the first
 //! so the loop is seamless.
+//!
+//! A walk is two steps that start over a stride further on. It is walked
+//! several times in a row, the body carrying on forwards, until the cloth
+//! swings the same way every stride; the last stride is kept, moved back
+//! to where the loop starts. Played in a loop, it does not jump.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -36,6 +41,24 @@ const VOXEL: f32 = 0.01;
 /// the far side and caught.
 const BAKE_CLOSING: f32 = 0.0;
 
+/// Strides walked before the one that is kept, so the cloth has settled
+/// into the rhythm of the walk.
+const WARM_UP_LOOPS: usize = 2;
+
+/// `body` moved by `by`.
+fn shifted(mut body: BodyMesh, by: Vec3) -> BodyMesh {
+    if by != Vec3::ZERO {
+        for p in &mut body.positions {
+            *p += by;
+        }
+        for joint in &mut body.joints {
+            joint.head += by;
+            joint.tail += by;
+        }
+    }
+    body
+}
+
 /// A field around the garment, of a body moving by small steps (see the
 /// sub-frames below), so no deep interior is needed.
 fn field_options(region: (Vec3, Vec3), velocities: Option<&[Vec3]>) -> avatar::FieldOptions<'_> {
@@ -52,7 +75,8 @@ pub struct GarmentMotion {
     /// What it was simulated for: the body's shape and the document.
     pub shape_version: u64,
     pub document_revision: u64,
-    /// Garment vertex positions, `FPS` per second over the motion.
+    /// Garment vertex positions over one loop of the motion, evenly spaced
+    /// (about `FPS` per second).
     pub frames: Vec<Vec<Vec3>>,
     /// How far the fabric was stretched beyond its cut length: the worst
     /// frame's 99th percentile, as a fraction.
@@ -70,11 +94,20 @@ impl GarmentMotion {
         if n == 0 {
             return;
         }
-        let at = (time.rem_euclid(self.motion.duration()) * FPS).min(n as f32 - 1.0);
+        let duration = self.motion.duration();
+        // Between the last frame and the next loop's first too: the loop
+        // is `n` frames long, not `n - 1`.
+        let at = (time.rem_euclid(duration) / duration * n as f32).min(n as f32 - 1e-3);
         let k = at.floor() as usize;
         let (a, b, f) = (&self.frames[k], &self.frames[(k + 1) % n], at.fract());
+        // Past the last frame the loop starts over, a walk a stride on.
+        let ahead = if k + 1 == n {
+            self.motion.travel()
+        } else {
+            Vec3::ZERO
+        };
         for ((out, a), b) in out.iter_mut().zip(a).zip(b) {
-            *out = *a + (*b - *a) * f;
+            *out = *a + (*b + ahead - *a) * f;
         }
     }
 }
@@ -141,9 +174,24 @@ fn run(job: Job, sender: &Sender<Message>) {
         model.pose(&rest, &pose)
     };
     let count = (duration.unwrap_or_else(|| motion.duration()) * FPS)
-        .ceil()
+        .round()
         .max(1.0) as usize;
-    let dt = 1.0 / FPS;
+    // A motion that moves on (a walk) is walked a few times over first.
+    let travel = motion.travel();
+    let warm_up = if duration.is_none() && travel != Vec3::ZERO {
+        WARM_UP_LOOPS
+    } else {
+        0
+    };
+    let kept_from = lead + warm_up * count;
+    let total = kept_from + count;
+    // Whole loops take whole numbers of frames: a frame lasts a little more
+    // or less than 1/FPS, so the kept frames are exactly one loop.
+    let frame_time = match duration {
+        Some(_) => 1.0 / FPS,
+        None => motion.duration() / count as f32,
+    };
+    let dt = frame_time;
 
     // The garment stays as draped; the body moves under it (never carried
     // along with the skin, which would glue the cloth to the avatar).
@@ -183,6 +231,11 @@ fn run(job: Job, sender: &Sender<Message>) {
         &field_options(region(&mesh), None),
     ));
     let mut collider = Arc::new(body.collider());
+    // The global solver collides with the skin's triangles; it would only
+    // use the distance field to split steps where the body moves fast,
+    // which the bake does itself (see the parts below). Rebuilding the
+    // field for every part was 40 % of the bake.
+    let needs_field = settings.backend != topology_sync::SolverBackend::Global;
     let mut solver = XpbdSolver::new();
     let context = |field: &Arc<_>,
                    collider: &Arc<_>|
@@ -205,6 +258,9 @@ fn run(job: Job, sender: &Sender<Message>) {
     }
 
     let mut frames = Vec::with_capacity(count);
+    // Frames faded over where the loop closes.
+    let blend = ((FPS * if warm_up > 0 { 0.25 } else { 0.4 }) as usize).min(count / 3);
+    let mut before: Vec<Vec<Vec3>> = Vec::with_capacity(blend);
     // The body at a (fractional) frame, or `None` while it holds still.
     let body_at = |frame: f32| -> Option<BodyMesh> {
         if frame <= 0.0 || (frame > moving as f32 && frame <= lead as f32 - 1.0) {
@@ -212,12 +268,18 @@ fn run(job: Job, sender: &Sender<Message>) {
         } else if frame <= moving as f32 {
             Some(lead_in(frame))
         } else {
-            Some(pose_at((frame - lead as f32).max(0.0) / FPS).0)
+            // Each time round, a stride further on.
+            // Which time round and how far into it, both from the frame
+            // count, so they always agree.
+            let f = (frame - lead as f32).max(0.0);
+            let loops = (f / count as f32).floor();
+            let into = (f - loops * count as f32) * frame_time;
+            Some(shifted(pose_at(into).0, travel * loops))
         }
     };
     // Where the time goes: posing, collision field, collision mesh, solver.
     let mut timing = [std::time::Duration::ZERO; 4];
-    for frame in 0..lead + count {
+    for frame in 0..total {
         let clock = std::time::Instant::now();
         // A body part that moves far in one frame (a leg swinging out) would
         // land deep inside cloth it swept through, and push it out on the
@@ -248,7 +310,7 @@ fn run(job: Job, sender: &Sender<Message>) {
             None => 1,
         };
         // Holding still: the skin is not moving any more.
-        if next.is_none() && !field.velocity.is_empty() {
+        if needs_field && next.is_none() && !field.velocity.is_empty() {
             field = Arc::new(avatar::distance_field_within(
                 &body,
                 VOXEL,
@@ -280,12 +342,14 @@ fn run(job: Job, sender: &Sender<Message>) {
                     .map(|(a, b)| (*b - *a - travelled) / step)
                     .collect();
                 body = then;
-                field = Arc::new(avatar::distance_field_within(
-                    &body,
-                    VOXEL,
-                    BAKE_CLOSING.min(closing),
-                    &field_options(region(&mesh), Some(&velocities)),
-                ));
+                if needs_field {
+                    field = Arc::new(avatar::distance_field_within(
+                        &body,
+                        VOXEL,
+                        BAKE_CLOSING.min(closing),
+                        &field_options(region(&mesh), Some(&velocities)),
+                    ));
+                }
                 timing[1] += clock.elapsed();
                 let clock = std::time::Instant::now();
                 collider = Arc::new(
@@ -352,13 +416,19 @@ fn run(job: Job, sender: &Sender<Message>) {
                 );
             }
         }
-        if frame >= lead {
-            frames.push(mesh.positions.clone());
+        // The previous stride's end: what the kept stride's end fades
+        // into (see below).
+        if warm_up > 0 && frame + blend >= kept_from && frame < kept_from {
+            let back = travel * (warm_up - 1) as f32;
+            before.push(mesh.positions.iter().map(|&p| p - back).collect::<Vec<Vec3>>());
+        }
+        if frame >= kept_from {
+            // Back to where the loop starts.
+            let back = travel * warm_up as f32;
+            frames.push(mesh.positions.iter().map(|&p| p - back).collect());
         }
         if sender
-            .send(Message::Progress(
-                (frame + 1) as f32 / (lead + count) as f32,
-            ))
+            .send(Message::Progress((frame + 1) as f32 / total as f32))
             .is_err()
         {
             return; // nobody is waiting any more
@@ -382,9 +452,30 @@ fn run(job: Job, sender: &Sender<Message>) {
         typical * 100.0
     );
 
-    // The loop's end blends into its start.
-    let blend = (FPS * 0.4) as usize;
-    if frames.len() > 2 * blend {
+    if warm_up > 0 && before.len() == blend && frames.len() > 2 * blend {
+        // The cloth went from the previous stride's end straight into the
+        // kept stride's start: fade the kept stride's end into the previous
+        // one's, and the loop closes where the simulation itself went on.
+        let n = frames.len();
+        let gaps: Vec<f32> = frames[n - 1]
+            .iter()
+            .zip(&before[blend - 1])
+            .map(|(a, b)| a.distance(*b))
+            .collect();
+        log::info!(
+            "loop seam: one stride later the cloth is {:.1} mm (worst {:.1} mm) from where it was",
+            gaps.iter().sum::<f32>() / gaps.len().max(1) as f32 * 1000.0,
+            gaps.iter().copied().fold(0.0f32, f32::max) * 1000.0
+        );
+        for (k, earlier) in before.iter().enumerate() {
+            let w = (k + 1) as f32 / blend as f32;
+            let w = w * w * (3.0 - 2.0 * w);
+            for (p, q) in frames[n - blend + k].iter_mut().zip(earlier) {
+                *p += (*q - *p) * w;
+            }
+        }
+    } else if frames.len() > 2 * blend {
+        // A motion that ends where it began: its end blends into its start.
         let n = frames.len();
         let first = frames[0].clone();
         for k in 0..blend {

@@ -7,6 +7,8 @@ use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, 
 pub enum Icon {
     Select,
     Points,
+    AddPoint,
+    Curve,
     Sew,
     SketchLine,
     SketchSpline,
@@ -169,6 +171,39 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             painter.add(Shape::line(
                 vec![p(3.5, 12.5), p(5.0, 14.2), p(6.5, 13.5)],
                 thin,
+            ));
+        }
+        Icon::AddPoint => {
+            // A line with a new point in its middle, and a plus.
+            line(p(1.5, 13.0), p(14.5, 13.0));
+            painter.rect_filled(
+                Rect::from_center_size(p(8.0, 13.0), Vec2::splat(3.8 * s)),
+                0.0,
+                color,
+            );
+            line(p(8.0, 2.5), p(8.0, 8.5));
+            line(p(5.0, 5.5), p(11.0, 5.5));
+        }
+        Icon::Curve => {
+            // A line pulled into a curve, the pull as an arrow.
+            let curve: Vec<Pos2> = (0..=20)
+                .map(|i| {
+                    let t = i as f32 / 20.0;
+                    let (a, c, b) = (p(1.5, 13.5), p(8.0, 1.0), p(14.5, 13.5));
+                    let u = 1.0 - t;
+                    pos2(
+                        u * u * a.x + 2.0 * u * t * c.x + t * t * b.x,
+                        u * u * a.y + 2.0 * u * t * c.y + t * t * b.y,
+                    )
+                })
+                .collect();
+            polyline(curve);
+            dashed(p(1.5, 13.5), p(14.5, 13.5));
+            line(p(8.0, 12.5), p(8.0, 8.5));
+            painter.add(Shape::convex_polygon(
+                vec![p(8.0, 6.6), p(6.2, 9.4), p(9.8, 9.4)],
+                color,
+                Stroke::NONE,
             ));
         }
         Icon::SketchLine => {

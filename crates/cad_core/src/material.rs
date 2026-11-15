@@ -99,6 +99,18 @@ pub struct Fabric {
     #[serde(default = "default_relief")]
     pub relief: f32,
     pub physics: FabricPhysics,
+    /// Woven from this draft: its look comes from the weave (see
+    /// [`crate::weave`]) instead of the colour and the preset pattern.
+    #[serde(default)]
+    pub weave: Option<crate::weave::Weave>,
+    /// How worn the garment is, 0..=1: fading along seams and hems and on
+    /// the ridges of folds, darker creases, the odd pill of fuzz.
+    #[serde(default = "default_wear")]
+    pub wear: f32,
+}
+
+fn default_wear() -> f32 {
+    0.25
 }
 
 fn default_pattern_scale() -> f32 {
@@ -123,6 +135,8 @@ impl Fabric {
             pattern_scale: default_pattern_scale(),
             relief: default_relief(),
             physics: FabricPhysics::default(),
+            weave: None,
+            wear: default_wear(),
         }
     }
 }

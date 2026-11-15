@@ -74,6 +74,12 @@ pub struct XpbdSolver {
     gpu_current: bool,
     /// Soft area grab: vertex, target, influence radius and per-step strength.
     grab: Option<(u32, Vec3A, f32, f32)>,
+    /// The cloth the grab moves, with how much of the move each vertex
+    /// gets: found along the fabric from the grabbed vertex.
+    grab_patch: Vec<(u32, f32)>,
+    /// Vertex → neighbours along the fabric (triangle edges, with their
+    /// cut length in metres, and stitches, of length zero).
+    fabric_graph: Vec<Vec<(u32, f32)>>,
     stats: SolverStats,
 }
 
@@ -430,6 +436,8 @@ impl XpbdSolver {
 impl ClothSolver for XpbdSolver {
     fn rebind(&mut self, mesh: &GarmentMesh, ctx: &SolverContext<'_>) {
         self.model = Model::build(mesh, ctx.document);
+        self.fabric_graph = fabric_graph(mesh);
+        self.grab_patch.clear();
         self.state = State::at_rest(mesh.positions.iter().map(|&p| Vec3A::from(p)));
         self.set_colliders(ctx);
         self.seam_clock = 0.0;
@@ -473,6 +481,9 @@ impl ClothSolver for XpbdSolver {
     }
 
     fn set_grab(&mut self, vertex: u32, position: Vec3, radius: f32, strength: f32) {
+        if self.grab.is_none_or(|(v, _, r, _)| v != vertex || r != radius) {
+            self.grab_patch = grab_patch(&self.fabric_graph, vertex, radius.max(0.01));
+        }
         self.grab = Some((
             vertex,
             position.into(),
@@ -484,6 +495,7 @@ impl ClothSolver for XpbdSolver {
     fn clear_grab(&mut self) {
         self.pull_motion_from_gpu();
         self.grab = None;
+        self.grab_patch.clear();
     }
 
     fn step(&mut self, mesh: &mut GarmentMesh, ctx: &SolverContext<'_>) -> bool {
@@ -761,19 +773,21 @@ impl XpbdSolver {
         for (out, p) in mesh.positions.iter_mut().zip(&self.state.positions) {
             *out = (*p).into();
         }
-        if let Some((vertex, target, radius, strength)) = self.grab
+        if let Some((vertex, target, _, strength)) = self.grab
             && let Some(center) = self.state.positions.get(vertex as usize).copied()
         {
-            let delta = target - center;
-            if delta.length_squared() > 1e-10 {
-                for (index, position) in self.state.positions.iter_mut().enumerate() {
-                    let distance = position.distance(center);
-                    let falloff = (1.0 - distance / radius).clamp(0.0, 1.0);
-                    let influence = falloff * falloff * strength;
-                    if influence <= 0.0 {
+            // The patch goes part of the way to the cursor, but never more
+            // than a little per step: the fabric around it and the cloth
+            // collision keep up, and a hard pull cannot drag the cloth
+            // through itself.
+            let shift = ((target - center) * strength).clamp_length_max(MAX_GRAB_SHIFT);
+            if shift.length_squared() > 1e-12 {
+                for &(index, weight) in &self.grab_patch {
+                    let index = index as usize;
+                    let Some(position) = self.state.positions.get_mut(index) else {
                         continue;
-                    }
-                    *position += delta * influence;
+                    };
+                    *position += shift * weight;
                     self.state.previous[index] = *position;
                     self.state.velocities[index] = Vec3A::ZERO;
                     if let Some(out) = mesh.positions.get_mut(index) {
@@ -787,5 +801,102 @@ impl XpbdSolver {
         self.stats.seam_gap = substeps.last().map_or(0.0, |p| p.seam_gap);
         self.stats.step_ms = started.elapsed().as_secs_f32() * 1000.0;
         true
+    }
+}
+
+/// How far a grab moves the cloth in one step at most, metres.
+const MAX_GRAB_SHIFT: f32 = 0.01;
+
+/// Every vertex's neighbours along the fabric: the edges of its triangles,
+/// with their length as cut, and the vertices it is stitched to.
+fn fabric_graph(mesh: &GarmentMesh) -> Vec<Vec<(u32, f32)>> {
+    let mut graph: Vec<Vec<(u32, f32)>> = vec![Vec::new(); mesh.vertex_count()];
+    let mut link = |a: u32, b: u32, length: f32| {
+        if let Some(list) = graph.get_mut(a as usize)
+            && !list.iter().any(|&(n, _)| n == b)
+        {
+            list.push((b, length));
+        }
+    };
+    for triangle in mesh.indices.chunks_exact(3) {
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            let (a, b) = (triangle[a], triangle[b]);
+            let length = mesh.pattern_positions[a as usize]
+                .distance(mesh.pattern_positions[b as usize])
+                * 1e-3;
+            link(a, b, length);
+            link(b, a, length);
+        }
+    }
+    for stitch in &mesh.stitches {
+        link(stitch.a, stitch.b, 0.0);
+        link(stitch.b, stitch.a, 0.0);
+    }
+    graph
+}
+
+/// The cloth within `radius` of `vertex` along the fabric (not through the
+/// air: a layer behind, or the other side of a fold, stays put), each with
+/// its share of the move: the inner part moves as one, the rest less and
+/// less towards the edge.
+fn grab_patch(graph: &[Vec<(u32, f32)>], vertex: u32, radius: f32) -> Vec<(u32, f32)> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    if vertex as usize >= graph.len() {
+        return Vec::new();
+    }
+    let mut distance = vec![f32::INFINITY; graph.len()];
+    let mut queue = BinaryHeap::new();
+    distance[vertex as usize] = 0.0;
+    // Distances in micrometres, as integers, for the heap.
+    queue.push(Reverse((0u64, vertex)));
+    while let Some(Reverse((d, v))) = queue.pop() {
+        let d = d as f32 * 1e-6;
+        if d > distance[v as usize] {
+            continue;
+        }
+        for &(n, length) in &graph[v as usize] {
+            let next = d + length;
+            if next < radius && next < distance[n as usize] {
+                distance[n as usize] = next;
+                queue.push(Reverse(((next * 1e6) as u64, n)));
+            }
+        }
+    }
+    let plateau = 0.35 * radius;
+    distance
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.is_finite())
+        .map(|(i, &d)| {
+            let t = ((d - plateau) / (radius - plateau)).clamp(0.0, 1.0);
+            (i as u32, 1.0 - t * t * (3.0 - 2.0 * t))
+        })
+        .filter(|&(_, w)| w > 0.0)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_grab_takes_the_connected_cloth_not_what_is_near_in_space() {
+        // Two strips of 30 vertices 1 cm apart along the fabric; the second
+        // strip lies right behind the first but is not connected to it.
+        let mut graph: Vec<Vec<(u32, f32)>> = vec![Vec::new(); 60];
+        for strip in [0u32, 30] {
+            for i in 0..29 {
+                graph[(strip + i) as usize].push((strip + i + 1, 0.01));
+                graph[(strip + i + 1) as usize].push((strip + i, 0.01));
+            }
+        }
+        let patch = grab_patch(&graph, 0, 0.2);
+        assert!(patch.iter().all(|&(v, _)| v < 30), "the other strip stays put");
+        let weight = |v: u32| patch.iter().find(|p| p.0 == v).map_or(0.0, |p| p.1);
+        assert_eq!(weight(0), 1.0);
+        assert_eq!(weight(5), 1.0, "the inner part moves as one");
+        assert!(weight(12) > 0.0 && weight(12) < 1.0, "then less and less");
+        assert_eq!(weight(25), 0.0, "beyond the reach");
     }
 }

@@ -4,16 +4,36 @@
 use app_ui::{EditorState, ExportFormat, SurfaceView, UiCommand, UiOutput};
 use cad_core::{DocumentChange, History, PatternDocument, PieceId};
 use gfx_render::{Camera2D, CanvasOverlay, OrbitCamera, SurfaceMaterial, SurfaceOverlay};
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 use topology_sync::{
-    ClothSolver, Collider, GarmentTopology, MeshingParams, SolverBackend, SolverContext,
+    ClothSolver, Collider, GarmentTopology, MeshingParams, SolverBackend,
     SolverSettings, TopologySync,
 };
 
 use avatar::Measure;
 
 use crate::body::{Body, ImportedAvatar};
+use crate::simulation::{Scene, Simulation};
+
+/// What decides whether the simulation needs the scene again.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SceneKey {
+    revision: u64,
+    settings: SolverSettings,
+    body: usize,
+    body_mesh: usize,
+    colliders: usize,
+    dt: f32,
+}
 use crate::controllers::{self, CanvasTool};
+
+/// Pixels per thread of the woven fabric textures.
+pub const WEAVE_PIXELS: u32 = 8;
+
+/// How far round the grabbed point the pull tool moves the cloth, metres.
+const GRAB_RADIUS: f32 = 0.35;
+/// How much of the way to the cursor the grabbed point goes per step.
+const GRAB_STRENGTH: f32 = 0.3;
 
 /// Radius the avatar's collision field is closed with for a cloth mesh of
 /// the given particle distance (mm): half a triangle edge, within reason.
@@ -42,9 +62,13 @@ pub struct Session {
     pub editor: EditorState,
     pub canvas_camera: Camera2D,
     pub scene_camera: OrbitCamera,
+    /// How far the 3D view has been moved along with a walking avatar.
+    camera_follow: Vec3,
     canvas_tool: CanvasTool,
-    /// Draping backend; `None` runs the editor without simulation.
-    solver: Option<Box<dyn ClothSolver>>,
+    /// The live cloth simulation; `None` runs the editor without it.
+    simulation: Option<Simulation>,
+    /// What the simulation was last told about the scene.
+    scene_sent: Option<SceneKey>,
     /// The parametric avatar; `None` if its model file is missing.
     pub body: Option<Body>,
     /// An avatar loaded from a file; while set it stands in for `body`.
@@ -106,10 +130,13 @@ struct SceneGrab {
 }
 
 impl Session {
+    /// `threaded`: the simulation steps on its own thread (the editor);
+    /// otherwise inline with the frames (headless runs, tests).
     pub fn new(
-        solver: Option<Box<dyn ClothSolver>>,
+        solver: Option<Box<dyn ClothSolver + Send>>,
         body: Option<Body>,
         colliders: Vec<Collider>,
+        threaded: bool,
     ) -> Self {
         let mut document = PatternDocument::demo_top();
         let mut editor = EditorState::default();
@@ -123,19 +150,21 @@ impl Session {
         }
         let mut topology = GarmentTopology::default();
         topology.rebuild(&document);
-        let mut solver = solver;
-        if let Some(solver) = &mut solver {
-            let ctx = SolverContext {
-                document: &document,
-                settings: &editor.simulation.settings,
-                colliders: &colliders,
-                body: body.as_ref().and_then(|b| b.field.as_ref()),
-                body_mesh: body.as_ref().and_then(|b| b.collider.as_ref()),
-                ground: 0.0,
-                dt: editor.timeline.step_seconds(),
-            };
-            solver.rebind(topology.mesh(), &ctx);
-        }
+        let simulation = solver.map(|solver| {
+            let mut simulation = Simulation::new(solver, threaded);
+            simulation.rebind(
+                topology.mesh(),
+                Scene {
+                    document: document.clone(),
+                    settings: editor.simulation.settings,
+                    colliders: colliders.clone(),
+                    body: body.as_ref().and_then(|b| b.field.clone()),
+                    body_mesh: body.as_ref().and_then(|b| b.collider.clone()),
+                    dt: editor.timeline.step_seconds(),
+                },
+            );
+            simulation
+        });
         Self {
             document,
             topology,
@@ -143,8 +172,10 @@ impl Session {
             editor,
             canvas_camera: Camera2D::default(),
             scene_camera: OrbitCamera::default(),
+            camera_follow: Vec3::ZERO,
             canvas_tool: CanvasTool::default(),
-            solver,
+            simulation,
+            scene_sent: None,
             body,
             imported: None,
             overlay_values: Vec::new(),
@@ -240,8 +271,8 @@ impl Session {
                     Some(before) => {
                         body.carry_from(before, &mut self.topology.mesh_mut().positions);
                         self.topology.mesh_mut().recompute_normals();
-                        if let Some(solver) = &mut self.solver {
-                            solver.set_positions(self.topology.mesh());
+                        if let Some(simulation) = &mut self.simulation {
+                            simulation.set_positions(self.topology.mesh());
                         }
                         self.garment_dirty = true;
                         self.settle_steps = SETTLE_STEPS;
@@ -249,10 +280,11 @@ impl Session {
                         // body for the next reset, without resetting now.
                         avatar::arrange_around(&mut self.document, &body.mesh, &body.measurements);
                     }
-                    // Still laid out flat: start over around the new body.
+                    // Still laid out flat: start over around the new body
+                    // (a drape already playing starts again from there).
                     None => {
                         arrange = true;
-                        self.editor.timeline.stop();
+                        self.editor.timeline.rewind();
                     }
                 }
             }
@@ -273,7 +305,10 @@ impl Session {
                 UiCommand::StepSimulation => extra_steps += 1,
                 UiCommand::FitCanvas => self.fit_canvas = true,
                 UiCommand::ArrangePieces => arrange = true,
-                UiCommand::ResetCamera3d => self.scene_camera = OrbitCamera::default(),
+                UiCommand::ResetCamera3d => {
+                    self.scene_camera = OrbitCamera::default();
+                    self.scene_camera.target += self.camera_follow;
+                }
                 UiCommand::TransformPiece(transform) => {
                     if let Some(id) = self.editor.selected_piece {
                         self.edit(
@@ -367,6 +402,61 @@ impl Session {
                             let changed = document
                                 .piece_mut(piece)
                                 .is_some_and(|p| p.outline.set_point_kind(anchor, kind));
+                            if changed {
+                                document.touch();
+                            }
+                            changed
+                        },
+                        &mut changes,
+                    );
+                }
+                UiCommand::SplitLine { piece, edge, parts } => {
+                    self.edit(
+                        if parts == 2 { "Cut line in half" } else { "Split line" },
+                        |document| controllers::split_line(document, piece, edge, parts),
+                        &mut changes,
+                    );
+                }
+                UiCommand::UnfoldPiece { piece, edge } => {
+                    self.editor.selected_edge = None;
+                    self.edit(
+                        "Unfold piece",
+                        |document| document.unfold_piece(piece, edge),
+                        &mut changes,
+                    );
+                }
+                UiCommand::SetLineLength {
+                    piece,
+                    edge,
+                    length,
+                } => {
+                    self.edit(
+                        "Line length",
+                        |document| {
+                            let changed = document.piece_mut(piece).is_some_and(|p| {
+                                let span = p.outline.line_span(edge);
+                                p.outline.set_span_length(span, length)
+                            });
+                            if changed {
+                                document.touch();
+                            }
+                            changed
+                        },
+                        &mut changes,
+                    );
+                }
+                UiCommand::SetLineAngle {
+                    piece,
+                    edge,
+                    degrees,
+                } => {
+                    self.edit(
+                        "Line angle",
+                        |document| {
+                            let changed = document.piece_mut(piece).is_some_and(|p| {
+                                let span = p.outline.line_span(edge);
+                                p.outline.set_span_angle(span, degrees)
+                            });
                             if changed {
                                 document.touch();
                             }
@@ -559,6 +649,10 @@ impl Session {
                 &mut changes,
             );
         }
+        self.editor.canvas_view = app_ui::CanvasView {
+            center: self.canvas_camera.center,
+            zoom: self.canvas_camera.zoom,
+        };
         if let Some(input) = &scene {
             if self.editor.canvas_tool == app_ui::CanvasTool::Pull {
                 self.update_scene_pull(input);
@@ -592,36 +686,35 @@ impl Session {
         self.garment_dirty |= report.changed();
 
         let step = self.editor.timeline.step_seconds();
-        let mut steps = self.editor.timeline.advance(dt) + extra_steps;
-        if self.scene_grab.is_some() {
-            steps = steps.max(1);
-        }
-        // After the avatar moved, let the garment settle even when paused.
-        if steps == 0 && self.settle_steps > 0 {
-            steps = self.settle_steps.min(2);
-        }
-        self.settle_steps = self.settle_steps.saturating_sub(steps);
-        // Not against a body that is about to be replaced: the cloth would
-        // be pushed back to where the avatar no longer is.
-        if self.imported.is_none() && self.body.as_ref().is_some_and(Body::field_pending) {
-            self.settle_steps += steps.min(2);
-            steps = 0;
+        let threaded = self.simulation.as_ref().is_some_and(Simulation::threaded);
+        // Inline, the clock decides how many steps run this frame; threaded,
+        // the simulation counts its own steps (see below).
+        let mut steps = 0;
+        if !threaded {
+            steps = self.editor.timeline.advance(dt) + extra_steps;
+            if self.scene_grab.is_some() {
+                steps = steps.max(1);
+            }
+            // After the avatar moved, let the garment settle even when paused.
+            if steps == 0 && self.settle_steps > 0 {
+                steps = self.settle_steps.min(2);
+            }
+            self.settle_steps = self.settle_steps.saturating_sub(steps);
+            // Not against a body that is about to be replaced: the cloth would
+            // be pushed back to where the avatar no longer is.
+            if self.imported.is_none() && self.body.as_ref().is_some_and(Body::field_pending) {
+                self.settle_steps += steps.min(2);
+                steps = 0;
+            }
         }
         let (field, collider) = match (&self.imported, &self.body) {
             (Some(imported), _) => (Some(&imported.field), Some(&imported.collider)),
             (None, Some(body)) => (body.field.as_ref(), body.collider.as_ref()),
             (None, None) => (None, None),
         };
-        if let Some(solver) = &mut self.solver {
-            let ctx = SolverContext {
-                document: &self.document,
-                settings: &self.editor.simulation.settings,
-                colliders: &self.colliders,
-                body: field,
-                body_mesh: collider,
-                ground: 0.0,
-                dt: step,
-            };
+        let field_pending =
+            self.imported.is_none() && self.body.as_ref().is_some_and(Body::field_pending);
+        if self.simulation.is_some() {
             // Fabric physics and grainlines feed the constraints without
             // touching the topology.
             let materials_changed = changes.iter().any(|change| {
@@ -635,24 +728,79 @@ impl Session {
             let rearranged = changes
                 .iter()
                 .any(|change| matches!(change, DocumentChange::PieceArrangement(_)));
-            if report.topology_changed || rearranged {
-                // New vertices, or pieces moved back to their arrangement.
-                solver.rebind(self.topology.mesh(), &ctx);
-                self.draped = false;
-                self.settle_steps = 0;
-            } else if materials_changed {
-                solver.refresh_materials(self.topology.mesh(), &ctx);
+            let key = SceneKey {
+                revision: self.document.revision(),
+                settings: self.editor.simulation.settings,
+                body: field.map_or(0, |f| std::sync::Arc::as_ptr(f) as usize),
+                body_mesh: collider.map_or(0, |c| std::sync::Arc::as_ptr(c) as usize),
+                colliders: self.colliders.len(),
+                dt: step,
+            };
+            let rebind = report.topology_changed || rearranged;
+            let scene = (rebind || materials_changed || self.scene_sent != Some(key)).then(|| Scene {
+                document: self.document.clone(),
+                settings: self.editor.simulation.settings,
+                colliders: self.colliders.clone(),
+                body: field.cloned(),
+                body_mesh: collider.cloned(),
+                dt: step,
+            });
+            let simulation = self.simulation.as_mut().expect("checked");
+            if let Some(scene) = scene {
+                if rebind {
+                    // New vertices, or pieces moved back to their arrangement.
+                    simulation.rebind(self.topology.mesh(), scene);
+                    self.draped = false;
+                    self.settle_steps = 0;
+                } else if materials_changed {
+                    simulation.refresh_materials(scene);
+                } else {
+                    simulation.set_scene(scene);
+                }
+                self.scene_sent = Some(key);
             }
-            let mut moved = false;
-            for _ in 0..steps {
-                moved |= solver.step(self.topology.mesh_mut(), &ctx);
+
+            let animating = self.editor.avatar.animation.motion.is_some();
+            let progress = if simulation.threaded() {
+                // It steps by itself while there is something to do; the
+                // view goes on drawing meanwhile.
+                self.settle_steps += extra_steps;
+                let wanted = (self.editor.timeline.playing
+                    || self.settle_steps > 0
+                    || self.scene_grab.is_some())
+                    && !field_pending
+                    && !animating;
+                simulation.run(wanted);
+                simulation.poll(0).filter(|_| !animating)
+            } else {
+                simulation.poll(steps)
+            };
+            if let Some(progress) = progress {
+                if progress.positions.len() == self.topology.mesh().vertex_count() {
+                    self.topology.mesh_mut().positions = progress.positions;
+                }
+                if progress.moved {
+                    self.topology.mesh_mut().recompute_normals();
+                    self.garment_dirty = true;
+                    self.draped = true;
+                }
+                if simulation.threaded() {
+                    let timeline = &mut self.editor.timeline;
+                    if timeline.playing {
+                        timeline.frame += progress.steps;
+                        if timeline.frame >= timeline.end_frame && !timeline.looping {
+                            timeline.playing = false;
+                        }
+                    }
+                    self.settle_steps = self.settle_steps.saturating_sub(progress.steps);
+                }
+                if progress.settled {
+                    // At rest: nothing left to simulate until something changes.
+                    self.editor.timeline.playing = false;
+                    self.settle_steps = 0;
+                }
+                self.editor.simulation.stats = progress.stats;
             }
-            if moved {
-                self.topology.mesh_mut().recompute_normals();
-                self.garment_dirty = true;
-                self.draped = true;
-            }
-            self.editor.simulation.stats = solver.stats();
         }
 
         // Technical views: re-measure whenever the garment or the view changed.
@@ -698,6 +846,30 @@ impl Session {
         if self.animate_body(dt) {
             self.simulate_garment_motion();
         }
+        self.follow_with_camera();
+    }
+
+    /// While a walk plays, the 3D view travels with the avatar: across the
+    /// floor only, never up or down, and keeping whatever the user orbited,
+    /// panned or zoomed to. When the walk starts over a stride back, the
+    /// view goes back with it, so the walk looks endless.
+    fn follow_with_camera(&mut self) {
+        let walking = self
+            .editor
+            .avatar
+            .animation
+            .motion
+            .is_some_and(|m| m.travel() != Vec3::ZERO);
+        let wanted = match (&self.body, &self.imported, walking) {
+            (Some(body), None, true) => body
+                .model()
+                .bone("root")
+                .and_then(|i| body.mesh.joints.get(i))
+                .map_or(Vec3::ZERO, |root| Vec3::new(root.head.x, 0.0, root.head.z)),
+            _ => Vec3::ZERO,
+        };
+        self.scene_camera.target += wanted - self.camera_follow;
+        self.camera_follow = wanted;
     }
 
     /// Poses the body for this frame and moves the garment with it. Returns
@@ -743,8 +915,8 @@ impl Session {
                     if let Some(worn) = self.garment_at_rest.take() {
                         self.topology.mesh_mut().positions = worn;
                         self.topology.mesh_mut().recompute_normals();
-                        if let Some(solver) = &mut self.solver {
-                            solver.set_positions(self.topology.mesh());
+                        if let Some(simulation) = &mut self.simulation {
+                            simulation.set_positions(self.topology.mesh());
                         }
                         self.garment_dirty = true;
                     }
@@ -825,8 +997,8 @@ impl Session {
                     return simulate;
                 }
                 self.topology.mesh_mut().recompute_normals();
-                if let Some(solver) = &mut self.solver {
-                    solver.set_positions(self.topology.mesh());
+                if let Some(simulation) = &mut self.simulation {
+                    simulation.set_positions(self.topology.mesh());
                 }
                 self.garment_dirty = true;
                 return simulate;
@@ -876,16 +1048,13 @@ impl Session {
             model: body.model().clone(),
             rest: body.rest().clone(),
             start_pose: body.pose.to_pose(body.model(), body.rest()),
-            // Animation is baked offline, so it need not keep up with the
-            // frame rate: with the global solver if that is the one picked
-            // (fabric that keeps its length, but no cloth-on-cloth
-            // collision yet), otherwise with the contact solver, whichever
-            // of the real-time solvers the live view runs.
+            // Animation is baked offline with the global solver, whichever
+            // solver the live view runs: on a walk it is about twenty times
+            // faster than the contact solver (one big step per frame
+            // instead of many small ones) and keeps the fabric's length
+            // better. It has no cloth-on-cloth collision yet.
             settings: SolverSettings {
-                backend: match self.editor.simulation.settings.backend {
-                    SolverBackend::Global => SolverBackend::Global,
-                    _ => SolverBackend::Contact,
-                },
+                backend: SolverBackend::Global,
                 ..self.editor.simulation.settings
             },
             closing: closing_radius(self.editor.simulation.particle_distance),
@@ -1088,13 +1257,11 @@ impl Session {
                 let distance = (grab.origin - origin).dot(grab.normal) / denominator;
                 if distance.is_finite() && distance >= 0.0 {
                     let target = origin + direction * distance;
-                    if let Some(solver) = &mut self.solver {
-                        // A broad, soft influence rearranges a patch of
-                        // cloth instead of pinching one particle.
-                        // Keep the grab broad and low-force. This changes
-                        // only the interaction, not the textile model or
-                        // its spring parameters.
-                        solver.set_grab(grab.vertex, target, 0.30, 0.08);
+                    if let Some(simulation) = &mut self.simulation {
+                        // A broad influence rearranges a patch of cloth
+                        // instead of pinching one particle: the middle of
+                        // it follows the cursor, the rest less and less.
+                        simulation.set_grab(grab.vertex, target, GRAB_RADIUS, GRAB_STRENGTH);
                         self.garment_dirty = true;
                     } else {
                         self.garment_dirty = true;
@@ -1103,9 +1270,8 @@ impl Session {
             }
             if input.primary.stopped {
                 if self.scene_grab.take().is_some() {
-                    if let Some(solver) = &mut self.solver {
-                        solver.clear_grab();
-                        solver.set_positions(self.topology.mesh());
+                    if let Some(simulation) = &mut self.simulation {
+                        simulation.clear_grab();
                     }
                     self.topology.mesh_mut().recompute_normals();
                     self.garment_dirty = true;
@@ -1282,6 +1448,9 @@ impl Session {
     /// Whether background work needs the UI to keep redrawing.
     pub fn busy(&self) -> bool {
         self.pending_names.is_some()
+            // A new body's collision field is still being worked out; the
+            // cloth waits for it.
+            || (self.imported.is_none() && self.body.as_ref().is_some_and(Body::field_pending))
     }
 
     fn inspect_pattern(&mut self, path: &std::path::Path) {
@@ -1303,6 +1472,7 @@ impl Session {
         let allowance = self.editor.pattern_import.default_allowance_mm;
         let custom = self.editor.pattern_import.custom_scale;
         let flip_y = self.editor.pattern_import.flip_y;
+        let join_pages = self.editor.pattern_import.join_pages;
 
         let result = match ext.as_str() {
             "pdf" => {
@@ -1315,6 +1485,7 @@ impl Session {
                 let opts = io_cad::PdfOptions {
                     scale,
                     default_allowance_mm: allowance,
+                    join_pages,
                 };
                 io_cad::import_pattern_pdf(&bytes, &opts)
             }
@@ -1345,6 +1516,15 @@ impl Session {
                     .filter(|p| p.name.starts_with("Piece "))
                     .count();
                 let mut message = format!("Loaded {}: {count} piece(s)", path.display());
+                if let Some(layout) = &pattern.pages {
+                    message.push_str(&format!(" · {}", layout.summary()));
+                }
+                let off = pattern.pieces.iter().filter(|p| !p.enabled).count();
+                if off > 0 {
+                    message.push_str(&format!(
+                        " · {off} page mark(s) switched off"
+                    ));
+                }
                 if unnamed > 0 {
                     // Names drawn as pen strokes need text recognition,
                     // which takes a moment: done in the background.
@@ -1393,6 +1573,7 @@ impl Session {
             || self.garment_bake.is_some()
             || self.busy()
             || self.settle_steps > 0
+            || self.editor.render.rendering()
             || (self.imported.is_none() && self.body.as_ref().is_some_and(Body::field_pending))
     }
 
@@ -1453,6 +1634,8 @@ impl Session {
             show_mesh: editor.view.show_mesh,
             show_seam_allowance: editor.view.show_seam_allowance,
             sketch_points: editor.sketch_points.clone(),
+            sketch_cursor: editor.sketch_preview,
+            marker: editor.point_marker.map(|m| m.position),
         }
     }
 
@@ -1466,12 +1649,31 @@ impl Session {
         fabric.map_or(0.6, |f| f.physics.thickness).max(0.8) * 1e-3
     }
 
+    /// The weaves the document's fabrics are woven from, by key.
+    pub fn weaves(&self) -> Vec<(u64, &cad_core::Weave)> {
+        self.document
+            .fabrics()
+            .iter()
+            .filter_map(|f| f.weave.as_ref())
+            .map(|w| (w.key(), w))
+            .collect()
+    }
+
+    /// Loads the textures of every weave in use that the scene lacks.
+    pub fn load_weaves(&self, gpu: &gfx_render::GpuContext, scene: &mut gfx_render::SceneRenderer) {
+        let weaves = self.weaves();
+        let keys: Vec<u64> = weaves.iter().map(|(k, _)| *k).collect();
+        for (key, weave) in weaves {
+            if !scene.has_weave(key) {
+                scene.add_weave(gpu, key, &weave.texture(WEAVE_PIXELS), &keys);
+            }
+        }
+    }
+
     /// Viewport material of a piece: its fabric, highlighted when selected.
     pub fn material_of(&self, piece: PieceId) -> SurfaceMaterial {
-        let fabric = self
-            .document
-            .piece(piece)
-            .and_then(|p| self.document.fabric(p.fabric));
+        let piece_data = self.document.piece(piece);
+        let fabric = piece_data.and_then(|p| self.document.fabric(p.fabric));
         let mut material = fabric.map_or_else(SurfaceMaterial::default, |f| SurfaceMaterial {
             base_color: f.base_color,
             roughness: f.roughness,
@@ -1481,6 +1683,18 @@ impl Session {
             wash: f.wash,
             pattern_scale: f.pattern_scale,
             relief: f.relief,
+            weave_key: f.weave.as_ref().map_or(0, cad_core::Weave::key),
+            weave_repeat: match (&f.weave, piece_data) {
+                (Some(weave), Some(p)) => {
+                    weave.repeats(WEAVE_PIXELS, p.uv.tile_size.to_array())
+                }
+                _ => [1.0; 2],
+            },
+            wear: f.wear,
+            weave_yarn: f.weave.as_ref().map_or([0.0; 4], |weave| {
+                let (ends, picks) = weave.texture_threads(WEAVE_PIXELS);
+                [ends as f32, picks as f32, weave.irregularity, weave.slubs]
+            }),
             ..SurfaceMaterial::default()
         });
         if self.editor.selected_piece == Some(piece) {

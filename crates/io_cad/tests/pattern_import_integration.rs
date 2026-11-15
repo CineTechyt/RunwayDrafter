@@ -35,6 +35,7 @@ fn test_pdf_with_splines_and_lines_creates_alterable_project() {
     let opts = PdfOptions {
         scale: 1.0,
         default_allowance_mm: 10.0,
+        ..Default::default()
     };
     let imported = import_pattern_pdf(&pdf, &opts).expect("PDF import should succeed");
 
@@ -99,6 +100,7 @@ fn test_pdf_from_non_inkscape_sources_with_v_y_and_re_operators() {
     let opts = PdfOptions {
         scale: 1.0,
         default_allowance_mm: 8.0,
+        ..Default::default()
     };
     let imported = import_pattern_pdf(&pdf, &opts).unwrap();
     assert!(imported.pieces.len() >= 1);
@@ -170,6 +172,7 @@ fn test_lines_selectable_as_cutting_line_or_seam_allowance_and_role_swapping() {
         scale: Some(1.0),
         flip_y: false,
         default_allowance_mm: 10.0,
+        ..Default::default()
     };
     let mut imported = import_pattern_svg(svg.as_bytes(), &opts).unwrap();
 

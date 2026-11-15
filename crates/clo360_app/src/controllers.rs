@@ -1,7 +1,8 @@
 //! Viewport tools: translate raw viewport input into camera moves, selection
 //! and document edits.
 
-use app_ui::{CanvasTool as Tool, EditorState, SewPick, ViewportInput};
+use app_ui::{CanvasTool as Tool, EditorState, PointMarker, SewPick, ViewportInput};
+use cad_core::geometry::Curve as _;
 use cad_core::{
     ControlPoint, DocumentChange, DocumentSnapshot, EdgeRef, EdgeSpan, HandleRef, History,
     MoveHandle, Outline, PatternDocument, PieceId, PointKind, Segment,
@@ -32,6 +33,17 @@ struct PieceDrag {
     moved: bool,
 }
 
+/// A line being bent with the curve tool.
+struct BendDrag {
+    piece: PieceId,
+    edge: u32,
+    /// Curve parameter of the grabbed point.
+    t: f32,
+    before: PatternDocument,
+    last: Vec2,
+    moved: bool,
+}
+
 /// The 2D canvas tools: select and move pieces, edit points, sew lines.
 #[derive(Default)]
 pub struct CanvasTool {
@@ -40,7 +52,62 @@ pub struct CanvasTool {
     pub hovered_line: Option<(PieceId, EdgeSpan)>,
     drag: Option<HandleDrag>,
     piece_drag: Option<PieceDrag>,
+    bend: Option<BendDrag>,
     panning: bool,
+}
+
+/// Cuts the line through `edge` into `parts` lines of equal length with
+/// new turn points. Records nothing; returns whether it changed.
+pub fn split_line(document: &mut PatternDocument, piece: PieceId, edge: u32, parts: u32) -> bool {
+    let Some(outline) = document.piece(piece).map(|p| &p.outline) else {
+        return false;
+    };
+    if parts < 2 || edge >= outline.edge_count() {
+        return false;
+    }
+    let span = outline.line_span(edge);
+    let mut cuts: Vec<(u32, f32)> = (1..parts)
+        .map(|k| outline.span_location(span, k as f32 / parts as f32))
+        .collect();
+    // From the highest edge down, so earlier edges keep their numbers; a
+    // second cut on an already cut edge is measured on its first half.
+    cuts.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
+    let mut changed = false;
+    let mut previous: Option<(u32, f32)> = None;
+    for (e, t) in cuts {
+        let local = match previous {
+            Some((pe, pt)) if pe == e && pt > 0.0 => t / pt,
+            _ => t,
+        };
+        changed |= document.insert_point(piece, e, local).is_some();
+        previous = Some((e, t));
+    }
+    changed
+}
+
+/// Where the next sketch point goes for the cursor at `at`: straight
+/// horizontal and vertical lines snap within 3°, Shift snaps to 15° steps,
+/// and the first point attracts the cursor to close the piece.
+fn sketch_point(points: &[Vec2], at: Vec2, shift: bool, radius: f32) -> Vec2 {
+    let Some(&last) = points.last() else {
+        return at;
+    };
+    if points.len() >= 3 && points[0].distance(at) <= radius * 2.0 {
+        return points[0];
+    }
+    let d = at - last;
+    let length = d.length();
+    if length < 1e-6 {
+        return at;
+    }
+    let angle = d.y.atan2(d.x).to_degrees();
+    let step = if shift { 15.0 } else { 90.0 };
+    let snapped = (angle / step).round() * step;
+    if shift || (angle - snapped).abs() <= 3.0 {
+        last + Vec2::from_angle(snapped.to_radians()) * length
+    } else {
+        at
+    }
 }
 
 /// The line (run of edges between turn points) at `at`, if any.
@@ -130,6 +197,17 @@ impl CanvasTool {
         let radius = PICK_RADIUS_PX * camera.pixel_size();
         let world = |screen: Vec2, camera: &Camera2D| camera.screen_to_world(screen, viewport);
         let tool = editor.canvas_tool;
+        if std::mem::take(&mut editor.sketch_finish)
+            && matches!(tool, Tool::SketchLine | Tool::SketchSpline)
+        {
+            self.finish_sketch(document, history, editor, changes, tool);
+        }
+        if !matches!(tool, Tool::SketchLine | Tool::SketchSpline) {
+            editor.sketch_preview = None;
+        }
+        if tool != Tool::AddPoint {
+            editor.point_marker = None;
+        }
         if tool != Tool::Sew {
             editor.sew_a = None;
             editor.sew_b = None;
@@ -180,7 +258,25 @@ impl CanvasTool {
                             self.panning = false;
                         }
                     }
-                    Tool::Sew => {}
+                    Tool::Curve => {
+                        if let Some(edge) = document.pick_edge(at, radius * 1.5)
+                            && let Some(piece) = document.piece(edge.piece)
+                        {
+                            let t = piece.outline.nearest_on_edge(edge.edge, at);
+                            editor.selected_piece = Some(edge.piece);
+                            editor.selected_edge = Some(edge);
+                            self.bend = Some(BendDrag {
+                                piece: edge.piece,
+                                edge: edge.edge,
+                                t,
+                                before: document.clone(),
+                                last: at,
+                                moved: false,
+                            });
+                            self.panning = false;
+                        }
+                    }
+                    Tool::Sew | Tool::AddPoint => {}
                     Tool::SketchLine | Tool::SketchSpline => {}
                     Tool::Button | Tool::Buttonhole => {}
                     Tool::Pull => {}
@@ -200,6 +296,18 @@ impl CanvasTool {
                 if moved {
                     document.touch();
                     changes.push(DocumentChange::PieceGeometry(drag.handle.piece));
+                }
+            } else if let (Some(bend), Some(at)) = (&mut self.bend, pointer) {
+                let delta = at - bend.last;
+                if delta != Vec2::ZERO
+                    && document
+                        .piece_mut(bend.piece)
+                        .is_some_and(|p| p.outline.bend_edge(bend.edge, bend.t, delta))
+                {
+                    document.touch();
+                    changes.push(DocumentChange::PieceGeometry(bend.piece));
+                    bend.last = at;
+                    bend.moved = true;
                 }
             } else if let (Some(drag), Some(at)) = (&mut self.piece_drag, pointer) {
                 let delta = at - drag.last;
@@ -228,6 +336,15 @@ impl CanvasTool {
                     to,
                 }));
             }
+            if let Some(bend) = self.bend.take()
+                && bend.moved
+            {
+                history.record(Box::new(DocumentSnapshot::new(
+                    "Bend line",
+                    bend.before,
+                    document.clone(),
+                )));
+            }
             if let Some(drag) = self.piece_drag.take()
                 && drag.moved
             {
@@ -236,6 +353,27 @@ impl CanvasTool {
                     drag.before,
                     document.clone(),
                 )));
+            }
+        }
+
+        // --- double-click with the curve tool: straighten ------------------------
+        if input.double_clicked
+            && tool == Tool::Curve
+            && let Some(at) = input.pointer.map(|p| world(p, camera))
+            && let Some(edge) = document.pick_edge(at, radius * 1.5)
+        {
+            let before = document.clone();
+            if document
+                .piece_mut(edge.piece)
+                .is_some_and(|p| p.outline.straighten_edge(edge.edge))
+            {
+                document.touch();
+                history.record(Box::new(DocumentSnapshot::new(
+                    "Straighten line",
+                    before,
+                    document.clone(),
+                )));
+                changes.push(DocumentChange::PieceGeometry(edge.piece));
             }
         }
 
@@ -284,6 +422,7 @@ impl CanvasTool {
             && let Some(at) = input.pointer.map(|p| world(p, camera))
         {
             if matches!(tool, Tool::SketchLine | Tool::SketchSpline) {
+                let at = sketch_point(&editor.sketch_points, at, input.shift, radius);
                 let close = editor.sketch_points.len() >= 3
                     && editor
                         .sketch_points
@@ -302,9 +441,27 @@ impl CanvasTool {
             }
             let line = pick_line(document, at, radius * 1.5);
             match tool {
-                Tool::Select | Tool::Points | Tool::Pull => {
+                Tool::Select | Tool::Points | Tool::Pull | Tool::Curve => {
                     editor.selected_edge = line.map(|l| l.2);
                     editor.selected_piece = line.map(|l| l.0).or_else(|| document.pick_piece(at));
+                }
+                Tool::AddPoint => {
+                    if let Some(marker) = self.marker(document, at, radius) {
+                        let before = document.clone();
+                        if document
+                            .insert_point(marker.piece, marker.edge, marker.t)
+                            .is_some()
+                        {
+                            history.record(Box::new(DocumentSnapshot::new(
+                                "Add point",
+                                before,
+                                document.clone(),
+                            )));
+                            editor.selected_piece = Some(marker.piece);
+                            editor.selected_edge = Some(EdgeRef::new(marker.piece, marker.edge));
+                            changes.push(DocumentChange::Everything);
+                        }
+                    }
                 }
                 Tool::Sew => {
                     self.sew_click(document, history, editor, changes, line, at, input.shift)
@@ -356,7 +513,43 @@ impl CanvasTool {
         self.hovered_line = pointer
             .and_then(|at| pick_line(document, at, radius * 1.5))
             .map(|(piece, span, _)| (piece, span));
+        match tool {
+            Tool::SketchLine | Tool::SketchSpline => {
+                editor.sketch_preview =
+                    pointer.map(|at| sketch_point(&editor.sketch_points, at, input.shift, radius));
+            }
+            Tool::AddPoint => {
+                editor.point_marker = pointer.and_then(|at| self.marker(document, at, radius));
+            }
+            _ => {}
+        }
         editor.canvas_hint = self.hint(document, editor);
+    }
+
+    /// Where the add-point tool puts a point for the cursor at `at`: on the
+    /// nearest line, snapped to its middle when close to it.
+    fn marker(&self, document: &PatternDocument, at: Vec2, radius: f32) -> Option<PointMarker> {
+        let edge = document.pick_edge(at, radius * 1.5)?;
+        let outline = &document.piece(edge.piece)?.outline;
+        let span = outline.line_span(edge.edge);
+        let length = outline.span_length(span);
+        let mut t = outline.nearest_on_edge(edge.edge, at);
+        let mut on = edge.edge;
+        let mut fraction = outline.span_fraction(span, outline.curve(on).eval(t));
+        let middle = ((fraction - 0.5) * length).abs() <= radius * 1.5;
+        if middle {
+            (on, t) = outline.span_location(span, 0.5);
+            fraction = 0.5;
+        }
+        Some(PointMarker {
+            piece: edge.piece,
+            edge: on,
+            t,
+            position: outline.curve(on).eval(t),
+            from_start: fraction * length,
+            to_end: (1.0 - fraction) * length,
+            middle,
+        })
     }
 
     fn finish_sketch(
@@ -499,8 +692,10 @@ impl CanvasTool {
                     length(b)
                 ),
             },
-            Tool::SketchLine => format!("Click the corners of a new piece · double-click or click the first point to finish · Esc cancels ({} points)", editor.sketch_points.len()),
-            Tool::SketchSpline => format!("Click points along a curved piece · double-click to finish and fit Bézier curves · Esc cancels ({} points)", editor.sketch_points.len()),
+            Tool::SketchLine => format!("Click the corners of a new piece · type a length (and \", angle\") + Enter for an exact side · Shift snaps to 15° · Enter, double-click or the first point closes it · Esc cancels ({} points)", editor.sketch_points.len()),
+            Tool::SketchSpline => format!("Click points along a curved piece · type a length + Enter for an exact step · Enter or double-click finishes and fits Bézier curves · Esc cancels ({} points)", editor.sketch_points.len()),
+            Tool::AddPoint => "Click a line to add a turn point there, splitting it in two · near the middle it snaps to the exact middle · Ctrl+Z undoes".to_owned(),
+            Tool::Curve => "Drag a line to bend it into a curve · double-click a curve to straighten it · Ctrl+Z undoes".to_owned(),
             Tool::Button => "Click a piece to place a button · edit or remove it in Pattern properties".to_owned(),
             Tool::Buttonhole => "Click a piece to place a buttonhole · edit or remove it in Pattern properties".to_owned(),
             Tool::Pull => "Drag a piece to pull it around the flat layout · Ctrl+Z undoes".to_owned(),
@@ -616,6 +811,115 @@ mod tests {
         let viewport = Vec2::new(1200.0, 1100.0);
         let point = document.piece(piece).unwrap().outline.curve(edge).eval(t);
         click(camera.world_to_screen(point, viewport), shift)
+    }
+
+    /// The demo top's front, a tool and the camera the clicks are made with.
+    fn setup(tool: Tool) -> (PatternDocument, PieceId, EditorState, Camera2D) {
+        let document = PatternDocument::demo_top();
+        let front = document.pieces()[0].id;
+        let editor = EditorState {
+            canvas_tool: tool,
+            ..Default::default()
+        };
+        let mut camera = Camera2D::default();
+        let (lo, hi) = document.piece(front).unwrap().outline.bounds();
+        camera.fit(lo, hi, Vec2::new(1200.0, 1100.0));
+        (document, front, editor, camera)
+    }
+
+    #[test]
+    fn clicking_near_the_middle_of_a_line_cuts_it_exactly_in_half() {
+        let (mut document, front, mut editor, mut camera) = setup(Tool::AddPoint);
+        let (mut tool, mut history, mut changes) = (CanvasTool::default(), History::default(), Vec::new());
+        let outline = document.piece(front).unwrap().outline.clone();
+        let span = outline.line_span(1);
+        let length = outline.span_length(span);
+        let lines = outline.lines().len();
+        // A little off the middle: snaps to it.
+        let (edge, t) = outline.span_location(span, 0.505);
+        let viewport = Vec2::new(1200.0, 1100.0);
+        let input = click(camera.world_to_screen(outline.curve(edge).eval(t), viewport), false);
+        tool.update(&input, &mut camera, &mut document, &mut history, &mut editor, &mut changes);
+
+        let outline = &document.piece(front).unwrap().outline;
+        assert_eq!(outline.lines().len(), lines + 1);
+        let first = outline.line_span(span.first);
+        assert!((outline.span_length(first) - length / 2.0).abs() < 0.2, "{} of {length}", outline.span_length(first));
+        assert_eq!(history.undo_label(), Some("Add point"));
+    }
+
+    #[test]
+    fn dragging_a_line_with_the_curve_tool_bends_it() {
+        let (mut document, front, mut editor, mut camera) = setup(Tool::Curve);
+        let (mut tool, mut history, mut changes) = (CanvasTool::default(), History::default(), Vec::new());
+        let viewport = Vec2::new(1200.0, 1100.0);
+        let outline = document.piece(front).unwrap().outline.clone();
+        let edge = (0..outline.edge_count())
+            .find(|&e| outline.segments()[e as usize] == cad_core::Segment::Line)
+            .unwrap();
+        let grab = outline.curve(edge).eval(0.5);
+        let start = camera.world_to_screen(grab, viewport);
+        let press = ViewportInput {
+            size: [1200, 1100],
+            hovered: true,
+            pointer: Some(start),
+            press_origin: Some(start),
+            primary: app_ui::ButtonDrag { started: true, dragging: true, stopped: false },
+            zoom: 1.0,
+            ..Default::default()
+        };
+        tool.update(&press, &mut camera, &mut document, &mut history, &mut editor, &mut changes);
+        let to = start + Vec2::new(0.0, -40.0);
+        let drag = ViewportInput {
+            pointer: Some(to),
+            primary: app_ui::ButtonDrag { started: false, dragging: true, stopped: false },
+            ..press
+        };
+        tool.update(&drag, &mut camera, &mut document, &mut history, &mut editor, &mut changes);
+        let release = ViewportInput {
+            primary: app_ui::ButtonDrag { started: false, dragging: false, stopped: true },
+            ..drag
+        };
+        tool.update(&release, &mut camera, &mut document, &mut history, &mut editor, &mut changes);
+
+        let bent = &document.piece(front).unwrap().outline;
+        assert!(matches!(bent.segments()[edge as usize], cad_core::Segment::Cubic { .. }));
+        let target = camera.screen_to_world(to, viewport);
+        assert!(bent.curve(edge).eval(0.5).distance(target) < 0.5);
+        assert_eq!(history.undo_label(), Some("Bend line"));
+    }
+
+    #[test]
+    fn sketch_lines_snap_straight_and_to_15_degrees_with_shift() {
+        let points = [Vec2::ZERO];
+        let level = sketch_point(&points, Vec2::new(100.0, 2.0), false, 1.0);
+        assert!((level - Vec2::new(100.02, 0.0)).length() < 0.01, "{level}");
+        let free = sketch_point(&points, Vec2::new(100.0, 30.0), false, 1.0);
+        assert_eq!(free, Vec2::new(100.0, 30.0));
+        let stepped = sketch_point(&points, Vec2::new(100.0, 30.0), true, 1.0);
+        assert!((stepped.y.atan2(stepped.x).to_degrees() - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_line_cut_into_three_gets_three_equal_parts() {
+        let mut document = PatternDocument::demo_top();
+        let front = document.pieces()[0].id;
+        let outline = document.piece(front).unwrap().outline.clone();
+        // The longest line, curved or not.
+        let span = outline
+            .lines()
+            .into_iter()
+            .max_by(|a, b| outline.span_length(*a).total_cmp(&outline.span_length(*b)))
+            .unwrap();
+        let length = outline.span_length(span);
+        assert!(split_line(&mut document, front, span.first, 3));
+        let outline = &document.piece(front).unwrap().outline;
+        let mut anchor_edge = span.first;
+        for _ in 0..3 {
+            let part = outline.line_span(anchor_edge);
+            assert!((outline.span_length(part) - length / 3.0).abs() < 0.3);
+            anchor_edge = (part.first + part.count) % outline.edge_count();
+        }
     }
 
     #[test]

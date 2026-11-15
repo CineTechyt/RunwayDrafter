@@ -41,6 +41,10 @@ pub struct CanvasOverlay {
     pub show_seam_allowance: bool,
     /// In-progress points from one of the sketch tools.
     pub sketch_points: Vec<Vec2>,
+    /// Where the next sketch point would go: drawn as a rubber band.
+    pub sketch_cursor: Option<Vec2>,
+    /// A point about to be added to a line.
+    pub marker: Option<Vec2>,
 }
 
 impl Default for CanvasOverlay {
@@ -55,6 +59,8 @@ impl Default for CanvasOverlay {
             show_mesh: false,
             show_seam_allowance: true,
             sketch_points: Vec::new(),
+            sketch_cursor: None,
+            marker: None,
         }
     }
 }
@@ -105,8 +111,16 @@ pub fn build(
             srgba(80, 220, 255, 0.9),
         );
     }
+    if let (Some(&last), Some(cursor)) = (overlay.sketch_points.last(), overlay.sketch_cursor) {
+        batch.polyline(&[last, cursor], false, 1.5 * px, srgba(80, 220, 255, 0.6));
+        batch.disc(cursor, 3.0 * px, srgba(80, 220, 255, 0.6));
+    }
     for point in &overlay.sketch_points {
         batch.disc(*point, 4.0 * px, srgba(80, 220, 255, 1.0));
+    }
+    if let Some(marker) = overlay.marker {
+        batch.disc(marker, 6.0 * px, srgba(255, 255, 255, 1.0));
+        batch.disc(marker, 4.0 * px, srgba(80, 220, 255, 1.0));
     }
     // Handles go last so they are never hidden behind another piece.
     if let Some(piece) = overlay.handles_for.and_then(|id| doc.piece(id)) {

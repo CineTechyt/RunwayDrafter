@@ -108,10 +108,14 @@ impl OrbitCamera {
     }
 
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
+        self.projection(aspect) * self.view()
+    }
+
+    pub fn projection(&self, aspect: f32) -> Mat4 {
         let near = (self.distance * 0.02).max(0.005);
         // wgpu clip space is Y up with depth 0..1 on every backend, which is
         // glam's "directx" convention (its "vulkan" one flips Y).
-        proj::directx::perspective(self.fov_y, aspect.max(1e-3), near, near * 5000.0) * self.view()
+        proj::directx::perspective(self.fov_y, aspect.max(1e-3), near, near * 5000.0)
     }
 
     pub fn orbit(&mut self, delta_px: Vec2) {

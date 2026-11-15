@@ -721,6 +721,34 @@ pub struct Placement {
     pub angle: f32,
     /// Raises (positive) or lowers the piece from where it would go, in mm.
     pub height: f32,
+    /// What the piece is wrapped around: the torso (at `angle`), an arm
+    /// (sleeves) or the neck (collars, neck bands).
+    #[serde(default)]
+    pub part: BodyPart,
+}
+
+/// The part of the body a piece is placed around before sewing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BodyPart {
+    #[default]
+    Torso,
+    /// The avatar's left arm (on the +x side).
+    LeftArm,
+    RightArm,
+    Neck,
+}
+
+impl BodyPart {
+    pub const ALL: [Self; 4] = [Self::Torso, Self::LeftArm, Self::RightArm, Self::Neck];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Torso => "Torso",
+            Self::LeftArm => "Left arm",
+            Self::RightArm => "Right arm",
+            Self::Neck => "Neck",
+        }
+    }
 }
 
 impl PatternPiece {

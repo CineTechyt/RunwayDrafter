@@ -187,12 +187,145 @@ impl RawSubpath {
 pub struct RawVectorDrawing {
     pub subpaths: Vec<RawSubpath>,
     pub labels: Vec<RawLabel>,
+    /// Shapes only filled, never stroked: logos, lettering, arrow heads.
+    /// They are kept as marks, never taken for outlines.
+    pub fills: Vec<RawSubpath>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawLabel {
     pub text: String,
+    /// Where the text starts, on its baseline.
     pub position: Vec2,
+    /// Letter height in mm; 0 when unknown.
+    pub size: f32,
+    /// Reading direction (unit vector).
+    pub direction: Vec2,
+    /// Each character and how far along `direction` from `position` it
+    /// starts, in mm. Empty when the file does not say.
+    pub glyphs: Vec<(char, f32)>,
+    /// Length of the text along `direction`, in mm.
+    pub width: f32,
+}
+
+impl RawLabel {
+    /// A label whose letters' places are unknown.
+    pub fn new(text: String, position: Vec2) -> Self {
+        Self {
+            text,
+            position,
+            size: 0.0,
+            direction: Vec2::X,
+            glyphs: Vec::new(),
+            width: 0.0,
+        }
+    }
+
+    /// Where character `index` ends along the text.
+    fn glyph_end(&self, index: usize) -> f32 {
+        self.glyphs.get(index + 1).map_or(self.width, |g| g.1)
+    }
+
+    /// The characters whose middle lies in `keep`, as a label of their own.
+    pub(crate) fn keep_glyphs(&self, keep: impl Fn(Vec2) -> bool) -> Option<Self> {
+        if self.glyphs.is_empty() {
+            return keep(self.position).then(|| self.clone());
+        }
+        let kept: Vec<(char, f32, f32)> = (0..self.glyphs.len())
+            .map(|i| (self.glyphs[i].0, self.glyphs[i].1, self.glyph_end(i)))
+            .filter(|&(_, start, end)| keep(self.position + self.direction * (start + end) * 0.5))
+            .collect();
+        let (first, last) = (kept.first()?, kept.last()?);
+        let shift = first.1;
+        Some(Self {
+            text: kept.iter().map(|g| g.0).collect(),
+            position: self.position + self.direction * shift,
+            size: self.size,
+            direction: self.direction,
+            glyphs: kept.iter().map(|g| (g.0, g.1 - shift)).collect(),
+            width: last.2 - shift,
+        })
+    }
+}
+
+/// Puts text back together that was drawn in pieces: a word cut where two
+/// pages meet, or set letter by letter. Characters on one baseline that
+/// follow each other within a letter's height join; the same character
+/// drawn twice at one place (the overlap of two pages) counts once.
+pub(crate) fn merge_text(labels: Vec<RawLabel>) -> Vec<RawLabel> {
+    let (placed, mut out): (Vec<RawLabel>, Vec<RawLabel>) = labels
+        .into_iter()
+        .partition(|l| !l.glyphs.is_empty() && l.size > 0.0);
+
+    // Lines: same direction, size and baseline.
+    let mut lines: Vec<Vec<RawLabel>> = Vec::new();
+    for label in placed {
+        let line = lines.iter_mut().find(|line| {
+            let other = &line[0];
+            let normal = other.direction.perp();
+            other.direction.dot(label.direction) > 0.999
+                && (other.size - label.size).abs() < 0.1 * other.size
+                && (label.position - other.position).dot(normal).abs() < 0.2 * other.size
+        });
+        match line {
+            Some(line) => line.push(label),
+            None => lines.push(vec![label]),
+        }
+    }
+
+    for line in lines {
+        let origin = line[0].position;
+        let direction = line[0].direction;
+        let size = line[0].size;
+        // (along the line, character, its end)
+        let mut glyphs: Vec<(f32, char, f32)> = Vec::new();
+        for label in &line {
+            let base = (label.position - origin).dot(direction);
+            for i in 0..label.glyphs.len() {
+                glyphs.push((base + label.glyphs[i].1, label.glyphs[i].0, base + label.glyph_end(i)));
+            }
+        }
+        glyphs.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let mut current: Option<RawLabel> = None;
+        let mut end = f32::NEG_INFINITY;
+        let mut last: Option<(f32, char)> = None;
+        for (at, ch, stop) in glyphs {
+            if let Some((was, prev)) = last
+                && prev == ch
+                && (at - was).abs() < 0.2 * size
+            {
+                continue; // drawn twice
+            }
+            if at - end > 1.5 * size {
+                out.extend(current.take());
+            }
+            let label = current.get_or_insert_with(|| RawLabel {
+                text: String::new(),
+                position: origin + direction * at,
+                size,
+                direction,
+                glyphs: Vec::new(),
+                width: 0.0,
+            });
+            let start = (label.position - origin).dot(direction);
+            if !label.text.is_empty() && at - end > 0.2 * size && !label.text.ends_with(' ') {
+                label.glyphs.push((' ', end - start));
+                label.text.push(' ');
+            }
+            label.glyphs.push((ch, at - start));
+            label.text.push(ch);
+            label.width = label.width.max(stop - start);
+            end = end.max(stop);
+            last = Some((at, ch));
+        }
+        out.extend(current);
+    }
+    for label in &mut out {
+        label.text = label.text.trim().to_owned();
+    }
+    out.retain(|l| !l.text.is_empty());
+    out
 }
 
 impl RawVectorDrawing {
@@ -225,6 +358,7 @@ impl RawVectorDrawing {
                 !(closed && outline_sized) && !path.is_empty()
             })
             .cloned()
+            .chain(self.fills.iter().filter(|p| !p.is_empty()).cloned())
             .collect();
 
         for subpath in chained {
@@ -286,6 +420,46 @@ impl RawVectorDrawing {
                     .min_by(|&a, &b| candidate_loops[a].area.total_cmp(&candidate_loops[b].area))
             })
             .collect();
+
+        // Text inside each piece that may name it. Text found on most
+        // pieces names the garment or the brand ("Tshirt", "MEN'S"), not
+        // the piece.
+        let naming = |root: usize| -> Vec<&RawLabel> {
+            self.labels
+                .iter()
+                .filter(|label| {
+                    !label.text.trim().is_empty()
+                        && !is_pattern_annotation(&label.text)
+                        && geometry::point_in_polygon(label.position, &polygons[root])
+                })
+                .collect()
+        };
+        let roots: Vec<usize> = (0..candidate_loops.len())
+            .filter(|&root| parents[root].is_none())
+            .collect();
+        // Compared without case and punctuation, and a word cut short at
+        // a page edge ("MEN" of "MEN'S") as the same text.
+        let key = |text: &str| -> String {
+            text.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect()
+        };
+        let piece_texts: Vec<Vec<String>> = roots
+            .iter()
+            .map(|&root| naming(root).iter().map(|l| key(&l.text)).collect())
+            .collect();
+        let same = |a: &str, b: &str| {
+            a == b || (a.len().min(b.len()) >= 3 && (a.starts_with(b) || b.starts_with(a)))
+        };
+        let shared = |text: &str| {
+            let text = key(text);
+            let on = piece_texts
+                .iter()
+                .filter(|texts| texts.iter().any(|t| same(t, &text)))
+                .count();
+            roots.len() >= 3 && on * 2 > roots.len()
+        };
 
         let mut pieces = Vec::new();
         for root in 0..candidate_loops.len() {
@@ -366,15 +540,21 @@ impl RawVectorDrawing {
             };
 
             let piece_num = pieces.len() + 1;
-            let name = self
-                .labels
-                .iter()
+            // The biggest lettering names the piece; sentences are
+            // instructions.
+            let name = naming(root)
+                .into_iter()
+                .filter(|label| !shared(&label.text))
                 .filter(|label| {
-                    !label.text.trim().is_empty()
-                        && !is_pattern_annotation(&label.text)
-                        && geometry::point_in_polygon(label.position, &polygons[root])
+                    let text = label.text.trim();
+                    !text.ends_with('.') && text.split_whitespace().count() <= 4
                 })
-                .max_by_key(|label| label.text.trim().len())
+                .max_by(|a, b| {
+                    let size = |l: &RawLabel| (l.size * 2.0).round();
+                    size(a)
+                        .total_cmp(&size(b))
+                        .then(a.text.trim().len().cmp(&b.text.trim().len()))
+                })
                 .map(|label| clean_piece_name(&label.text))
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| format!("Piece {piece_num}"));
@@ -392,6 +572,7 @@ impl RawVectorDrawing {
             pieces,
             unassigned_open_lines: open_lines,
             marks,
+            pages: None,
         }
     }
 }
@@ -418,63 +599,168 @@ fn find_grainline(polygon: &[Vec2], marks: &[RawSubpath]) -> Option<(Vec2, Vec2)
         .max_by(|x, y| x.0.distance(x.1).total_cmp(&y.0.distance(y.1)))
 }
 
-/// Chains open subpaths whose ends and starts match within tolerance.
+/// Chains open subpaths whose ends meet within `tolerance` into longer
+/// paths, closing those that come round to their own start.
+///
+/// Every end is paired with at most one other. Where more than two ends
+/// meet (a grain line or a mark touching an outline), the pairs that
+/// continue most smoothly, then most closely, win; the result does not
+/// depend on the order the file draws its strokes in.
 fn chain_subpaths(paths: &mut Vec<RawSubpath>, tolerance: f32) {
-    let mut i = 0;
-    while i < paths.len() {
-        if paths[i].closed || paths[i].is_empty() {
-            i += 1;
+    // (path, at its end?, point, direction leaving the path there)
+    let mut ends: Vec<(usize, bool, Vec2, Vec2)> = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        if path.closed || path.is_empty() {
             continue;
         }
+        for at_end in [false, true] {
+            let point = if at_end { path.end() } else { path.start };
+            ends.push((i, at_end, point, outward(path, at_end)));
+        }
+    }
+    ends.sort_by(|a, b| a.2.x.total_cmp(&b.2.x));
+
+    let mut pairs = Vec::new();
+    for a in 0..ends.len() {
+        for b in a + 1..ends.len() {
+            if ends[b].2.x - ends[a].2.x > tolerance {
+                break;
+            }
+            let (ea, eb) = (&ends[a], &ends[b]);
+            let distance = ea.2.distance(eb.2);
+            if distance > tolerance {
+                continue;
+            }
+            if ea.0 == eb.0 && rough_length(&paths[ea.0]) <= 4.0 * tolerance {
+                // A stub's two ends lie close together; it is no loop.
+                continue;
+            }
+            // Smooth: the two paths leave the joint in opposite directions.
+            let turn = ea.3.angle_to(-eb.3).abs();
+            let turn = if turn.is_finite() { turn } else { 0.0 };
+            pairs.push((turn + 2.0 * distance / tolerance, a, b));
+        }
+    }
+    pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
+
+    // link[path][0 = start, 1 = end] = (other path, its side)
+    let mut link: Vec<[Option<(usize, usize)>; 2]> = vec![[None, None]; paths.len()];
+    for (_, a, b) in pairs {
+        let (pa, sa) = (ends[a].0, usize::from(ends[a].1));
+        let (pb, sb) = (ends[b].0, usize::from(ends[b].1));
+        if link[pa][sa].is_none() && link[pb][sb].is_none() {
+            link[pa][sa] = Some((pb, sb));
+            link[pb][sb] = Some((pa, sa));
+        }
+    }
+
+    let mut used = vec![false; paths.len()];
+    let mut out = Vec::with_capacity(paths.len());
+    for first in 0..paths.len() {
+        if used[first] {
+            continue;
+        }
+        if link[first] == [None, None] {
+            used[first] = true;
+            out.push(std::mem::take(&mut paths[first]));
+            continue;
+        }
+        // Walk back to the head of the chain, or once round a ring.
+        // `reversed`: the path runs from its end to its start.
+        let (mut head, mut reversed) = (first, false);
         loop {
-            let start = paths[i].start;
-            let end = paths[i].end();
-            if start.distance(end) <= tolerance {
-                snap_subpath_end(&mut paths[i], start);
-                paths[i].closed = true;
-                break;
-            }
-
-            let join = (i + 1..paths.len()).find_map(|j| {
-                if paths[j].is_empty() || paths[j].closed {
-                    return None;
+            let entry = usize::from(reversed);
+            match link[head][entry] {
+                Some((j, side)) if j != first => {
+                    head = j;
+                    reversed = side == 0;
                 }
-                if end.distance(paths[j].start) <= tolerance {
-                    Some((j, false, false))
-                } else if end.distance(paths[j].end()) <= tolerance {
-                    Some((j, false, true))
-                } else if start.distance(paths[j].end()) <= tolerance {
-                    Some((j, true, false))
-                } else if start.distance(paths[j].start) <= tolerance {
-                    Some((j, true, true))
-                } else {
-                    None
-                }
-            });
-
-            let Some((j, prepend, reverse)) = join else {
-                break;
-            };
-            let mut other = paths.remove(j);
-            if reverse {
-                other.reverse();
-            }
-            let target = if prepend { start } else { end };
-            let endpoint = if prepend { other.end() } else { other.start };
-            translate_subpath(&mut other, target - endpoint);
-
-            if prepend {
-                other
-                    .segments
-                    .extend(std::mem::take(&mut paths[i].segments));
-                paths[i].start = other.start;
-                paths[i].segments = other.segments;
-            } else {
-                paths[i].segments.extend(other.segments);
+                _ => break,
             }
         }
-        i += 1;
+        let mut chain: Option<RawSubpath> = None;
+        let (mut at, mut rev) = (head, reversed);
+        loop {
+            used[at] = true;
+            let mut piece = std::mem::take(&mut paths[at]);
+            if rev {
+                piece.reverse();
+            }
+            match chain.as_mut() {
+                None => chain = Some(piece),
+                Some(chain) => {
+                    // Close the gap by moving the piece onto the chain.
+                    let gap = chain.end() - piece.start;
+                    translate_subpath(&mut piece, gap);
+                    chain.segments.extend(piece.segments);
+                }
+            }
+            let exit = if rev { 0 } else { 1 };
+            match link[at][exit] {
+                Some((j, side)) if j == head && side == usize::from(reversed) => {
+                    if let Some(chain) = chain.as_mut() {
+                        let start = chain.start;
+                        snap_subpath_end(chain, start);
+                        chain.closed = true;
+                    }
+                    break;
+                }
+                Some((j, side)) if !used[j] => {
+                    at = j;
+                    rev = side == 1;
+                }
+                _ => break,
+            }
+        }
+        out.extend(chain);
     }
+    *paths = out;
+}
+
+/// Length of a path along its end points (curves as chords).
+fn rough_length(path: &RawSubpath) -> f32 {
+    let mut from = path.start;
+    let mut length = 0.0;
+    for segment in &path.segments {
+        length += from.distance(segment.end());
+        from = segment.end();
+    }
+    length
+}
+
+/// The direction a path leaves at its end (`at_end`) or its start, pointing
+/// away from the path.
+fn outward(path: &RawSubpath, at_end: bool) -> Vec2 {
+    let Some(segment) = (if at_end { path.segments.last() } else { path.segments.first() }) else {
+        return Vec2::ZERO;
+    };
+    let (tip, inner) = if at_end {
+        let before = if path.segments.len() >= 2 {
+            path.segments[path.segments.len() - 2].end()
+        } else {
+            path.start
+        };
+        let inner = match *segment {
+            RawSegment::Line { .. } => before,
+            RawSegment::Quadratic { ctrl, .. } => ctrl,
+            RawSegment::Cubic { ctrl2, .. } => ctrl2,
+        };
+        (segment.end(), inner)
+    } else {
+        let inner = match *segment {
+            RawSegment::Line { to } => to,
+            RawSegment::Quadratic { ctrl, .. } => ctrl,
+            RawSegment::Cubic { ctrl1, .. } => ctrl1,
+        };
+        (path.start, inner)
+    };
+    let direction = tip - inner;
+    if direction.length() < 1e-6 {
+        // Degenerate handle: fall back to the chord.
+        let other = if at_end { path.start } else { path.end() };
+        return (tip - other).normalize_or_zero();
+    }
+    direction.normalize()
 }
 
 fn translate_subpath(path: &mut RawSubpath, delta: Vec2) {
@@ -572,9 +858,24 @@ fn is_pattern_annotation(text: &str) -> bool {
         "seam allowance",
         "piece qty",
         "fabric type",
+        // Cutting instructions and marks.
+        "cut on fold",
+        "place on fold",
+        "fold line",
+        "symmetry",
+        "sheets",
+        "copyright",
+        "©",
+        // Addresses.
+        "http",
+        "www.",
+        "@",
+        ".com",
+        ".info",
     ]
     .iter()
     .any(|marker| text.contains(marker))
+        || text.split_whitespace().any(|word| word == "size")
 }
 
 fn clean_piece_name(text: &str) -> String {
@@ -830,6 +1131,8 @@ pub struct ImportedPattern {
     /// Every drawn path that is not a piece outline: lines, ticks, dots and
     /// the strokes of text drawn as lines (see [`crate::drawn_text`]).
     pub marks: Vec<RawSubpath>,
+    /// How the pages were joined, for a pattern printed on many sheets.
+    pub pages: Option<crate::tiles::PageLayout>,
 }
 
 impl ImportedPattern {

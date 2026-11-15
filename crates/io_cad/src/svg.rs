@@ -248,7 +248,7 @@ pub fn import_pattern_svg(bytes: &[u8], options: &SvgOptions) -> Result<Imported
                     && drawing.subpaths.len() > first_subpath
                     && let Some(position) = subpath_group_center(&drawing.subpaths[first_subpath..])
                 {
-                    drawing.labels.push(RawLabel { text, position });
+                    drawing.labels.push(RawLabel::new(text, position));
                 }
             }
             Tag::Close { name } => {

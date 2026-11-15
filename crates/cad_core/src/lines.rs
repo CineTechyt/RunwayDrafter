@@ -407,6 +407,293 @@ impl Outline {
     }
 }
 
+/// Editing lines: points on them, splitting, reshaping and bending.
+impl Outline {
+    /// The curve parameter on `edge` nearest to `p`.
+    pub fn nearest_on_edge(&self, edge: u32, p: Vec2) -> f32 {
+        let curve = self.curve(edge);
+        const SAMPLES: usize = 64;
+        let mut best = (0.0f32, f32::INFINITY);
+        for k in 0..=SAMPLES {
+            let t = k as f32 / SAMPLES as f32;
+            let d = curve.eval(t).distance_squared(p);
+            if d < best.1 {
+                best = (t, d);
+            }
+        }
+        // Refine between the neighbouring samples.
+        let (mut lo, mut hi) = (
+            (best.0 - 1.0 / SAMPLES as f32).max(0.0),
+            (best.0 + 1.0 / SAMPLES as f32).min(1.0),
+        );
+        for _ in 0..30 {
+            let a = lo + (hi - lo) / 3.0;
+            let b = hi - (hi - lo) / 3.0;
+            if curve.eval(a).distance_squared(p) < curve.eval(b).distance_squared(p) {
+                hi = b;
+            } else {
+                lo = a;
+            }
+        }
+        (lo + hi) * 0.5
+    }
+
+    /// The edge and curve parameter at `fraction` (0..1) of a span's length.
+    pub fn span_location(&self, span: EdgeSpan, fraction: f32) -> (u32, f32) {
+        const SAMPLES: usize = 128;
+        let n = self.edge_count();
+        // Arc length samples per edge.
+        let tables: Vec<(u32, Vec<f32>)> = span
+            .edges(n)
+            .map(|edge| {
+                let curve = self.curve(edge);
+                let mut along = vec![0.0f32];
+                let mut previous = curve.eval(0.0);
+                for k in 1..=SAMPLES {
+                    let point = curve.eval(k as f32 / SAMPLES as f32);
+                    along.push(along[k - 1] + previous.distance(point));
+                    previous = point;
+                }
+                (edge, along)
+            })
+            .collect();
+        let total: f32 = tables.iter().map(|(_, a)| a[SAMPLES]).sum();
+        let mut target = fraction.clamp(0.0, 1.0) * total;
+        for (index, (edge, along)) in tables.iter().enumerate() {
+            let length = along[SAMPLES];
+            if target <= length || index + 1 == tables.len() {
+                let target = target.min(length);
+                let k = along.partition_point(|&a| a < target).clamp(1, SAMPLES);
+                let span = along[k] - along[k - 1];
+                let within = if span > 0.0 {
+                    (target - along[k - 1]) / span
+                } else {
+                    0.0
+                };
+                return (*edge, ((k - 1) as f32 + within) / SAMPLES as f32);
+            }
+            target -= length;
+        }
+        (span.first, 0.0)
+    }
+
+    /// Splits `edge` at curve parameter `t` with a new turn point, so the
+    /// line becomes two lines; the shape stays. The new anchor is
+    /// `edge + 1`. `false` when `t` is at an end.
+    pub fn split_edge(&mut self, edge: u32, t: f32) -> bool {
+        let n = self.edge_count();
+        if edge >= n || !(0.001..=0.999).contains(&t) {
+            return false;
+        }
+        let curve = self.curve(edge);
+        let p0 = curve.eval(0.0);
+        let p3 = curve.eval(1.0);
+        let lerp = |a: Vec2, b: Vec2| a + (b - a) * t;
+        let (middle, first, second) = match self.segments()[edge as usize] {
+            Segment::Line => (lerp(p0, p3), Segment::Line, Segment::Line),
+            Segment::Quadratic { ctrl } => {
+                let (a, b) = (lerp(p0, ctrl), lerp(ctrl, p3));
+                let m = lerp(a, b);
+                (m, Segment::Quadratic { ctrl: a }, Segment::Quadratic { ctrl: b })
+            }
+            Segment::Cubic { ctrl1, ctrl2 } => {
+                let (a, b, c) = (lerp(p0, ctrl1), lerp(ctrl1, ctrl2), lerp(ctrl2, p3));
+                let (d, e) = (lerp(a, b), lerp(b, c));
+                let m = lerp(d, e);
+                (
+                    m,
+                    Segment::Cubic { ctrl1: a, ctrl2: d },
+                    Segment::Cubic { ctrl1: e, ctrl2: c },
+                )
+            }
+        };
+        let mut points = self.points().to_vec();
+        let mut segments = self.segments().to_vec();
+        segments[edge as usize] = first;
+        segments.insert(edge as usize + 1, second);
+        points.insert(
+            edge as usize + 1,
+            ControlPoint {
+                position: middle,
+                kind: PointKind::Corner,
+            },
+        );
+        *self = Outline::new(points, segments);
+        true
+    }
+
+    /// Moves a span's points (all but its start) through `map`, carrying
+    /// the curve handle just past its end along with the end point, so the
+    /// next line keeps its direction there.
+    pub fn reshape_span(&mut self, span: EdgeSpan, map: impl Fn(Vec2) -> Vec2) -> bool {
+        let n = self.edge_count();
+        if n == 0 || span.count >= n {
+            return false;
+        }
+        let mut points = self.points().to_vec();
+        let mut segments = self.segments().to_vec();
+        let end_anchor = ((span.first + span.count) % n) as usize;
+        let end_before = points[end_anchor].position;
+        for k in 1..=span.count {
+            let anchor = ((span.first + k) % n) as usize;
+            points[anchor].position = map(points[anchor].position);
+        }
+        for edge in span.edges(n) {
+            segments[edge as usize] = match segments[edge as usize] {
+                Segment::Line => Segment::Line,
+                Segment::Quadratic { ctrl } => Segment::Quadratic { ctrl: map(ctrl) },
+                Segment::Cubic { ctrl1, ctrl2 } => Segment::Cubic {
+                    ctrl1: map(ctrl1),
+                    ctrl2: map(ctrl2),
+                },
+            };
+        }
+        let moved = points[end_anchor].position - end_before;
+        let next = end_anchor;
+        if let Segment::Cubic { ctrl1, .. } = &mut segments[next] {
+            *ctrl1 += moved;
+        }
+        *self = Outline::new(points, segments);
+        true
+    }
+
+    /// Gives a line a new length, measured along it, keeping its start and
+    /// its shape (scaled).
+    pub fn set_span_length(&mut self, span: EdgeSpan, length: f32) -> bool {
+        let current = self.span_length(span);
+        if current < 1e-3 || length < 0.1 {
+            return false;
+        }
+        let start = self.points()[(span.first % self.edge_count().max(1)) as usize].position;
+        let factor = length / current;
+        self.reshape_span(span, |p| start + (p - start) * factor)
+    }
+
+    /// Turns a line about its start so the direction from its start to its
+    /// end is `degrees` (counter-clockwise from +x).
+    pub fn set_span_angle(&mut self, span: EdgeSpan, degrees: f32) -> bool {
+        let n = self.edge_count();
+        if n == 0 {
+            return false;
+        }
+        let start = self.points()[(span.first % n) as usize].position;
+        let end = self.points()[((span.first + span.count) % n) as usize].position;
+        let chord = end - start;
+        if chord.length() < 1e-3 {
+            return false;
+        }
+        let turn = degrees.to_radians() - chord.y.atan2(chord.x);
+        let rotation = Vec2::from_angle(turn);
+        self.reshape_span(span, |p| start + rotation.rotate(p - start))
+    }
+
+    /// Bends `edge` so that its point at parameter `t` moves by `delta`,
+    /// its ends staying put. A straight edge becomes a curve.
+    pub fn bend_edge(&mut self, edge: u32, t: f32, delta: Vec2) -> bool {
+        let n = self.edge_count();
+        if edge >= n {
+            return false;
+        }
+        let curve = self.curve(edge);
+        let (p0, p3) = (curve.eval(0.0), curve.eval(1.0));
+        let (c1, c2) = match self.segments()[edge as usize] {
+            Segment::Line => (p0 + (p3 - p0) / 3.0, p0 + (p3 - p0) * (2.0 / 3.0)),
+            Segment::Quadratic { ctrl } => (
+                p0 + (ctrl - p0) * (2.0 / 3.0),
+                p3 + (ctrl - p3) * (2.0 / 3.0),
+            ),
+            Segment::Cubic { ctrl1, ctrl2 } => (ctrl1, ctrl2),
+        };
+        // Weights so that the curve point at `t` moves by exactly `delta`.
+        let t = t.clamp(0.15, 0.85);
+        let s = 1.0 - t;
+        let f = 1.0 / (3.0 * s * t * (s * s + t * t));
+        self.set_segment(
+            edge,
+            Segment::Cubic {
+                ctrl1: c1 + delta * s * f,
+                ctrl2: c2 + delta * t * f,
+            },
+        );
+        true
+    }
+
+    /// The whole piece of which this outline is the half cut "on the
+    /// fold": mirrored about the straight line `fold`, which disappears.
+    /// Edge `i` of the result is edge `(fold.first + fold.count + i) % n`
+    /// of this outline for `i < k`, and the mirror image of edge
+    /// `k - 1 - (i - k)` beyond, `k` being the number of edges kept.
+    /// `None` when `fold` is not straight or is the whole outline.
+    pub fn unfolded(&self, fold: EdgeSpan) -> Option<Outline> {
+        let n = self.edge_count();
+        if fold.count == 0 || fold.count >= n {
+            return None;
+        }
+        if !fit::is_straight(&self.span_points(fold, 0.25), 0.5) {
+            return None;
+        }
+        let start = self.points()[(fold.first % n) as usize].position;
+        let end = self.points()[((fold.first + fold.count) % n) as usize].position;
+        let axis = (end - start).try_normalize()?;
+        let mirror = |p: Vec2| {
+            let d = p - start;
+            start + axis * (2.0 * d.dot(axis)) - d
+        };
+        // The kept half runs from the fold's end round to its start.
+        let k = n - fold.count;
+        let kept: Vec<u32> = (0..k).map(|i| (fold.first + fold.count + i) % n).collect();
+        let mut points: Vec<ControlPoint> = kept
+            .iter()
+            .map(|&e| self.points()[e as usize])
+            .collect();
+        let mut segments: Vec<Segment> = kept.iter().map(|&e| self.segments()[e as usize]).collect();
+        // The fold's start, then the mirrored half backwards.
+        points.push(ControlPoint {
+            position: start,
+            kind: PointKind::Corner,
+        });
+        for j in (0..k as usize).rev() {
+            if j > 0 {
+                let p = self.points()[kept[j] as usize];
+                points.push(ControlPoint {
+                    position: mirror(p.position),
+                    kind: p.kind,
+                });
+            }
+            segments.push(match self.segments()[kept[j] as usize] {
+                Segment::Line => Segment::Line,
+                Segment::Quadratic { ctrl } => Segment::Quadratic { ctrl: mirror(ctrl) },
+                Segment::Cubic { ctrl1, ctrl2 } => Segment::Cubic {
+                    ctrl1: mirror(ctrl2),
+                    ctrl2: mirror(ctrl1),
+                },
+            });
+        }
+        points[0].kind = PointKind::Corner;
+        let mut outline = Outline::new(points, segments);
+        // Where a line crosses the fold at a right angle (a neckline, a
+        // hem) it carries on as one line.
+        let total = outline.edge_count();
+        for anchor in [0, k] {
+            let incoming = outline.curve((anchor + total - 1) % total).end_direction();
+            let outgoing = outline.curve(anchor).start_direction();
+            if incoming.dot(outgoing) > 10f32.to_radians().cos() {
+                outline.set_point_kind(anchor, PointKind::Smooth);
+            }
+        }
+        Some(outline)
+    }
+
+    /// Makes `edge` a straight line again.
+    pub fn straighten_edge(&mut self, edge: u32) -> bool {
+        if edge >= self.edge_count() || self.segments()[edge as usize] == Segment::Line {
+            return false;
+        }
+        self.set_segment(edge, Segment::Line);
+        true
+    }
+}
+
 /// Unit start and end directions of a curve segment, robust to controls
 /// that sit on their anchor.
 trait Directions {
@@ -536,6 +823,82 @@ mod tests {
         );
         assert!(square.set_point_kind(1, PointKind::Corner));
         assert_eq!(square.lines().len(), 4);
+    }
+
+    #[test]
+    fn splitting_a_curve_in_half_keeps_its_shape_and_makes_two_lines() {
+        let mut outline = bumpy().simplified(0.3, 15.0);
+        let curve = outline.lines().into_iter().max_by_key(|s| s.count).unwrap();
+        let length = outline.span_length(curve);
+        let area = outline.signed_area();
+        let (edge, t) = outline.span_location(curve, 0.5);
+        assert!(outline.split_edge(edge, t));
+        assert!((outline.signed_area() - area).abs() < 1e-2 * area);
+        let halves = [outline.line_span(edge), outline.line_span(edge + 1)];
+        assert_ne!(halves[0], halves[1], "a turn point between them");
+        for half in halves {
+            assert!((outline.span_length(half) - length / 2.0).abs() < 0.5);
+        }
+    }
+
+    #[test]
+    fn a_line_gets_a_typed_length_and_angle() {
+        let mut square = Outline::polygon([
+            Vec2::ZERO,
+            Vec2::new(100.0, 0.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(0.0, 100.0),
+        ]);
+        let bottom = EdgeSpan::single(0);
+        assert!(square.set_span_length(bottom, 150.0));
+        assert!((square.points()[1].position - Vec2::new(150.0, 0.0)).length() < 1e-3);
+        assert!(square.set_span_angle(bottom, 90.0));
+        assert!((square.points()[1].position - Vec2::new(0.0, 150.0)).length() < 1e-3);
+    }
+
+    #[test]
+    fn bending_moves_the_grabbed_point_with_the_cursor() {
+        let mut square = Outline::polygon([
+            Vec2::ZERO,
+            Vec2::new(100.0, 0.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(0.0, 100.0),
+        ]);
+        let t = square.nearest_on_edge(0, Vec2::new(30.0, 2.0));
+        assert!((t - 0.3).abs() < 1e-3);
+        assert!(square.bend_edge(0, t, Vec2::new(0.0, -20.0)));
+        let moved = square.curve(0).eval(t);
+        assert!((moved - Vec2::new(30.0, -20.0)).length() < 1e-2, "{moved}");
+        assert!(square.straighten_edge(0));
+        assert_eq!(square.segments()[0], Segment::Line);
+    }
+
+    #[test]
+    fn a_half_cut_on_the_fold_unfolds_into_the_whole_piece() {
+        // Half a T: fold on the left (x = 0), a hem at the bottom meeting
+        // the fold at a right angle.
+        let half = Outline::polygon([
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            Vec2::new(100.0, 200.0),
+            Vec2::new(0.0, 220.0),
+        ]);
+        let fold = half
+            .lines()
+            .into_iter()
+            .find(|s| {
+                let a = half.points()[s.first as usize].position;
+                a.x == 0.0 && a.y > 100.0
+            })
+            .unwrap();
+        let whole = half.unfolded(fold).unwrap();
+        assert_eq!(whole.edge_count(), 6);
+        assert!((whole.signed_area().abs() - 2.0 * half.signed_area().abs()).abs() < 1e-2);
+        let (lo, hi) = whole.bounds();
+        assert_eq!((lo.x, hi.x), (-100.0, 100.0));
+        // The hem, square to the fold, became one line across it; the
+        // slanted top meets its mirror image in a point and stays two.
+        assert_eq!(whole.lines().len(), 5, "{:?}", whole.lines());
     }
 
     #[test]

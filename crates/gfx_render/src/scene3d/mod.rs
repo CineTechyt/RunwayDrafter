@@ -1,8 +1,17 @@
 //! Viewport B: PBR view of the avatar and the draped garment.
+//!
+//! The live view draws with one key light, which casts shadows, a fill
+//! light and a flat ambient term: cheap enough for every frame while the
+//! cloth drapes. [`StudioRender`] makes a still of the same scene with the
+//! light of a photo studio (see [`studio`]).
 
 pub mod avatar;
 pub mod mesh;
 pub mod props;
+mod refine;
+mod shadow;
+pub mod studio;
+pub mod weave;
 
 use std::ops::Range;
 
@@ -14,13 +23,18 @@ use wgpu::util::DeviceExt;
 
 pub use mesh::{MeshData, MeshVertex, Shading, SurfaceMaterial, SurfaceOverlay};
 pub use props::garment_props;
+pub use studio::StudioRender;
 
 use crate::camera::OrbitCamera;
 use crate::context::GpuContext;
 use crate::target::{GrowableBuffer, RenderTarget};
 use crate::{ViewportRenderer, srgba};
 
-/// Weave repeats per UV unit (one UV unit is one texture tile of the fabric).
+use shadow::{LightSlot, ShadowKit, ShadowMaps, light_matrix};
+use studio::StudioKit;
+
+/// Resolution of the live view's shadow map.
+const LIVE_SHADOW_SIZE: u32 = 2048;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -33,10 +47,20 @@ struct Globals {
     fill_color: [f32; 4],
     sky: [f32; 4],
     ground: [f32; 4],
+    /// Where the key and the fill light see the scene from (shadow maps).
+    shadow_key: [[f32; 4]; 4],
+    shadow_fill: [[f32; 4]; 4],
+    /// x: lights that cast shadows (0, 1: key, 2: key and fill), y: 1 for
+    /// the studio render (linear output, no tone mapping), z: the studio
+    /// sample, w: the studio's extras (corduroy depth) on.
+    options: [f32; 4],
+    /// x: a shadow map texel in metres, y: key filter radius, z: fill
+    /// filter radius (texels).
+    shadow: [f32; 4],
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct ObjectUniform {
     model: [[f32; 4]; 4],
     base_color: [f32; 4],
@@ -45,6 +69,8 @@ struct ObjectUniform {
     overlay: [f32; 4],
     shading: [f32; 4],
     fabric: [f32; 4],
+    weave: [f32; 4],
+    yarn: [f32; 4],
 }
 
 impl ObjectUniform {
@@ -60,10 +86,17 @@ impl ObjectUniform {
                 m.weave_strength,
                 m.pattern + m.wash.clamp(0.0, 1.0) * 0.1,
             ],
-            fabric: [m.pattern_scale.max(0.1), m.relief.clamp(0.0, 2.0), 0.0, 0.0],
+            fabric: [m.pattern_scale.max(0.1), m.relief.clamp(0.0, 2.0), 0.0, m.wear.clamp(0.0, 1.0)],
             emissive: [er, eg, eb, 0.0],
             overlay: [0.0; 4],
             shading: m.shading.uniform(),
+            weave: [
+                m.weave_repeat[0],
+                m.weave_repeat[1],
+                if m.weave_key != 0 { 1.0 } else { 0.0 },
+                m.relief.clamp(0.0, 2.0),
+            ],
+            yarn: m.weave_yarn,
         }
     }
 }
@@ -81,18 +114,57 @@ impl ObjectBinding {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("scene3d object"),
                 contents: bytemuck::bytes_of(uniform),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                // COPY_SRC: the studio render keeps a copy.
+                usage: wgpu::BufferUsages::UNIFORM
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
             });
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene3d object"),
-            layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        });
+        let bind_group = object_group(&gpu.device, layout, &buffer);
         Self { buffer, bind_group }
     }
+}
+
+fn object_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("scene3d object"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    })
+}
+
+/// The globals with the shadow maps they refer to.
+fn globals_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+    shadows: &ShadowMaps,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("scene3d globals"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&shadows.array),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 /// Immutable geometry such as the avatar or the floor.
@@ -110,88 +182,55 @@ struct PieceDraw {
     piece: PieceId,
     indices: Range<u32>,
     binding: ObjectBinding,
+    /// The weave whose textures it shows (0: none).
+    weave: u64,
+    /// What was last written to its buffer.
+    uniform: ObjectUniform,
 }
 
-pub struct SceneRenderer {
-    target: RenderTarget,
-    opaque_pipeline: wgpu::RenderPipeline,
-    cloth_pipeline: wgpu::RenderPipeline,
-    hair_pipeline: wgpu::RenderPipeline,
-    globals: wgpu::Buffer,
-    globals_bind_group: wgpu::BindGroup,
-    object_layout: wgpu::BindGroupLayout,
-    statics: Vec<StaticDraw>,
-    /// Skin, eyes, hair: whatever makes up the avatar.
-    avatar: Vec<StaticDraw>,
-    /// Buttons and buttonholes on the garment; rebuilt as it drapes.
-    props_vertices: GrowableBuffer,
-    props_indices: GrowableBuffer,
-    props_index_count: u32,
-    props_binding: ObjectBinding,
-    garment_vertices: GrowableBuffer,
-    garment_indices: GrowableBuffer,
-    garment_generation: Option<u64>,
-    /// How the garment is drawn with thickness, for its current topology.
-    shell: Shell,
-    pieces: Vec<PieceDraw>,
-    scratch: Vec<MeshVertex>,
-    pub clear_color: [f32; 4],
-    /// What the garment's surface shows; the avatar is always lit.
-    pub overlay: SurfaceOverlay,
+/// How a draw is rasterised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Style {
+    /// Closed, one-sided surfaces.
+    Opaque,
+    /// Seen from both sides.
+    Cloth,
+    /// Open sheets whose edges thin out strand by strand.
+    Hair,
 }
 
-impl SceneRenderer {
-    pub fn new(gpu: &GpuContext, size: [u32; 2]) -> Self {
-        let device = &gpu.device;
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("scene3d pbr shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("pbr.wgsl").into()),
-        });
-        let uniform_layout = |label, visibility| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some(label),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            })
-        };
-        let stages = wgpu::ShaderStages::VERTEX_FRAGMENT;
-        let globals_layout = uniform_layout("scene3d globals layout", stages);
-        let object_layout = uniform_layout("scene3d object layout", stages);
+/// Everything one draw call needs: handles only, cheap to clone.
+#[derive(Clone)]
+pub(crate) struct Draw {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    range: Range<u32>,
+    object: wgpu::BindGroup,
+    weave: wgpu::BindGroup,
+    style: Style,
+}
 
-        let globals = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("scene3d globals"),
-            size: size_of::<Globals>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene3d globals"),
-            layout: &globals_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: globals.as_entire_binding(),
-            }],
-        });
+/// The pipelines of one kind of target.
+pub(crate) struct Pipelines {
+    opaque: wgpu::RenderPipeline,
+    cloth: wgpu::RenderPipeline,
+    hair: wgpu::RenderPipeline,
+}
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("scene3d pipeline layout"),
-            bind_group_layouts: &[Some(&globals_layout), Some(&object_layout)],
-            immediate_size: 0,
-        });
+impl Pipelines {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> Self {
         let pipeline = |label, cull_mode, alpha_to_coverage: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader,
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[Some(MeshVertex::LAYOUT)],
@@ -208,16 +247,16 @@ impl SceneRenderer {
                     bias: Default::default(),
                 }),
                 multisample: wgpu::MultisampleState {
-                    count: RenderTarget::SAMPLE_COUNT,
+                    count: samples,
                     alpha_to_coverage_enabled: alpha_to_coverage,
                     ..Default::default()
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader,
                     entry_point: Some("fs_main"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: RenderTarget::COLOR_FORMAT,
+                        format,
                         blend: None,
                         // Alpha only steers coverage; the image stays opaque.
                         write_mask: if alpha_to_coverage {
@@ -231,6 +270,170 @@ impl SceneRenderer {
                 cache: None,
             })
         };
+        // Without multisampling (the studio render) hair thins out by
+        // discarding: the samples average it.
+        let coverage = samples > 1;
+        Self {
+            opaque: pipeline("scene3d opaque pipeline", Some(wgpu::Face::Back), false),
+            // Cloth is a single-layer surface seen from both sides.
+            cloth: pipeline("scene3d cloth pipeline", None, false),
+            // Hair: open sheets whose edges thin out strand by strand. The
+            // multisampled coverage fades them without sorting.
+            hair: pipeline("scene3d hair pipeline", None, coverage),
+        }
+    }
+}
+
+/// Records `draws` into a pass that has its targets.
+fn record(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipelines: &Pipelines,
+    globals: &wgpu::BindGroup,
+    draws: &[Draw],
+) {
+    pass.set_bind_group(0, globals, &[]);
+    for draw in draws {
+        pass.set_pipeline(match draw.style {
+            Style::Opaque => &pipelines.opaque,
+            Style::Cloth => &pipelines.cloth,
+            Style::Hair => &pipelines.hair,
+        });
+        pass.set_bind_group(1, &draw.object, &[]);
+        pass.set_bind_group(2, &draw.weave, &[]);
+        pass.set_vertex_buffer(0, draw.vertices.slice(..));
+        pass.set_index_buffer(draw.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(draw.range.clone(), 0, 0..1);
+    }
+}
+
+/// The smallest box holding `points`.
+fn bounds(points: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
+    points.fold(None, |b, p| match b {
+        None => Some((p, p)),
+        Some((lo, hi)) => Some((lo.min(p), hi.max(p))),
+    })
+}
+
+pub struct SceneRenderer {
+    target: RenderTarget,
+    pipelines: Pipelines,
+    /// For the studio render's linear, single-sampled images.
+    studio_pipelines: Pipelines,
+    shadow_kit: ShadowKit,
+    studio_kit: StudioKit,
+    shadows: ShadowMaps,
+    key_light: LightSlot,
+    globals: wgpu::Buffer,
+    globals_layout: wgpu::BindGroupLayout,
+    globals_bind_group: wgpu::BindGroup,
+    object_layout: wgpu::BindGroupLayout,
+    weave_layout: wgpu::BindGroupLayout,
+    weave_sampler: wgpu::Sampler,
+    /// Textures of every weave in use, by key; and white for the rest.
+    weaves: std::collections::HashMap<u64, wgpu::BindGroup>,
+    neutral_weave: wgpu::BindGroup,
+    statics: Vec<StaticDraw>,
+    /// Skin, eyes, hair: whatever makes up the avatar.
+    avatar: Vec<StaticDraw>,
+    /// Where the avatar and the garment are: what the shadows must cover.
+    avatar_bounds: Option<(Vec3, Vec3)>,
+    garment_bounds: Option<(Vec3, Vec3)>,
+    /// Buttons and buttonholes on the garment; rebuilt as it drapes.
+    props_vertices: GrowableBuffer,
+    props_indices: GrowableBuffer,
+    props_index_count: u32,
+    props_binding: ObjectBinding,
+    garment_vertices: GrowableBuffer,
+    garment_indices: GrowableBuffer,
+    garment_generation: Option<u64>,
+    /// How the garment is drawn with thickness, for its current topology.
+    shell: Shell,
+    pieces: Vec<PieceDraw>,
+    scratch: Vec<MeshVertex>,
+    /// The still being made, if any.
+    studio: Option<StudioRender>,
+    pub clear_color: [f32; 4],
+    /// What the garment's surface shows; the avatar is always lit.
+    pub overlay: SurfaceOverlay,
+}
+
+impl SceneRenderer {
+    pub fn new(gpu: &GpuContext, size: [u32; 2]) -> Self {
+        let device = &gpu.device;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scene3d pbr shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("pbr.wgsl").into()),
+        });
+        let uniform_entry = |visibility| wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let stages = wgpu::ShaderStages::VERTEX_FRAGMENT;
+        let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene3d globals layout"),
+            entries: &[
+                uniform_entry(stages),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
+        });
+        let object_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene3d object layout"),
+            entries: &[uniform_entry(stages)],
+        });
+        let weave_layout = weave::layout(device);
+        let weave_sampler = weave::sampler(device);
+        let neutral_weave = weave::neutral(gpu, &weave_layout, &weave_sampler);
+        let shadow_kit = ShadowKit::new(device, &object_layout);
+        let shadows = ShadowMaps::new(gpu, LIVE_SHADOW_SIZE, 1);
+        let key_light = LightSlot::new(gpu, &shadow_kit);
+
+        let globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scene3d globals"),
+            size: size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let globals_bind_group =
+            globals_group(device, &globals_layout, &globals, &shadows, &shadow_kit.sampler);
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("scene3d pipeline layout"),
+            bind_group_layouts: &[
+                Some(&globals_layout),
+                Some(&object_layout),
+                Some(&weave_layout),
+            ],
+            immediate_size: 0,
+        });
+        let pipelines = Pipelines::new(
+            device,
+            &pipeline_layout,
+            &shader,
+            RenderTarget::COLOR_FORMAT,
+            RenderTarget::SAMPLE_COUNT,
+        );
+        let studio_pipelines = Pipelines::new(device, &pipeline_layout, &shader, studio::HDR, 1);
 
         let props_binding = ObjectBinding::new(
             gpu,
@@ -245,17 +448,24 @@ impl SceneRenderer {
         );
         Self {
             target: RenderTarget::new(gpu, "scene3d target", size, true),
-            opaque_pipeline: pipeline("scene3d opaque pipeline", Some(wgpu::Face::Back), false),
-            // Cloth is a single-layer surface seen from both sides.
-            cloth_pipeline: pipeline("scene3d cloth pipeline", None, false),
-            // Hair: open sheets whose edges thin out strand by strand. The
-            // multisampled coverage fades them without sorting.
-            hair_pipeline: pipeline("scene3d hair pipeline", None, true),
+            pipelines,
+            studio_pipelines,
+            studio_kit: StudioKit::new(device),
+            shadow_kit,
+            shadows,
+            key_light,
             globals,
+            globals_layout,
             globals_bind_group,
             object_layout,
+            weave_layout,
+            weave_sampler,
+            weaves: std::collections::HashMap::new(),
+            neutral_weave,
             statics: Vec::new(),
             avatar: Vec::new(),
+            avatar_bounds: None,
+            garment_bounds: None,
             props_vertices: GrowableBuffer::new(gpu, "prop vertices", wgpu::BufferUsages::VERTEX),
             props_indices: GrowableBuffer::new(gpu, "prop indices", wgpu::BufferUsages::INDEX),
             props_index_count: 0,
@@ -270,6 +480,7 @@ impl SceneRenderer {
             shell: Shell::default(),
             pieces: Vec::new(),
             scratch: Vec::new(),
+            studio: None,
             clear_color: srgba(38, 41, 48, 1.0),
             overlay: SurfaceOverlay::Fabric,
         }
@@ -310,6 +521,25 @@ impl SceneRenderer {
         }
     }
 
+    /// Whether the textures of the weave with this key are loaded.
+    pub fn has_weave(&self, key: u64) -> bool {
+        self.weaves.contains_key(&key)
+    }
+
+    /// Loads a weave's textures under `key` (see [`SurfaceMaterial::weave_key`]).
+    /// Weaves no longer in `keep` are dropped first.
+    pub fn add_weave(
+        &mut self,
+        gpu: &GpuContext,
+        key: u64,
+        texture: &cad_core::WeaveTexture,
+        keep: &[u64],
+    ) {
+        self.weaves.retain(|k, _| keep.contains(k));
+        let group = weave::bind_group(gpu, &self.weave_layout, &self.weave_sampler, texture);
+        self.weaves.insert(key, group);
+    }
+
     /// Adds immutable scenery (floor, props).
     pub fn add_static(&mut self, gpu: &GpuContext, mesh: &MeshData, material: SurfaceMaterial) {
         let draw = self.static_draw(gpu, mesh, material);
@@ -324,6 +554,11 @@ impl SceneRenderer {
     /// Replaces the avatar with several meshes of their own material
     /// (skin, eyes, hair). Empty meshes are skipped.
     pub fn set_avatar_parts(&mut self, gpu: &GpuContext, parts: &[(&MeshData, SurfaceMaterial)]) {
+        self.avatar_bounds = bounds(
+            parts
+                .iter()
+                .flat_map(|(mesh, _)| mesh.vertices.iter().map(|v| Vec3::from(v.position))),
+        );
         self.avatar = parts
             .iter()
             .filter(|(mesh, _)| !mesh.indices.is_empty())
@@ -370,13 +605,31 @@ impl SceneRenderer {
                     piece: *piece,
                     indices: indices.clone(),
                     binding: ObjectBinding::new(gpu, &self.object_layout, &placeholder),
+                    weave: 0,
+                    uniform: placeholder,
                 })
                 .collect();
         }
+        self.garment_bounds = bounds(mesh.positions.iter().copied());
         self.shell
             .vertices(mesh, values, &thickness, &mut self.scratch);
         self.garment_vertices
             .write(gpu, bytemuck::cast_slice(&self.scratch));
+    }
+
+    /// The sphere the shadow maps cover: the avatar and the garment.
+    fn focus(&self) -> (Vec3, f32) {
+        let boxes = [self.avatar_bounds, self.garment_bounds];
+        let Some((lo, hi)) = bounds(
+            boxes
+                .iter()
+                .flatten()
+                .flat_map(|&(lo, hi)| [lo, hi]),
+        ) else {
+            return (Vec3::new(0.0, 0.9, 0.0), 1.1);
+        };
+        // A little more, for the shadow on the floor around the feet.
+        ((lo + hi) * 0.5, ((hi - lo).length() * 0.5 + 0.15).max(0.3))
     }
 
     /// Uploads this frame's camera, lights and fabric materials.
@@ -388,24 +641,265 @@ impl SceneRenderer {
     ) {
         let eye = camera.eye();
         let direction = |v: Vec3| v.normalize().extend(0.0).to_array();
+        let key = Vec3::new(0.45, 0.8, 0.55).normalize();
+        let (center, radius) = self.focus();
+        let key_matrix = light_matrix(key, center, radius);
+        self.key_light.write(gpu, key_matrix);
         let globals = Globals {
             view_proj: camera.view_proj(self.target.aspect()).to_cols_array_2d(),
             eye: eye.extend(1.0).to_array(),
-            key_direction: direction(Vec3::new(0.45, 0.8, 0.55)),
+            key_direction: key.extend(0.0).to_array(),
             key_color: [3.0, 2.9, 2.75, 0.0],
             fill_direction: direction(Vec3::new(-0.6, 0.25, -0.5)),
             fill_color: [0.55, 0.62, 0.75, 0.0],
-            sky: [0.34, 0.37, 0.43, 0.0],
+            sky: [0.42, 0.45, 0.52, 0.0],
             ground: [0.12, 0.11, 0.10, 0.0],
+            shadow_key: key_matrix.to_cols_array_2d(),
+            shadow_fill: Mat4::IDENTITY.to_cols_array_2d(),
+            options: [1.0, 0.0, 0.0, 0.0],
+            shadow: [2.0 * radius / LIVE_SHADOW_SIZE as f32, 1.6, 1.0, 0.0],
         };
         gpu.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        for draw in &self.pieces {
-            let mut uniform = ObjectUniform::new(Mat4::IDENTITY, &material_of(draw.piece));
+        for draw in &mut self.pieces {
+            let material = material_of(draw.piece);
+            draw.weave = material.weave_key;
+            let mut uniform = ObjectUniform::new(Mat4::IDENTITY, &material);
             uniform.overlay = self.overlay.uniform();
+            // Cloth: sheen, and light through it.
+            uniform.fabric[2] = 1.0;
             gpu.queue
                 .write_buffer(&draw.binding.buffer, 0, bytemuck::bytes_of(&uniform));
+            draw.uniform = uniform;
         }
+    }
+
+    /// What is drawn this frame, in order.
+    fn draws(&self) -> Vec<Draw> {
+        let mut draws = Vec::new();
+        for draw in self.statics.iter().chain(&self.avatar) {
+            draws.push(Draw {
+                vertices: draw.vertices.clone(),
+                indices: draw.indices.clone(),
+                range: 0..draw.index_count,
+                object: draw.binding.bind_group.clone(),
+                weave: self.neutral_weave.clone(),
+                style: if draw.double_sided {
+                    Style::Hair
+                } else {
+                    Style::Opaque
+                },
+            });
+        }
+        if self.props_index_count > 0 {
+            draws.push(Draw {
+                vertices: self.props_vertices.buffer().clone(),
+                indices: self.props_indices.buffer().clone(),
+                range: 0..self.props_index_count,
+                object: self.props_binding.bind_group.clone(),
+                weave: self.neutral_weave.clone(),
+                style: Style::Cloth,
+            });
+        }
+        for draw in &self.pieces {
+            draws.push(Draw {
+                vertices: self.garment_vertices.buffer().clone(),
+                indices: self.garment_indices.buffer().clone(),
+                range: draw.indices.clone(),
+                object: draw.binding.bind_group.clone(),
+                weave: self
+                    .weaves
+                    .get(&draw.weave)
+                    .unwrap_or(&self.neutral_weave)
+                    .clone(),
+                style: Style::Cloth,
+            });
+        }
+        draws
+    }
+
+    /// Starts a studio render of the scene as it is now (after
+    /// [`Self::prepare`]), `size` pixels, through `camera`. The scene is
+    /// copied: the live view can change meanwhile.
+    /// `aperture`: radius of the lens in metres (depth of field; 0: all sharp).
+    pub fn start_studio(
+        &mut self,
+        gpu: &GpuContext,
+        size: [u32; 2],
+        camera: &OrbitCamera,
+        aperture: f32,
+    ) {
+        let device = &gpu.device;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("studio snapshot"),
+        });
+        let copy = |encoder: &mut wgpu::CommandEncoder, source: &wgpu::Buffer, usage| {
+            let copy = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("studio snapshot"),
+                size: source.size(),
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            encoder.copy_buffer_to_buffer(source, 0, &copy, 0, source.size());
+            copy
+        };
+        // Buffers rewritten while the cloth moves are copied; the rest is
+        // never written again and can be shared.
+        let mut draws = self.draws();
+        let garment_vertices = copy(
+            &mut encoder,
+            self.garment_vertices.buffer(),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let props_vertices = copy(
+            &mut encoder,
+            self.props_vertices.buffer(),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let props_indices = copy(
+            &mut encoder,
+            self.props_indices.buffer(),
+            wgpu::BufferUsages::INDEX,
+        );
+        for draw in &mut draws {
+            if draw.vertices == *self.garment_vertices.buffer() {
+                draw.vertices = garment_vertices.clone();
+            } else if draw.vertices == *self.props_vertices.buffer() {
+                draw.vertices = props_vertices.clone();
+                draw.indices = props_indices.clone();
+            }
+        }
+        // The garment itself with many more polygons, and corduroy's ribs
+        // as geometry (see `refine`); its materials as they are now.
+        let piece_draws = draws.len() - self.pieces.len();
+        let (refined_vertices, refined_indices, refined) = self.refined_garment();
+        if !refined_indices.is_empty() {
+            let buffer = |contents: &[u8], usage| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("studio garment"),
+                    contents,
+                    usage,
+                })
+            };
+            let vertices = buffer(bytemuck::cast_slice(&refined_vertices), wgpu::BufferUsages::VERTEX);
+            let indices = buffer(bytemuck::cast_slice(&refined_indices), wgpu::BufferUsages::INDEX);
+            for ((draw, piece), (range, displaced)) in
+                draws[piece_draws..].iter_mut().zip(&self.pieces).zip(refined)
+            {
+                let mut uniform = piece.uniform;
+                if displaced {
+                    uniform.fabric[2] = 2.0;
+                }
+                let buffer = buffer(bytemuck::bytes_of(&uniform), wgpu::BufferUsages::UNIFORM);
+                draw.vertices = vertices.clone();
+                draw.indices = indices.clone();
+                draw.range = range;
+                draw.object = object_group(device, &self.object_layout, &buffer);
+            }
+        }
+        gpu.queue.submit([encoder.finish()]);
+        self.studio = Some(StudioRender::new(
+            gpu,
+            &self.globals_layout,
+            &self.shadow_kit,
+            &self.studio_kit,
+            size,
+            *camera,
+            aperture,
+            self.focus(),
+            draws,
+        ));
+    }
+
+    /// The garment refined for the studio render: vertices, indices, and
+    /// per piece its index range and whether its ribs are geometry.
+    fn refined_garment(&self) -> (Vec<MeshVertex>, Vec<u32>, Vec<(Range<u32>, bool)>) {
+        let vertices = &self.scratch;
+        let indices = &self.shell.indices;
+        let mut plans = Vec::with_capacity(self.pieces.len());
+        let mut counts = Vec::with_capacity(self.pieces.len());
+        for piece in &self.pieces {
+            let triangles = &indices[piece.indices.start as usize..piece.indices.end as usize];
+            // The size of its triangles in metres and in UV.
+            let (mut metres, mut uv, mut outside) = (0.0f32, 0.0f32, 0usize);
+            for t in triangles.chunks_exact(3) {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| &vertices[i as usize]);
+                if a.wear[3].min(b.wear[3]).min(c.wear[3]) < 0.5 {
+                    continue;
+                }
+                outside += 1;
+                metres += Vec3::from(a.position).distance(Vec3::from(b.position));
+                uv += glam::Vec2::from(a.uv).distance(glam::Vec2::from(b.uv));
+            }
+            let edge = metres / outside.max(1) as f32;
+            let metres_per_uv = metres / uv.max(1e-9);
+            let u = &piece.uniform;
+            let corduroy = u.weave[2] < 0.5
+                && (u.params[3] + 0.001).floor() == 3.0
+                && u.params[2] > 0.0;
+            let mut refinement = refine::Refinement { levels: 2, ribs: None };
+            if corduroy {
+                let ribs = 18.0 * u.fabric[0];
+                let depth = 0.0012 * u.fabric[1] * u.params[2];
+                let rib_width = metres_per_uv / ribs;
+                if depth > 0.0 {
+                    refinement = refine::Refinement {
+                        levels: refine::levels_for_ribs(edge, rib_width, 5.0),
+                        ribs: Some((ribs, depth)),
+                    };
+                }
+            }
+            counts.push((outside, triangles.len() / 3 - outside));
+            plans.push((piece.indices.clone(), refinement));
+        }
+        // Within budget: take a level off the most refined until it fits.
+        loop {
+            let total: usize = plans
+                .iter()
+                .zip(&counts)
+                .map(|((_, r), (outside, rest))| {
+                    outside * (1 << (2 * r.levels)) + rest * (1 << (2 * r.levels.min(2)))
+                })
+                .sum();
+            let finest = plans.iter_mut().map(|(_, r)| r).max_by_key(|r| r.levels);
+            match finest {
+                Some(r) if total > refine::MAX_TRIANGLES && r.levels > 1 => r.levels -= 1,
+                _ => break,
+            }
+        }
+        // Ribs coarser than a few edges each would only make noise: those
+        // stay with the shader's parallax.
+        for ((_, r), piece) in plans.iter_mut().zip(&self.pieces) {
+            let _ = piece;
+            if r.ribs.is_some() && r.levels < 3 {
+                r.ribs = None;
+            }
+        }
+        let displaced: Vec<bool> = plans.iter().map(|(_, r)| r.ribs.is_some()).collect();
+        let (v, i, ranges) = refine::refine(vertices, indices, &plans);
+        (v, i, ranges.into_iter().zip(displaced).collect())
+    }
+
+    /// Takes `samples` more samples of the studio render, if one is going.
+    pub fn step_studio(&mut self, gpu: &GpuContext, samples: u32) {
+        if let Some(studio) = &mut self.studio {
+            studio.step(
+                gpu,
+                &self.shadow_kit,
+                &self.studio_kit,
+                &self.studio_pipelines,
+                samples,
+            );
+        }
+    }
+
+    /// The studio render, if one was started.
+    pub fn studio(&self) -> Option<&StudioRender> {
+        self.studio.as_ref()
+    }
+
+    pub fn stop_studio(&mut self) {
+        self.studio = None;
     }
 }
 
@@ -419,45 +913,12 @@ impl ViewportRenderer for SceneRenderer {
     }
 
     fn render(&mut self, _gpu: &GpuContext, encoder: &mut wgpu::CommandEncoder) {
+        let draws = self.draws();
+        self.shadow_kit
+            .record(encoder, &self.shadows, 0, &self.key_light, &draws);
         let [r, g, b, a] = self.clear_color.map(f64::from);
         let mut pass = self.target.begin_pass(encoder, wgpu::Color { r, g, b, a });
-        pass.set_bind_group(0, &self.globals_bind_group, &[]);
-
-        for draw in self.statics.iter().chain(&self.avatar) {
-            pass.set_pipeline(if draw.double_sided {
-                &self.hair_pipeline
-            } else {
-                &self.opaque_pipeline
-            });
-            pass.set_bind_group(1, &draw.binding.bind_group, &[]);
-            pass.set_vertex_buffer(0, draw.vertices.slice(..));
-            pass.set_index_buffer(draw.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..draw.index_count, 0, 0..1);
-        }
-
-        if self.props_index_count > 0 {
-            pass.set_pipeline(&self.cloth_pipeline);
-            pass.set_bind_group(1, &self.props_binding.bind_group, &[]);
-            pass.set_vertex_buffer(0, self.props_vertices.buffer().slice(..));
-            pass.set_index_buffer(
-                self.props_indices.buffer().slice(..),
-                wgpu::IndexFormat::Uint32,
-            );
-            pass.draw_indexed(0..self.props_index_count, 0, 0..1);
-        }
-
-        if !self.pieces.is_empty() {
-            pass.set_pipeline(&self.cloth_pipeline);
-            pass.set_vertex_buffer(0, self.garment_vertices.buffer().slice(..));
-            pass.set_index_buffer(
-                self.garment_indices.buffer().slice(..),
-                wgpu::IndexFormat::Uint32,
-            );
-            for draw in &self.pieces {
-                pass.set_bind_group(1, &draw.binding.bind_group, &[]);
-                pass.draw_indexed(draw.indices.clone(), 0, 0..1);
-            }
-        }
+        record(&mut pass, &self.pipelines, &self.globals_bind_group, &draws);
     }
 }
 
@@ -474,11 +935,21 @@ struct Shell {
     indices: Vec<u32>,
     /// Index range of each piece's draw.
     pieces: Vec<(PieceId, Range<u32>)>,
+    /// Per vertex of the simulated mesh: its neighbours within the piece,
+    /// and how far it lies from the piece's edge along the cloth (metres).
+    neighbours: Vec<Vec<u32>>,
+    edge_distance: Vec<f32>,
+    /// Scratch: how the cloth bends at each vertex (see `bending`).
+    bend: Vec<f32>,
 }
 
 impl Shell {
     fn new(mesh: &GarmentMesh) -> Self {
-        let mut shell = Shell::default();
+        let mut shell = Shell {
+            neighbours: vec![Vec::new(); mesh.positions.len()],
+            edge_distance: vec![f32::INFINITY; mesh.positions.len()],
+            ..Shell::default()
+        };
         let mut base = 0u32;
         for span in &mesh.pieces {
             let triangles: Vec<[u32; 3]> = mesh.indices
@@ -502,6 +973,33 @@ impl Shell {
                 .map(|e| [e.0, e.1, e.2])
                 .collect();
             edges.sort_unstable();
+            for &(a, b) in uses.keys() {
+                shell.neighbours[a as usize].push(b);
+                shell.neighbours[b as usize].push(a);
+            }
+            // Distance along the cloth to the nearest edge (Dijkstra from
+            // every edge vertex).
+            let mut queue = std::collections::BinaryHeap::new();
+            for &[a, b, _] in &edges {
+                for v in [a, b] {
+                    shell.edge_distance[v as usize] = 0.0;
+                    queue.push((std::cmp::Reverse(0u32), v));
+                }
+            }
+            while let Some((std::cmp::Reverse(d), v)) = queue.pop() {
+                let d = f32::from_bits(d);
+                if d > shell.edge_distance[v as usize] {
+                    continue;
+                }
+                for &w in &shell.neighbours[v as usize] {
+                    let nd = d + mesh.positions[v as usize].distance(mesh.positions[w as usize]);
+                    if nd < shell.edge_distance[w as usize] {
+                        shell.edge_distance[w as usize] = nd;
+                        // Non-negative floats order like their bits.
+                        queue.push((std::cmp::Reverse(nd.to_bits()), w));
+                    }
+                }
+            }
 
             let count = span.vertices.len() as u32;
             let local = |v: u32| v - span.vertices.start;
@@ -532,21 +1030,58 @@ impl Shell {
         shell
     }
 
+    /// How the cloth bends at every vertex, 1/metres: positive where it
+    /// bulges outwards (the ridge of a fold), negative in a crease;
+    /// smoothed once over the neighbours.
+    fn bending(&mut self, mesh: &GarmentMesh) {
+        let raw: Vec<f32> = (0..mesh.positions.len())
+            .map(|i| {
+                let (p, n) = (mesh.positions[i], mesh.normals[i]);
+                let around = &self.neighbours[i];
+                if around.is_empty() {
+                    return 0.0;
+                }
+                let sum: f32 = around
+                    .iter()
+                    .map(|&j| {
+                        let d = mesh.positions[j as usize] - p;
+                        -2.0 * n.dot(d) / d.length_squared().max(1e-10)
+                    })
+                    .sum();
+                sum / around.len() as f32
+            })
+            .collect();
+        self.bend = (0..raw.len())
+            .map(|i| {
+                let around = &self.neighbours[i];
+                let sum: f32 = around.iter().map(|&j| raw[j as usize]).sum();
+                (raw[i] + sum) / (1 + around.len()) as f32
+            })
+            .collect();
+    }
+
     fn vertices(
-        &self,
+        &mut self,
         mesh: &GarmentMesh,
         values: &[f32],
         thickness: &impl Fn(PieceId) -> f32,
         out: &mut Vec<MeshVertex>,
     ) {
         out.clear();
+        self.bending(mesh);
+        let (bend, edge_distance) = (&self.bend, &self.edge_distance);
         let vertex = |i: usize, offset: f32, normal: Vec3| {
-            MeshVertex::new(
+            let mut v = MeshVertex::new(
                 mesh.positions[i] + mesh.normals[i] * offset,
                 normal,
                 mesh.uvs[i],
             )
-            .with_value(values.get(i).copied().unwrap_or(0.0))
+            .with_value(values.get(i).copied().unwrap_or(0.0));
+            let side = if offset > 0.0 { 1.0 } else { -1.0 };
+            let b = bend.get(i).copied().unwrap_or(0.0) * side;
+            let edge = edge_distance.get(i).copied().filter(|d| d.is_finite()).unwrap_or(1.0);
+            v.wear = [edge, b.max(0.0), (-b).max(0.0), side];
+            v
         };
         for (piece, range, edges, _) in &self.layout {
             let half = 0.5 * thickness(*piece);
@@ -563,12 +1098,12 @@ impl Shell {
                     out_of = -out_of;
                 }
                 // Wound so the rim faces out whichever way the edge runs.
-                let quad = [
-                    vertex(a, half, out_of),
-                    vertex(b, half, out_of),
-                    vertex(a, -half, out_of),
-                    vertex(b, -half, out_of),
-                ];
+                let rim = |i: usize, offset: f32| {
+                    let mut v = vertex(i, offset, out_of);
+                    v.wear = [0.0, 0.0, 0.0, 0.0];
+                    v
+                };
+                let quad = [rim(a, half), rim(b, half), rim(a, -half), rim(b, -half)];
                 let p = |v: &MeshVertex| Vec3::from(v.position);
                 let facing = (p(&quad[1]) - p(&quad[0]))
                     .cross(p(&quad[2]) - p(&quad[0]))

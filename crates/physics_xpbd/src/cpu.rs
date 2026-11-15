@@ -83,17 +83,167 @@ pub fn substep(
     scratch: &mut Vec<[Vec3A; 4]>,
 ) {
     integrate(model, state, params);
+    solve_colours(model, state, body, params, scratch);
+    finalize(model, state, colliders, body, planes, params);
+}
+
+/// From this many elements on, all colours of a sub-step are solved by the
+/// whole thread pool at once (see [`solve_colours_together`]).
+const TOGETHER_THRESHOLD: usize = 2000;
+
+/// Solves every colour, one after the other.
+fn solve_colours(
+    model: &Model,
+    state: &mut State,
+    body: Option<&DistanceField>,
+    p: &SubstepParams,
+    scratch: &mut Vec<[Vec3A; 4]>,
+) {
+    if model.elements.len() >= TOGETHER_THRESHOLD
+        && let Some(pool) = colour_pool()
+    {
+        pool.install(|| solve_colours_together(model, state, body, p));
+        return;
+    }
     for colour in &model.colours {
         solve_colour(
             &model.elements[colour.start as usize..colour.end as usize],
             model,
             state,
             body,
-            params,
+            p,
             scratch,
         );
     }
-    finalize(model, state, colliders, body, planes, params);
+}
+
+/// The threads that solve colours together: a few, leaving the rest of the
+/// machine to the interface, the renderer and the graphics driver. Every
+/// thread must reach every barrier, so one thread the system pauses holds
+/// all of them up; a small pool keeps that rare. `None` on machines with a
+/// single core.
+fn colour_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let logical = std::thread::available_parallelism().map_or(1, |n| n.get());
+        // Measured on a garment of 2,400 particles: two threads halve the
+        // colour solve, more only add waiting at the barriers.
+        let threads = (logical / 4).clamp(2, 4).min(logical);
+        (threads >= 2)
+            .then(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .thread_name(|i| format!("cloth colours {i}"))
+                    .build()
+                    .ok()
+            })
+            .flatten()
+    })
+    .as_ref()
+}
+
+/// The positions, shared by the threads of [`solve_colours_together`].
+/// Each colour's elements touch disjoint particles and the colours are
+/// separated by a barrier, so no particle is read or written by two
+/// threads at once; access goes through the raw pointer, never through a
+/// slice another thread writes to.
+#[derive(Clone, Copy)]
+struct SharedPositions(*mut Vec3A);
+// SAFETY: see the type's documentation.
+unsafe impl Send for SharedPositions {}
+unsafe impl Sync for SharedPositions {}
+
+/// A barrier the threads spin on: colours are a few microseconds of work
+/// each, far less than a sleeping barrier takes to wake its threads.
+struct SpinBarrier {
+    arrived: std::sync::atomic::AtomicUsize,
+    generation: std::sync::atomic::AtomicUsize,
+    threads: usize,
+}
+
+impl SpinBarrier {
+    fn new(threads: usize) -> Self {
+        Self {
+            arrived: std::sync::atomic::AtomicUsize::new(0),
+            generation: std::sync::atomic::AtomicUsize::new(0),
+            threads,
+        }
+    }
+
+    /// Returns once every thread has arrived. What a thread wrote before
+    /// is visible to every thread after.
+    fn wait(&self) {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
+        let generation = self.generation.load(Acquire);
+        if self.arrived.fetch_add(1, AcqRel) + 1 == self.threads {
+            self.arrived.store(0, Relaxed);
+            self.generation.fetch_add(1, Release);
+            return;
+        }
+        let mut spins = 0u32;
+        while self.generation.load(Acquire) == generation {
+            spins += 1;
+            if spins < 400 {
+                std::hint::spin_loop();
+            } else {
+                // A thread of the pool is still busy elsewhere: let it run.
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
+/// Every colour of a sub-step on all threads at once. Handing each colour
+/// to the pool separately costs more than its few hundred elements take to
+/// solve; here the threads are started once, each takes its share of every
+/// colour, and they meet at a barrier between colours. Same result as
+/// solving the colours one element after the other.
+fn solve_colours_together(
+    model: &Model,
+    state: &mut State,
+    body: Option<&DistanceField>,
+    p: &SubstepParams,
+) {
+    let inv_h2 = 1.0 / (p.h * p.h);
+    let collision = body
+        .filter(|_| p.surface_collision)
+        .map(|field| (field, p.margin));
+    let positions = SharedPositions(state.positions.as_mut_ptr());
+    let count = state.positions.len();
+    let threads = rayon::current_num_threads();
+    let barrier = SpinBarrier::new(threads);
+    rayon::broadcast(|context| {
+        let positions = positions;
+        let (me, threads) = (context.index(), context.num_threads());
+        for colour in &model.colours {
+            let elements = &model.elements[colour.start as usize..colour.end as usize];
+            let share = elements.len().div_ceil(threads);
+            let start = (me * share).min(elements.len());
+            let end = (start + share).min(elements.len());
+            for element in &elements[start..end] {
+                let mut x = [Vec3A::ZERO; 4];
+                let mut w = [0.0f32; 4];
+                for k in 0..4 {
+                    let particle = element.particles[k];
+                    if particle != INVALID && (particle as usize) < count {
+                        // SAFETY: in bounds; only this thread touches the
+                        // particle during this colour (see SharedPositions).
+                        x[k] = unsafe { positions.0.add(particle as usize).read() };
+                        w[k] = model.inverse_mass[particle as usize];
+                    }
+                }
+                let solved = project_gathered(element, x, w, inv_h2, p.seam_gap, collision);
+                for k in 0..4 {
+                    let particle = element.particles[k];
+                    if particle != INVALID && (particle as usize) < count {
+                        // SAFETY: as above.
+                        unsafe { positions.0.add(particle as usize).write(solved[k]) };
+                    }
+                }
+            }
+            barrier.wait();
+        }
+    });
 }
 
 /// Predicts positions from velocities and external forces.
@@ -159,6 +309,20 @@ pub fn project(
             w[k] = inverse_mass[particle as usize];
         }
     }
+    project_gathered(element, x, w, inv_h2, seam_gap, collision)
+}
+
+/// [`project`] on the element's particles `x` (inverse masses `w`),
+/// already gathered.
+#[inline]
+fn project_gathered(
+    element: &Element,
+    mut x: [Vec3A; 4],
+    w: [f32; 4],
+    inv_h2: f32,
+    seam_gap: f32,
+    collision: Option<(&DistanceField, f32)>,
+) -> [Vec3A; 4] {
     for row in &element.rows {
         if row.flags & ROW_ACTIVE == 0 {
             continue;
@@ -449,6 +613,90 @@ mod tests {
     use super::*;
 
     const UP: Vec3A = Vec3A::Y;
+
+    /// `cargo test --release -p physics_xpbd --lib colour_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn colour_timing() {
+        use topology_sync::{GarmentTopology, TopologySync};
+        let document = cad_core::PatternDocument::demo_top();
+        let mut topology = GarmentTopology::new(topology_sync::MeshingParams {
+            particle_distance: 14.0,
+            ..Default::default()
+        });
+        topology.rebuild(&document);
+        let model = Model::build(topology.mesh(), &document);
+        let mut state = State::at_rest(topology.mesh().positions.iter().map(|p| Vec3A::from(*p)));
+        let params = SubstepParams {
+            h: 1.0 / 900.0,
+            gravity: Vec3A::ZERO,
+            damping: 1.0,
+            seam_gap: 0.5,
+            friction: 0.0,
+            margin: 0.004,
+            ground: -10.0,
+            max_speed: 50.0,
+            surface_collision: false,
+        };
+        println!("{} particles, {} elements, {} colours", state.positions.len(), model.elements.len(), model.colours.len());
+        let mut scratch = Vec::new();
+        let t = std::time::Instant::now();
+        for _ in 0..300 {
+            for colour in &model.colours {
+                solve_colour(&model.elements[colour.start as usize..colour.end as usize], &model, &mut state, None, &params, &mut scratch);
+            }
+        }
+        println!("serial: {:.3} ms per substep", t.elapsed().as_secs_f64() * 1000.0 / 300.0);
+        for threads in [2, 4, 8] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let t = std::time::Instant::now();
+            for _ in 0..300 {
+                pool.install(|| solve_colours_together(&model, &mut state, None, &params));
+            }
+            let colours = t.elapsed().as_secs_f64() * 1000.0 / 300.0;
+            println!("{threads} threads: {colours:.3} ms per substep");
+        }
+    }
+
+    #[test]
+    fn colours_solved_on_all_threads_match_one_after_the_other() {
+        use topology_sync::{GarmentTopology, TopologySync};
+        let document = cad_core::PatternDocument::demo_top();
+        let mut topology = GarmentTopology::default();
+        topology.rebuild(&document);
+        let model = Model::build(topology.mesh(), &document);
+        assert!(model.elements.len() >= TOGETHER_THRESHOLD, "big enough to share out");
+        // Every particle off its rest position, so every row has work.
+        let mut state = State::at_rest(topology.mesh().positions.iter().enumerate().map(|(i, p)| {
+            Vec3A::from(*p) + Vec3A::new((i % 7) as f32, (i % 5) as f32, (i % 3) as f32) * 0.002
+        }));
+        let params = SubstepParams {
+            h: 1.0 / 900.0,
+            gravity: Vec3A::ZERO,
+            damping: 1.0,
+            seam_gap: 0.5,
+            friction: 0.0,
+            margin: 0.004,
+            ground: -10.0,
+            max_speed: 50.0,
+            surface_collision: false,
+        };
+        let mut serial = state.clone();
+        let mut scratch = Vec::new();
+        for colour in &model.colours {
+            solve_colour(
+                &model.elements[colour.start as usize..colour.end as usize],
+                &model,
+                &mut serial,
+                None,
+                &params,
+                &mut scratch,
+            );
+        }
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        pool.install(|| solve_colours_together(&model, &mut state, None, &params));
+        assert_eq!(serial.positions, state.positions);
+    }
 
     #[test]
     fn a_body_moving_into_sliding_cloth_does_not_grip_it() {

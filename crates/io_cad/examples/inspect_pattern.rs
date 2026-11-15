@@ -19,6 +19,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pattern.pieces.len(),
         pattern.unassigned_open_lines.len()
     );
+    // SVG=<file>: draw the pieces (blue), open lines (red), seams (green).
+    if let Ok(out) = std::env::var("SVG") {
+        let mut body = String::new();
+        let mut path = |points: Vec<glam::Vec2>, colour: &str, width: f32| {
+            let d: Vec<String> = points.iter().map(|p| format!("{:.2},{:.2}", p.x, -p.y)).collect();
+            body.push_str(&format!(
+                "<polyline points=\"{}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"{width}\"/>\n",
+                d.join(" ")
+            ));
+        };
+        for piece in &pattern.pieces {
+            for l in &piece.loops {
+                let mut points = l.outline.flatten(0.5).points;
+                points.push(points[0]);
+                path(points, "blue", 0.8);
+            }
+        }
+        for line in &pattern.unassigned_open_lines {
+            path(line.polyline(0.5), "red", 0.8);
+        }
+        if let Some(layout) = &pattern.pages {
+            for &(a, b) in &layout.seams {
+                path(vec![a, b], "green", 0.4);
+            }
+        }
+        std::fs::write(
+            &out,
+            format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-20 -1000 1300 1050\" width=\"1300\" height=\"1050\"><rect x=\"-20\" y=\"-1000\" width=\"1300\" height=\"1050\" fill=\"white\"/>{body}</svg>"),
+        )?;
+    }
+    if let Some(layout) = &pattern.pages {
+        println!("{} (overlap {:?} mm)", layout.summary(), layout.overlap_mm);
+    }
     // LABELS=<dir>: write each piece's drawn lettering as images, one per
     // orientation, to check what text recognition gets to see.
     if let Ok(dir) = std::env::var("LABELS") {

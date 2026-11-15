@@ -22,6 +22,7 @@ pub mod obj;
 pub mod pattern_import;
 pub mod pdf;
 pub mod svg;
+mod tiles;
 
 use std::path::Path;
 
@@ -32,6 +33,7 @@ pub use obj::{GarmentExport, UvLayout, export_garment_obj};
 pub use pattern_import::{ImportedLoop, ImportedPattern, ImportedPieceCandidate, LineRole};
 pub use pdf::{PT_TO_MM, PdfOptions, import_pattern_pdf};
 pub use svg::{CSS_PX_TO_MM, SvgOptions, import_pattern_svg};
+pub use tiles::PageLayout;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {

@@ -247,7 +247,8 @@ impl Running {
         let canvas = CanvasRenderer::new(&gpu, [16, 16]);
         let mut scene = SceneRenderer::new(&gpu, [16, 16]);
         let mut floor = MeshData::default();
-        floor.add_ground(Vec3::ZERO, 4.0);
+        // Wide enough that its edge is beyond the horizon of the studio render.
+        floor.add_ground(Vec3::ZERO, 40.0);
         scene.add_static(
             &gpu,
             &floor,
@@ -320,28 +321,19 @@ impl Running {
         }
 
         // --- simulation --------------------------------------------------------
-        let solver: Box<dyn ClothSolver> = if gpu.supports_compute {
+        let solver: Box<dyn ClothSolver + Send> = if gpu.supports_compute {
             Box::new(XpbdSolver::with_gpu(gpu.device.clone(), gpu.queue.clone()))
         } else {
             log::warn!("no compute shader support: cloth simulation runs on the CPU only");
             Box::new(XpbdSolver::new())
         };
-        let mut session = Session::new(Some(solver), body, colliders);
+        let mut session = Session::new(Some(solver), body, colliders, true);
         session.editor.simulation.gpu_available = gpu.supports_compute;
-        // As in the app: a real-time solver for the live view.
-        session.editor.simulation.settings.backend = if gpu.supports_compute {
-            SolverBackend::Gpu
-        } else {
-            SolverBackend::Cpu
-        };
-        // The live view must keep up with the frame rate: the explicit
-        // solver on the GPU, or on the CPU without compute shaders. (The
-        // contact solver bakes animations, and can be picked here too.)
-        session.editor.simulation.settings.backend = if gpu.supports_compute {
-            SolverBackend::Gpu
-        } else {
-            SolverBackend::Cpu
-        };
+        // The live view drapes with the explicit solver on the CPU: on its
+        // own thread it keeps the view fluid, and it comes to rest, after
+        // which it stops. (The GPU solver can be picked in the Simulation
+        // panel; on some garments it keeps trembling and never settles.)
+        session.editor.simulation.settings.backend = SolverBackend::Cpu;
         let info = adapter.get_info();
         session.editor.stats.backend = format!("{} · {:?}", info.name, info.backend);
 
@@ -686,9 +678,96 @@ pub(crate) fn draw_viewports(
         }
         scene.set_props(gpu, &props);
         let session = &*session;
+        session.load_weaves(gpu, scene);
         scene.prepare(gpu, &session.scene_camera, |piece| {
             session.material_of(piece)
         });
         scene.render(gpu, encoder);
     }
+    studio_render(gpu, session, scene, egui_renderer, scene_input.map(|input| input.size));
+}
+
+/// Samples of the studio render per frame: enough to finish in seconds,
+/// few enough to keep the editor responsive meanwhile.
+const STUDIO_SAMPLES_PER_FRAME: u32 = 2;
+/// The studio render has this many times the pixels of the 3D view per
+/// side (for saving; the window shows it scaled down)…
+const STUDIO_SCALE: u32 = 2;
+/// …but no more than about 4K.
+const STUDIO_MAX_PIXELS: u32 = 3840 * 2160;
+
+/// Starts, advances and saves the studio render of the 3D view.
+fn studio_render(
+    gpu: &GpuContext,
+    session: &mut Session,
+    scene: &mut SceneRenderer,
+    egui_renderer: &mut egui_wgpu::Renderer,
+    view_size: Option<[u32; 2]>,
+) {
+    let render = &mut session.editor.render;
+    if render.start
+        && let Some(view_size) = view_size
+    {
+        render.start = false;
+        render.status = None;
+        let size = studio_size(view_size, gpu.device.limits().max_texture_dimension_2d);
+        scene.start_studio(gpu, size, &session.scene_camera, render.aperture());
+        if let Some(old) = render.texture.take() {
+            egui_renderer.free_texture(&old);
+        }
+        if let Some(studio) = scene.studio() {
+            render.texture = Some(egui_renderer.register_native_texture(
+                &gpu.device,
+                studio.view(),
+                wgpu::FilterMode::Linear,
+            ));
+            render.size = studio.size();
+            render.samples = studio.progress();
+        }
+    }
+    if let Some(studio) = scene.studio()
+        && !studio.finished()
+    {
+        scene.step_studio(gpu, STUDIO_SAMPLES_PER_FRAME);
+    }
+    if let Some(studio) = scene.studio() {
+        render.samples = studio.progress();
+        if let Some(path) = render.save_to.take() {
+            render.status = Some(
+                save_png(&path, studio.size(), &studio.read_pixels(gpu))
+                    .map(|()| format!("Saved {}", path.display()))
+                    .map_err(|e| format!("Cannot save {}: {e}", path.display())),
+            );
+        }
+    }
+    if !render.open && render.texture.is_some() && !render.rendering() {
+        // Closed: let the images go.
+        if let Some(old) = render.texture.take() {
+            egui_renderer.free_texture(&old);
+        }
+        scene.stop_studio();
+    }
+}
+
+/// The studio render's size for a 3D view of `view` pixels.
+pub(crate) fn studio_size(view: [u32; 2], max_side: u32) -> [u32; 2] {
+    let [w, h] = view.map(|s| s.max(1) * STUDIO_SCALE);
+    let shrink = ((STUDIO_MAX_PIXELS as f32 / (w * h) as f32).sqrt()).min(1.0);
+    [w, h].map(|s| ((s as f32 * shrink) as u32).clamp(1, max_side))
+}
+
+/// Writes tightly packed sRGB RGBA8 rows as a PNG file.
+pub(crate) fn save_png(
+    path: &std::path::Path,
+    [width, height]: [u32; 2],
+    pixels: &[u8],
+) -> anyhow::Result<()> {
+    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(pixels)?;
+    writer.finish()?;
+    Ok(())
 }

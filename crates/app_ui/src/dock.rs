@@ -52,7 +52,9 @@ impl Panel for CanvasPanel {
             cx.editor.canvas_hint.as_str()
         };
         let hint = hint.to_owned();
+        let rect = ui.available_rect_before_wrap();
         cx.output.canvas = Some(viewport::show(ui, cx.textures.canvas, &hint));
+        crate::canvas_overlay::show(ui, rect, cx.document, cx.editor, cx.output);
     }
     fn fills_tab(&self) -> bool {
         true
@@ -69,11 +71,14 @@ fn canvas_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(6, 3))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            // Wraps onto a second row when the 2D view is narrow.
+            ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for (tool, icon) in [
                     (CanvasTool::Select, Icon::Select),
                     (CanvasTool::Points, Icon::Points),
+                    (CanvasTool::AddPoint, Icon::AddPoint),
+                    (CanvasTool::Curve, Icon::Curve),
                     (CanvasTool::Sew, Icon::Sew),
                 ] {
                     if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label())
@@ -146,6 +151,12 @@ fn canvas_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
                     "Delete selected piece (Del)",
                     UiCommand::DeletePiece,
                 );
+                // Undo, redo and the view buttons keep to the right; they move
+                // to the next row when there is no room left for them.
+                const RIGHT_GROUP: f32 = 4.0 * (icons::BUTTON + 2.0) + 11.0;
+                if ui.max_rect().right() - ui.cursor().min.x < RIGHT_GROUP {
+                    ui.end_row();
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icons::button(ui, Icon::FitView, false, true, "Fit all pieces in view")
                         .clicked()
@@ -192,7 +203,7 @@ impl Panel for ScenePanel {
         "3D Garment"
     }
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
-        surface_toolbar(ui, &mut cx.editor.view);
+        surface_toolbar(ui, cx.editor);
         let hint =
             "Drag to orbit · middle/right-drag to pan · scroll to zoom · click a piece to select";
         cx.output.scene = Some(viewport::show(ui, cx.textures.scene, hint));
@@ -221,11 +232,26 @@ fn heat_color(t: f32) -> egui::Color32 {
 
 /// The row above the 3D view: what the garment's surface shows, the range
 /// of the heatmap and its legend.
-fn surface_toolbar(ui: &mut egui::Ui, view: &mut crate::state::ViewOptions) {
+fn surface_toolbar(ui: &mut egui::Ui, editor: &mut EditorState) {
+    let render = &mut editor.render;
+    let view = &mut editor.view;
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(8, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
+                if ui
+                    .button("Render")
+                    .on_hover_text(
+                        "A still of this view in studio light: soft shadows, \
+                         no jagged edges, corduroy in relief. Opens in its own window.",
+                    )
+                    .clicked()
+                {
+                    view.surface = SurfaceView::Fabric;
+                    render.open = true;
+                    render.start = true;
+                }
+                ui.separator();
                 ui.selectable_value(&mut view.surface, SurfaceView::Fabric, "Fabric");
                 ui.selectable_value(&mut view.surface, SurfaceView::Strain, "Strain map")
                     .on_hover_text(
@@ -390,6 +416,13 @@ impl AppUi {
         dock
     }
 
+    /// Brings `tab` to the front of its group.
+    pub fn focus(&mut self, tab: Tab) {
+        if let Some(at) = self.dock.find_tab(&tab) {
+            let _ = self.dock.set_active_tab(at);
+        }
+    }
+
     /// Builds one frame of UI into `ui` (the root `Ui` of the window).
     pub fn show(
         &mut self,
@@ -424,6 +457,7 @@ impl AppUi {
         crate::io_window::show(ui.ctx(), editor, &mut output);
         crate::pattern_window::show(ui.ctx(), editor, &mut output);
         crate::file_browser::show(ui.ctx(), &mut editor.file_browser);
+        crate::render_window::show(ui.ctx(), editor);
 
         if editor.file_browser.accepted {
             editor.file_browser.accepted = false;
@@ -482,6 +516,8 @@ impl AppUi {
                 for (key, tool) in [
                     (Key::V, CanvasTool::Select),
                     (Key::P, CanvasTool::Points),
+                    (Key::A, CanvasTool::AddPoint),
+                    (Key::C, CanvasTool::Curve),
                     (Key::S, CanvasTool::Sew),
                     (Key::L, CanvasTool::SketchLine),
                     (Key::B, CanvasTool::SketchSpline),
@@ -500,6 +536,11 @@ impl AppUi {
                     editor.sew_a = None;
                     editor.sew_b = None;
                     editor.sketch_points.clear();
+                    editor.sketch_input.clear();
+                }
+                if editor.sketch_points.len() >= 3 && input.consume_key(Modifiers::NONE, Key::Enter)
+                {
+                    editor.sketch_finish = true;
                 }
                 if editor.selected_piece.is_some()
                     && (input.consume_key(Modifiers::NONE, Key::Delete)
@@ -584,6 +625,7 @@ impl AppUi {
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut editor.view.show_grid, "Grid");
                     ui.checkbox(&mut editor.view.show_seam_allowance, "Seam allowance");
+                    ui.checkbox(&mut editor.view.show_piece_names, "Piece names (2D)");
                     ui.checkbox(&mut editor.view.show_mesh, "Mesh wireframe (2D)");
                     ui.separator();
                     ui.label("3D surface");

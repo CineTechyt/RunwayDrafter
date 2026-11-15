@@ -352,6 +352,125 @@ impl PatternDocument {
         self.pieces.iter().find(|p| p.id == id)
     }
 
+    /// Unfolds a piece cut "on the fold": mirrors it about its straight
+    /// line through `edge`, so the half becomes the whole piece. Seams,
+    /// seam allowances and notches stay on the kept half; the mirrored half
+    /// gets the same allowances and notches. Seams on the fold go.
+    pub fn unfold_piece(&mut self, piece: PieceId, edge: u32) -> bool {
+        let Some(p) = self.piece_mut(piece) else {
+            return false;
+        };
+        let n = p.outline.edge_count();
+        let fold = p.outline.line_span(edge);
+        let Some(whole) = p.outline.unfolded(fold) else {
+            return false;
+        };
+        let k = n - fold.count;
+        // Old edge → its number in the kept half, if kept.
+        let kept = |e: u32| {
+            let i = (e + n - (fold.first + fold.count) % n) % n;
+            (i < k).then_some(i)
+        };
+        let mirrored = |i: u32| 2 * k - 1 - i;
+        let widths = std::mem::take(&mut p.seam_allowance.per_edge);
+        for (e, width) in widths {
+            if let Some(i) = kept(e) {
+                p.seam_allowance.per_edge.insert(i, width);
+                p.seam_allowance.per_edge.insert(mirrored(i), width);
+            }
+        }
+        let notches = std::mem::take(&mut p.notches);
+        for notch in notches {
+            if let Some(i) = kept(notch.edge) {
+                p.notches.push(Notch { edge: i, ..notch });
+                p.notches.push(Notch {
+                    edge: mirrored(i),
+                    t: 1.0 - notch.t,
+                    ..notch
+                });
+            }
+        }
+        p.outline = whole;
+        let (lo, hi) = p.outline.bounds();
+        p.grainline.origin = (lo + hi) * 0.5;
+        self.seams.retain_mut(|seam| {
+            for (side, count) in [(&mut seam.a, &mut seam.a_count), (&mut seam.b, &mut seam.b_count)] {
+                if side.piece != piece {
+                    continue;
+                }
+                match kept(side.edge) {
+                    Some(i) if i + (*count).max(1) <= k => side.edge = i,
+                    _ => return false,
+                }
+            }
+            true
+        });
+        self.touch();
+        true
+    }
+
+    /// Adds a turn point on `edge` of `piece` at curve parameter `t`,
+    /// splitting the line there into two. Seams, seam allowances and
+    /// notches keep pointing at the same places. Returns the new anchor.
+    pub fn insert_point(&mut self, piece: PieceId, edge: u32, t: f32) -> Option<u32> {
+        let p = self.piece_mut(piece)?;
+        let n = p.outline.edge_count();
+        if edge >= n {
+            return None;
+        }
+        // On an existing point: make it a turn point.
+        if !(0.001..=0.999).contains(&t) {
+            let anchor = if t < 0.5 { edge } else { (edge + 1) % n };
+            if !p.outline.set_point_kind(anchor, crate::pattern::PointKind::Corner) {
+                return None;
+            }
+            self.touch();
+            return Some(anchor);
+        }
+        if !p.outline.split_edge(edge, t) {
+            return None;
+        }
+        // Edges after the split move up by one; the split edge's halves
+        // keep its settings.
+        let shift = |e: u32| if e > edge { e + 1 } else { e };
+        let widths = std::mem::take(&mut p.seam_allowance.per_edge);
+        for (e, width) in widths {
+            p.seam_allowance.per_edge.insert(shift(e), width);
+            if e == edge {
+                p.seam_allowance.per_edge.insert(edge + 1, width);
+            }
+        }
+        for notch in &mut p.notches {
+            if notch.edge == edge {
+                if notch.t < t {
+                    notch.t /= t;
+                } else {
+                    notch.edge = edge + 1;
+                    notch.t = (notch.t - t) / (1.0 - t);
+                }
+            } else {
+                notch.edge = shift(notch.edge);
+            }
+        }
+        for seam in &mut self.seams {
+            for (side, count) in [(&mut seam.a, &mut seam.a_count), (&mut seam.b, &mut seam.b_count)] {
+                if side.piece != piece {
+                    continue;
+                }
+                let span = EdgeSpan {
+                    first: side.edge,
+                    count: (*count).max(1),
+                };
+                if span.contains(edge, n) {
+                    *count = (*count).max(1) + 1;
+                }
+                side.edge = shift(side.edge);
+            }
+        }
+        self.touch();
+        Some(edge + 1)
+    }
+
     pub fn piece_mut(&mut self, id: PieceId) -> Option<&mut PatternPiece> {
         self.pieces.iter_mut().find(|p| p.id == id)
     }
@@ -878,6 +997,35 @@ fn pair_along_rows(
 mod tests {
     use super::*;
     use crate::ids::HandleKind;
+
+    #[test]
+    fn a_point_added_on_a_sewn_line_keeps_the_seam_on_both_halves() {
+        let mut doc = PatternDocument::new();
+        let fabric = doc.add_fabric("Cotton", [1.0; 3]);
+        let square = || {
+            Outline::polygon([
+                Vec2::ZERO,
+                Vec2::new(100.0, 0.0),
+                Vec2::new(100.0, 100.0),
+                Vec2::new(0.0, 100.0),
+            ])
+        };
+        let a = doc.add_piece("A", square(), fabric);
+        let b = doc.add_piece("B", square(), fabric);
+        doc.add_seam(EdgeRef::new(a, 1), EdgeRef::new(b, 3), true);
+        doc.add_seam(EdgeRef::new(a, 2), EdgeRef::new(b, 0), true);
+        doc.piece_mut(a).unwrap().seam_allowance.per_edge.insert(1, 30.0);
+
+        assert_eq!(doc.insert_point(a, 1, 0.5), Some(2));
+        let piece = doc.piece(a).unwrap();
+        assert_eq!(piece.outline.edge_count(), 5);
+        assert_eq!(piece.seam_allowance.width(1), 30.0);
+        assert_eq!(piece.seam_allowance.width(2), 30.0);
+        let seams = doc.seams();
+        assert_eq!((seams[0].a.edge, seams[0].a_count), (1, 2), "both halves stay sewn");
+        assert_eq!(seams[1].a.edge, 3, "the next line moved up");
+        assert_eq!((seams[0].b.edge, seams[1].b.edge), (3, 0), "the other piece is untouched");
+    }
 
     #[test]
     fn tidy_layout_removes_overlaps() {

@@ -75,52 +75,7 @@ impl RenderTarget {
     /// row first. Blocks until the GPU is done, so it is meant for
     /// snapshots and export on native targets, not for per-frame use.
     pub fn read_pixels(&self, gpu: &GpuContext) -> Vec<u8> {
-        let [width, height] = self.size;
-        let row = width * 4;
-        let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("read-back"),
-            size: u64::from(padded) * u64::from(height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("read-back"),
-            });
-        encoder.copy_texture_to_buffer(
-            self.resolve_texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded),
-                    rows_per_image: None,
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        gpu.queue.submit([encoder.finish()]);
-
-        let slice = buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |result| {
-            result.expect("failed to map the read-back buffer")
-        });
-        gpu.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("device lost during read-back");
-        let data = slice
-            .get_mapped_range()
-            .expect("read-back buffer is not mapped");
-        data.chunks_exact(padded as usize)
-            .flat_map(|line| &line[..row as usize])
-            .copied()
-            .collect()
+        read_texture(gpu, &self.resolve_texture, self.size)
     }
 
     /// Recreates the textures if `size` differs. Returns `true` if it did.
@@ -165,6 +120,56 @@ impl RenderTarget {
     }
 }
 
+/// Reads an RGBA8 texture (with `COPY_SRC`) back as tightly packed rows,
+/// top row first. Blocks until the GPU is done.
+pub fn read_texture(gpu: &GpuContext, texture: &wgpu::Texture, [width, height]: [u32; 2]) -> Vec<u8> {
+    let row = width * 4;
+    let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("read-back"),
+        size: u64::from(padded) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("read-back"),
+        });
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: None,
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit([encoder.finish()]);
+
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("failed to map the read-back buffer")
+    });
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("device lost during read-back");
+    let data = slice
+        .get_mapped_range()
+        .expect("read-back buffer is not mapped");
+    data.chunks_exact(padded as usize)
+        .flat_map(|line| &line[..row as usize])
+        .copied()
+        .collect()
+}
+
 /// A GPU buffer that is reallocated (with headroom) when the data outgrows it.
 #[derive(Debug)]
 pub(crate) struct GrowableBuffer {
@@ -175,7 +180,8 @@ pub(crate) struct GrowableBuffer {
 
 impl GrowableBuffer {
     pub fn new(gpu: &GpuContext, label: &'static str, usage: wgpu::BufferUsages) -> Self {
-        let usage = usage | wgpu::BufferUsages::COPY_DST;
+        // COPY_SRC: the studio render takes a copy of what is drawn.
+        let usage = usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
         Self {
             label,
             usage,

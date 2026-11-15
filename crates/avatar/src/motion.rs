@@ -74,6 +74,18 @@ impl Motion {
         }
     }
 
+    /// How far the body has moved on when the motion comes round again: a
+    /// walk is two steps straight ahead and starts over one stride further
+    /// on. Zero for motions that end where they began.
+    pub fn travel(self) -> Vec3 {
+        match self {
+            Motion::Walk | Motion::StiffWalk | Motion::HipSwayWalk => {
+                Vec3::new(0.0, 0.0, WalkPlan::of(self).stride)
+            }
+            Motion::SitOnChair | Motion::Yoga => Vec3::ZERO,
+        }
+    }
+
     /// The joint angles at `time` seconds (wrapped into the loop).
     pub fn angles(self, time: f32) -> Angles {
         let t = time.rem_euclid(self.duration());
@@ -754,56 +766,12 @@ impl Gait {
     }
 }
 
-/// Strides along each straight of the runway, and in each U-turn.
-/// The runway: two straights joined by half circles, centred on the
-/// origin. The avatar walks towards the front (+Z), turns to its left, walks
-/// away and turns again.
-struct Runway {
-    straight: f32,
-    radius: f32,
-}
-
-const RUNWAY: Runway = Runway {
-    straight: 2.4,
-    radius: 0.5,
-};
-
-impl Runway {
-    fn length(&self) -> f32 {
-        2.0 * self.straight + 2.0 * std::f32::consts::PI * self.radius
-    }
-
-    /// The point `d` metres along the path, and the heading there (radians
-    /// from +Z towards +X).
-    fn at(&self, d: f32) -> (Vec3, f32) {
-        use std::f32::consts::PI;
-        let (l, r) = (self.straight, self.radius);
-        let arc = PI * r;
-        let d = d.rem_euclid(self.length());
-        let (point, heading) = if d < l {
-            (Vec3::new(0.0, 0.0, -0.5 * l + d), 0.0)
-        } else if d < l + arc {
-            let a = (d - l) / r;
-            (Vec3::new(r - r * a.cos(), 0.0, 0.5 * l + r * a.sin()), a)
-        } else if d < 2.0 * l + arc {
-            (Vec3::new(2.0 * r, 0.0, 0.5 * l - (d - l - arc)), PI)
-        } else {
-            let a = (d - 2.0 * l - arc) / r;
-            (
-                Vec3::new(r + r * a.cos(), 0.0, -0.5 * l - r * a.sin()),
-                PI + a,
-            )
-        };
-        (point - Vec3::new(r, 0.0, 0.0), heading)
-    }
-}
-
-/// A walk around the runway: the gait, and where the feet go.
+/// A walk straight ahead (+Z), two steps long: the gait, and where the
+/// feet go.
 struct WalkPlan {
     gait: Gait,
-    /// Metres per stride, chosen so the lap is a whole number of strides.
+    /// Metres per stride (two steps).
     stride: f32,
-    strides: f32,
     /// How far each foot lands from the path's centre line, metres.
     track: f32,
     /// Sideways sway of the hips over the standing foot, metres.
@@ -823,19 +791,24 @@ impl WalkPlan {
             Motion::HipSwayWalk => (1.15, 0.012, 0.045, 0.02),
             _ => (1.12, 0.07, 0.022, 0.026),
         };
-        let strides = (RUNWAY.length() / stride).round().max(1.0);
         WalkPlan {
             gait,
-            stride: RUNWAY.length() / strides,
-            strides,
+            stride,
             track,
             sway,
             bob,
         }
     }
 
+    /// One stride: the loop.
     fn duration(&self) -> f32 {
-        self.strides * self.gait.period
+        self.gait.period
+    }
+
+    /// The point `d` metres along the walk and the heading there (radians
+    /// from +Z towards +X). The loop's stride is centred on the origin.
+    fn at(&self, d: f32) -> (Vec3, f32) {
+        (Vec3::new(0.0, 0.0, d - 0.5 * self.stride), 0.0)
     }
 
     fn speed(&self) -> f32 {
@@ -847,7 +820,7 @@ impl WalkPlan {
     fn footprint(&self, side: Side, k: f32) -> (Vec3, f32) {
         let strike = (k + if side == Side::Left { 0.0 } else { 0.5 }) * self.gait.period;
         // Landing a little ahead of the hips.
-        let (point, heading) = RUNWAY.at(self.speed() * strike + 0.27 * self.stride);
+        let (point, heading) = self.at(self.speed() * strike + 0.27 * self.stride);
         let left = Vec3::new(heading.cos(), 0.0, -heading.sin());
         // Toes turned out a little.
         (
@@ -857,10 +830,10 @@ impl WalkPlan {
     }
 }
 
-/// The gait's angles with the body facing along the runway.
+/// The gait's angles with the body facing along the walk.
 fn walk_angles(plan: &WalkPlan, t: f32) -> Angles {
     let mut a = plan.gait.angles(t);
-    let (_, heading) = RUNWAY.at(plan.speed() * t);
+    let (_, heading) = plan.at(plan.speed() * t);
     a.set(Joint::Heading, heading.to_degrees());
     a
 }
@@ -1898,8 +1871,8 @@ impl Performance {
         Self { motion, frames }
     }
 
-    /// A walk around the runway. The feet are planned first, footprint by
-    /// footprint along the path; the hips travel along it, swaying over the
+    /// Two steps of a walk straight ahead. The feet are planned first,
+    /// footprint by footprint along the path; the hips travel along it, swaying over the
     /// standing foot and rising and falling with each step; the legs reach
     /// the feet. A standing foot lands on its heel, lies flat and peels off
     /// over its toes; a swinging foot travels in an arc to its next print.
@@ -1939,7 +1912,7 @@ impl Performance {
         let count = (plan.duration() / Self::STEP).ceil() as usize + 1;
         let mut frames = Vec::with_capacity(count);
         // The hips have mass: a spring smooths their path. It is wound up
-        // over one lap first, so the loop starts as it ends.
+        // over one loop first, so the loop starts as it ends.
         let mut spring: Option<(Vec3, Vec3)> = None;
         for frame in 0..2 * count {
             let t = (frame % count) as f32 * Self::STEP;
@@ -1977,7 +1950,7 @@ impl Performance {
             });
 
             // The hips: along the path, over the standing foot, up and down.
-            let (centre, heading) = RUNWAY.at(plan.speed() * t);
+            let (centre, heading) = plan.at(plan.speed() * t);
             let left = Vec3::new(heading.cos(), 0.0, -heading.sin());
             let mut hips = centre + left * plan.sway * (TAU * phase).sin();
             hips.y = root.y - 0.012 - plan.bob * 0.5 * (1.0 + (2.0 * TAU * phase).cos());
@@ -1999,17 +1972,15 @@ impl Performance {
                 let k = 120.0;
                 offset.y = -((-k * offset.y).exp() + (-k * highest).exp()).ln() / k;
             }
-            // Along the path the target jumps by a lap at the wrap; follow it
-            // relative to the path, which closes on itself.
-            let (position, velocity) = spring.get_or_insert((offset, Vec3::ZERO));
-            if position.distance(offset) > 1.0 {
-                *position = offset;
-            }
+            // The walk starts over a stride back at the wrap: the spring
+            // follows the hips relative to the path, which repeats.
+            let relative = offset - centre;
+            let (position, velocity) = spring.get_or_insert((relative, Vec3::ZERO));
             let omega = TAU * 6.0;
             *velocity +=
-                (omega * omega * (offset - *position) - 2.0 * omega * *velocity) * Self::STEP;
+                (omega * omega * (relative - *position) - 2.0 * omega * *velocity) * Self::STEP;
             *position += *velocity * Self::STEP;
-            let offset = *position;
+            let offset = *position + centre;
             if frame < count {
                 continue;
             }

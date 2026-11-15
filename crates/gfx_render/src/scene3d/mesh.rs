@@ -14,6 +14,11 @@ pub struct MeshVertex {
     pub value: f32,
     /// Linear RGB multiplied into the material's base colour.
     pub color: [f32; 3],
+    /// Where a garment wears (zero elsewhere): x distance to the piece's
+    /// edge (seam or hem) in metres, y how sharply it bulges out (a fold's
+    /// ridge, rubbed), z how sharply it dips in (a crease), w the face:
+    /// 1 outside, -1 inside, 0 the cut edge.
+    pub wear: [f32; 4],
 }
 
 impl MeshVertex {
@@ -27,6 +32,7 @@ impl MeshVertex {
             2 => Float32x2, // uv
             3 => Float32,   // value
             4 => Float32x3, // color
+            5 => Float32x4, // wear
         ],
     };
 
@@ -37,6 +43,7 @@ impl MeshVertex {
             uv: uv.to_array(),
             value: 0.0,
             color: [1.0; 3],
+            wear: [0.0; 4],
         }
     }
 
@@ -153,6 +160,17 @@ pub struct SurfaceMaterial {
     /// Linear RGB added after lighting (selection highlight).
     pub emissive: [f32; 3],
     pub shading: Shading,
+    /// Woven from a draft: the key its textures were added under (see
+    /// [`super::SceneRenderer::add_weave`]); 0 for none.
+    pub weave_key: u64,
+    /// How many times the weave texture repeats per UV unit (U, V).
+    pub weave_repeat: [f32; 2],
+    /// The yarns of the weave, varied in the shader so the variation never
+    /// repeats with the texture: threads across the texture (ends, picks),
+    /// irregularity and slubs (0..=1).
+    pub weave_yarn: [f32; 4],
+    /// How worn a garment is, 0..=1 (see [`MeshVertex::wear`]).
+    pub wear: f32,
 }
 
 impl Default for SurfaceMaterial {
@@ -168,6 +186,10 @@ impl Default for SurfaceMaterial {
             relief: 1.0,
             emissive: [0.0; 3],
             shading: Shading::Standard,
+            weave_key: 0,
+            weave_repeat: [1.0; 2],
+            weave_yarn: [0.0; 4],
+            wear: 0.0,
         }
     }
 }

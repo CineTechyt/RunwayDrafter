@@ -12,7 +12,9 @@
 //! * `--frames N` — frames to run before saving (default 12);
 //! * `--open file.clo360` — open a project; `--new waistcoat|top` — start
 //!   from a built-in garment;
-//! * `--play` — run the simulation over those frames;
+//! * `--play` — run the simulation over those frames; with
+//!   `--threaded-simulation` it runs on its own thread as in the editor, and
+//!   the picture is taken once the drape has stopped;
 //! * `--hair STYLE[,LENGTH_CM]` — the avatar's haircut (bald, buzz, short,
 //!   bob, long, ponytail, bun; add `+fringe` for a fringe), `--skin R,G,B`
 //!   and `--hair-colour R,G,B` in sRGB 0–255;
@@ -23,8 +25,10 @@
 //!   of an animation; add `--play-animation` to play it from there over
 //!   the frames; `--simulate-garment` drapes first (over `--frames`), then
 //!   simulates the garment through the animation and shows that.
-//! * `--solver contact|global|cpu|gpu` — the live cloth solver (default: gpu
-//!   where available, else cpu). Garment animation is baked with global if
+//! * `--weave NAME` — every fabric woven from that draft of the weave
+//!   library (plain, denim, gingham, diamond, …);
+//! * `--solver contact|global|cpu|gpu` — the live cloth solver (default:
+//!   cpu, as in the editor). Garment animation is baked with global if
 //!   that is the live solver, otherwise with contact.
 //! * `--bake-seconds N` — limit a garment bake to the first N seconds; useful
 //!   for inspecting a particular early animation pose.
@@ -98,6 +102,8 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
         pattern: value("--pattern").map(PathBuf::from),
         tool: match value("--tool").as_deref() {
             Some("points") => CanvasTool::Points,
+            Some("add-point") => CanvasTool::AddPoint,
+            Some("curve") => CanvasTool::Curve,
             Some("sew") => CanvasTool::Sew,
             _ => CanvasTool::Select,
         },
@@ -205,7 +211,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut canvas = CanvasRenderer::new(&gpu, [16, 16]);
     let mut scene = SceneRenderer::new(&gpu, [16, 16]);
     let mut floor = MeshData::default();
-    floor.add_ground(Vec3::ZERO, 4.0);
+    floor.add_ground(Vec3::ZERO, 40.0);
     scene.add_static(
         &gpu,
         &floor,
@@ -231,20 +237,19 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             };
             Body::new(model, params, ::avatar::PoseParams::default(), closing)
         });
-    let solver: Box<dyn ClothSolver> = if gpu.supports_compute {
+    let solver: Box<dyn ClothSolver + Send> = if gpu.supports_compute {
         Box::new(XpbdSolver::with_gpu(gpu.device.clone(), gpu.queue.clone()))
     } else {
         Box::new(XpbdSolver::new())
     };
-    let mut session = Session::new(Some(solver), body, Vec::new());
+    // `--threaded-simulation`: as in the editor, the cloth steps on its own
+    // thread; the picture is taken once the drape has finished.
+    let threaded = args.iter().any(|a| a == "--threaded-simulation");
+    let mut session = Session::new(Some(solver), body, Vec::new(), threaded);
     session.garment_bake_duration = options.bake_seconds;
     session.editor.simulation.gpu_available = gpu.supports_compute;
-    // As in the app: a real-time solver for the live view.
-    session.editor.simulation.settings.backend = if gpu.supports_compute {
-        SolverBackend::Gpu
-    } else {
-        SolverBackend::Cpu
-    };
+    // As in the app: the explicit solver on the CPU for the live view.
+    session.editor.simulation.settings.backend = SolverBackend::Cpu;
     if let Some(solver) = options.solver {
         session.editor.simulation.settings.backend = solver;
     }
@@ -287,6 +292,18 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         };
     }
     let mut ui = AppUi::new();
+    // `--tab materials|simulation|pattern`: that panel in front.
+    match args
+        .iter()
+        .position(|a| a == "--tab")
+        .and_then(|at| args.get(at + 1))
+        .map(String::as_str)
+    {
+        Some("materials") => ui.focus(app_ui::dock::Tab::Materials),
+        Some("simulation") => ui.focus(app_ui::dock::Tab::Simulation),
+        Some("pattern") => ui.focus(app_ui::dock::Tab::PatternProperties),
+        _ => {}
+    }
     let mut canvas_batch = CanvasBatch::default();
 
     // --- optional pattern ------------------------------------------------------
@@ -314,12 +331,14 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
+    let render_window = args.iter().any(|a| a == "--render-window");
+    let mut render_pressed = false;
     let mut frame = 0;
     let mut play_started = false;
     let mut shot_index = 0;
     let (mut jitter, mut jitter_previous): (Vec<f32>, Option<Vec<glam::Vec3>>) = (Vec::new(), None);
     let mut ready_since: Option<u32> = None;
-    let mut fabric_applied = options.fabric.is_none();
+    let mut fabric_applied = options.fabric.is_none() && !args.iter().any(|a| a == "--weave" || a == "--preset");
     loop {
         // Once the import has run (and its piece names are in), make it the
         // project, then set up the requested state.
@@ -406,6 +425,53 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                     session.document.touch();
                 }
             }
+            // `--preset NAME`: every fabric becomes this preset of the library.
+            if let Some(name) = args
+                .iter()
+                .position(|a| a == "--preset")
+                .and_then(|at| args.get(at + 1))
+            {
+                let preset = cad_core::fabric_library::presets()
+                    .into_iter()
+                    .find(|f| f.name.eq_ignore_ascii_case(name))
+                    .with_context(|| format!("no fabric preset {name:?}"))?;
+                let ids: Vec<_> = session.document.fabrics().iter().map(|f| f.id).collect();
+                for id in ids {
+                    if let Some(fabric) = session.document.fabric_mut(id) {
+                        *fabric = cad_core::Fabric { id, ..preset.clone() };
+                    }
+                }
+                session.document.touch();
+            }
+            // `--weave NAME`: the fabric woven from a draft of the library.
+            if let Some(name) = args
+                .iter()
+                .position(|a| a == "--weave")
+                .and_then(|at| args.get(at + 1))
+            {
+                let weave = cad_core::Weave::library()
+                    .into_iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                    .map(|(_, w)| w)
+                    .with_context(|| format!("no weave {name:?} in the library"))?;
+                let ids: Vec<_> = session.document.fabrics().iter().map(|f| f.id).collect();
+                for id in ids {
+                    if let Some(fabric) = session.document.fabric_mut(id) {
+                        fabric.weave = Some(weave.clone());
+                        fabric.relief = 1.0;
+                        // `--roughness R`: how matt the yarn is (silk ~0.35).
+                        if let Some(r) = args
+                            .iter()
+                            .position(|a| a == "--roughness")
+                            .and_then(|at| args.get(at + 1))
+                            .and_then(|r| r.parse().ok())
+                        {
+                            fabric.roughness = r;
+                        }
+                    }
+                }
+                session.document.touch();
+            }
             fabric_applied = true;
         }
 
@@ -485,6 +551,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             ready_since = Some(frame);
         }
         let drape_done = !session.editor.timeline.playing && session.is_draped();
+        // `--render-window`: press Render once draped, wait for it.
+        if render_window && !render_pressed && ready && (drape_done || !options.play) {
+            session.editor.render.open = true;
+            session.editor.render.start = true;
+            render_pressed = true;
+        }
         if simulate_garment
             && garment_stage < 2
             && ready_since.is_some_and(|since| frame - since >= options.frames)
@@ -573,7 +645,10 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 None => return Ok(()),
             }
         }
-        let waiting_for_garment = simulate_garment && garment_stage < 2;
+        let waiting_for_garment = (render_window
+            && (!render_pressed || session.editor.render.rendering()))
+            || (simulate_garment && garment_stage < 2)
+            || (threaded && play_started && session.editor.timeline.playing);
         if (!waiting_for_garment
             && ready_since.is_some_and(|since| {
                 frame - since
@@ -585,11 +660,24 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         {
             break;
         }
-        if !ready {
+        if !ready || (threaded && session.editor.timeline.playing) {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 
+    if options.play {
+        println!(
+            "drape: {} simulation steps{}",
+            session.editor.timeline.frame,
+            if !session.editor.timeline.playing
+                && session.editor.timeline.frame < session.editor.timeline.end_frame
+            {
+                ", stopped when settled"
+            } else {
+                ""
+            }
+        );
+    }
     if !jitter.is_empty() {
         let tail = &jitter[jitter.len().saturating_sub(30)..];
         println!(
@@ -598,6 +686,33 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             tail.iter().fold(0.0f32, |a, &b| a.max(b)) * 1000.0,
             tail.iter().sum::<f32>() / tail.len() as f32 * 1000.0
         );
+    }
+    // `--render`: the studio render of the 3D view instead of the window.
+    if args.iter().any(|a| a == "--render") {
+        let started = std::time::Instant::now();
+        scene.start_studio(
+            &gpu,
+            [width, height],
+            &session.scene_camera,
+            session.editor.render.aperture(),
+        );
+        while scene.studio().is_some_and(|s| !s.finished()) {
+            scene.step_studio(&gpu, 8);
+        }
+        let studio = scene.studio().context("no studio render")?;
+        let pixels = studio.read_pixels(&gpu);
+        println!(
+            "studio render: {} samples in {:.1} s",
+            studio.progress().1,
+            started.elapsed().as_secs_f32()
+        );
+        if options.out.extension().is_some_and(|e| e == "png") {
+            crate::app::save_png(&options.out, [width, height], &pixels)?;
+        } else {
+            save(&gpu, studio.texture(), [width, height], &options.out)?;
+        }
+        println!("wrote {}", options.out.display());
+        return Ok(());
     }
     save(&gpu, &target, [width, height], &options.out)?;
     println!("wrote {}", options.out.display());

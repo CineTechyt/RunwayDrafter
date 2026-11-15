@@ -310,6 +310,29 @@ fn hair_never_covers_the_face_or_ears() {
 }
 
 #[test]
+fn a_walk_is_two_steps_and_starts_over_a_stride_ahead() {
+    use avatar::{Motion, Performance};
+    let model = model();
+    let rest = model.build(&BodyParams::male());
+    for motion in [Motion::Walk, Motion::StiffWalk, Motion::HipSwayWalk] {
+        let duration = motion.duration();
+        assert!(duration < 1.5, "{motion:?}: one stride, not a lap ({duration} s)");
+        let travel = motion.travel();
+        assert!(travel.z > 0.7 && travel.x == 0.0, "{motion:?} walks ahead: {travel}");
+        let performance = Performance::bake(motion, &model, &rest);
+        let start = performance.pose(0.0, &model, &rest).offset;
+        let end = performance.pose(duration - 1e-3, &model, &rest).offset;
+        // Where the body is at the end of the loop is where the next loop
+        // starts, a stride on.
+        assert!(
+            (end - (start + travel)).length() < 0.01,
+            "{motion:?}: ends at {end}, starts over at {}",
+            start + travel
+        );
+    }
+}
+
+#[test]
 fn animations_keep_feet_planted_balance_and_move_smoothly() {
     use avatar::motion::Joint;
     use avatar::{Motion, Performance, Side};

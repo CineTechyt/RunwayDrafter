@@ -8,10 +8,10 @@
 //!   edges end up just outside the torso, inside the arms;
 //! * each piece is lifted until its top edge is above the shoulders.
 
-use cad_core::glam::{Quat, Vec3};
-use cad_core::{DocumentChange, PatternDocument};
+use cad_core::glam::{Mat3, Quat, Vec2, Vec3};
+use cad_core::{Arrangement, BodyPart, DocumentChange, PatternDocument, PatternPiece};
 
-use crate::measure::Measurements;
+use crate::measure::{Measure, Measurements};
 use crate::model::BodyMesh;
 
 /// Gap between the torso's side and a piece's side edge.
@@ -23,6 +23,69 @@ const SHOULDER_CLEARANCE: f32 = 0.025;
 /// Extra distance from the body per garment layer above the first, so an
 /// outer garment starts outside the one it is worn over.
 const LAYER_SPACING: f32 = 0.03;
+/// Gap between a sleeve and the arm it is wrapped around.
+const ARM_CLEARANCE: f32 = 0.03;
+/// Gap between a neck band and the neck.
+const NECK_CLEARANCE: f32 = 0.02;
+/// How far a sleeve's top reaches past the shoulder joint, along the arm.
+const CAP_ABOVE_SHOULDER: f32 = 0.03;
+
+/// A piece wrapped around an arm or the neck: the piece's width goes round
+/// the limb, its height along it. A sleeve's top (the cap) is at the
+/// shoulder and its middle faces away from the body, so its two side edges
+/// meet under the arm. `None` when the body has no such limb (an imported
+/// avatar) or the piece belongs on the torso.
+fn limb_arrangement(
+    piece: &PatternPiece,
+    body: &BodyMesh,
+    measurements: &Measurements,
+) -> Option<Arrangement> {
+    let (low, high) = piece.outline.bounds();
+    let width = (high.x - low.x) * 1e-3;
+    let girth = |measure: Measure, fallback: f32| {
+        let g = measurements.get(measure);
+        if g > 0.0 { g / std::f32::consts::TAU } else { fallback }
+    };
+    let (centre, along, outward, limb_radius, anchor) = match piece.placement.part {
+        BodyPart::Torso => return None,
+        BodyPart::LeftArm | BodyPart::RightArm => {
+            let left = piece.placement.part == BodyPart::LeftArm;
+            let (shoulder, elbow) = body.arm_axis(left)?;
+            let down = (elbow - shoulder).try_normalize()?;
+            let lateral = Vec3::X * if left { 1.0 } else { -1.0 };
+            let outward = (lateral - down * lateral.dot(down)).try_normalize()?;
+            (
+                shoulder - down * CAP_ABOVE_SHOULDER,
+                -down,
+                outward,
+                girth(Measure::UpperArm, 0.05) + ARM_CLEARANCE,
+                Vec2::new(0.5 * (low.x + high.x), high.y),
+            )
+        }
+        BodyPart::Neck => {
+            let base = body.neck_base()?;
+            (
+                base,
+                Vec3::Y,
+                Vec3::Z,
+                girth(Measure::Neck, 0.06) + NECK_CLEARANCE,
+                0.5 * (low + high),
+            )
+        }
+    };
+    // Wide enough pieces go once round; narrower ones keep their distance
+    // and leave a gap that sewing closes.
+    let radius = (width / std::f32::consts::TAU).max(limb_radius);
+    let across = along.cross(outward);
+    let mut arrangement = piece.arrangement;
+    arrangement.anchor = anchor;
+    arrangement.curvature = 1.0 / radius;
+    arrangement.rotation = Quat::from_mat3(&Mat3::from_cols(across, along, outward));
+    arrangement.translation =
+        centre + outward * radius + along * (piece.placement.height * 1e-3);
+    Some(arrangement)
+}
+
 /// Extra distance for the buttonhole side of a buttoned closure, so it
 /// starts over the button side.
 const OVERLAP_OUTSET: f32 = 0.015;
@@ -114,6 +177,13 @@ pub fn arrange_around(
         // Centre front or centre back: the classic arrangement.
         let centred = outward.x.abs() < 1e-3;
 
+        if let Some(arrangement) = limb_arrangement(piece, body, measurements) {
+            if piece.arrangement != arrangement {
+                piece.arrangement = arrangement;
+                changes.push(DocumentChange::PieceArrangement(id));
+            }
+            continue;
+        }
         let mut arrangement = piece.arrangement;
         arrangement.anchor = 0.5 * (low + high);
         arrangement.rotation = Quat::from_rotation_y(angle);

@@ -29,6 +29,8 @@ pub struct ViewOptions {
     pub show_grid: bool,
     pub show_mesh: bool,
     pub show_seam_allowance: bool,
+    /// Piece names written on the pieces in the 2D view.
+    pub show_piece_names: bool,
     pub surface: SurfaceView,
     /// Stretch shown as fully red in the strain map, in percent.
     pub strain_limit_percent: f32,
@@ -42,6 +44,7 @@ impl Default for ViewOptions {
             show_grid: true,
             show_mesh: false,
             show_seam_allowance: true,
+            show_piece_names: true,
             surface: SurfaceView::Fabric,
             strain_limit_percent: 10.0,
             fit_range_mm: 40.0,
@@ -124,6 +127,8 @@ pub struct PatternImportState {
     pub custom_scale: f32,
     pub flip_y: bool,
     pub default_allowance_mm: f32,
+    /// Join a pattern printed on many sheets (A4, US Letter) into one.
+    pub join_pages: bool,
     pub pattern: Option<io_cad::ImportedPattern>,
     pub status: Option<Result<String, String>>,
     pub replace_project: bool,
@@ -139,6 +144,7 @@ impl Default for PatternImportState {
             custom_scale: 1.0,
             flip_y: true,
             default_allowance_mm: 10.0,
+            join_pages: true,
             pattern: None,
             status: None,
             replace_project: true,
@@ -443,12 +449,18 @@ pub enum CanvasTool {
     Buttonhole,
     /// Pull a selected piece around the flat layout.
     Pull,
+    /// Click a line to add a turn point there, splitting it in two.
+    AddPoint,
+    /// Drag a line to bend it into a curve; double-click straightens it.
+    Curve,
 }
 
 impl CanvasTool {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Select,
         Self::Points,
+        Self::AddPoint,
+        Self::Curve,
         Self::Sew,
         Self::SketchLine,
         Self::SketchSpline,
@@ -467,8 +479,42 @@ impl CanvasTool {
             Self::Button => "Place button",
             Self::Buttonhole => "Place buttonhole",
             Self::Pull => "Pull fabric (move piece)",
+            Self::AddPoint => "Add point on a line (A)",
+            Self::Curve => "Bend lines into curves (C)",
         }
     }
+}
+
+/// The 2D view's camera: what is drawn where.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CanvasView {
+    /// Pattern point (mm) at the centre of the view.
+    pub center: glam::Vec2,
+    /// Physical pixels per millimetre.
+    pub zoom: f32,
+}
+
+impl Default for CanvasView {
+    fn default() -> Self {
+        Self {
+            center: glam::Vec2::ZERO,
+            zoom: 1.0,
+        }
+    }
+}
+
+/// A point the add-point tool would put on a line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointMarker {
+    pub piece: PieceId,
+    pub edge: u32,
+    pub t: f32,
+    pub position: glam::Vec2,
+    /// Distance along the line from its start and to its end, in mm.
+    pub from_start: f32,
+    pub to_end: f32,
+    /// Snapped to the middle of the line.
+    pub middle: bool,
 }
 
 /// One side of a seam being made: a run of lines on one piece and where
@@ -502,6 +548,18 @@ pub struct EditorState {
     pub sketch_points: Vec<glam::Vec2>,
     /// What the 2D view's tool tells the user, shown inside the view.
     pub canvas_hint: String,
+    /// Where the next sketch point would go (the cursor, snapped).
+    pub sketch_preview: Option<glam::Vec2>,
+    /// Typed length (and angle) for the next sketch point.
+    pub sketch_input: String,
+    /// Close the sketch into a piece on the next frame.
+    pub sketch_finish: bool,
+    /// Where the add-point tool would put a point.
+    pub point_marker: Option<PointMarker>,
+    /// The 2D view's camera as of the last frame, for drawing on it.
+    pub canvas_view: CanvasView,
+    /// Text of the length / angle boxes of the selected line.
+    pub line_input: (String, String),
     /// The project file being edited, once saved or opened.
     pub project_path: Option<std::path::PathBuf>,
     /// Outcome of the last save or open, for the status bar.
@@ -513,10 +571,61 @@ pub struct EditorState {
     pub selected_fabric: Option<FabricId>,
     pub view: ViewOptions,
     pub timeline: Timeline,
+    /// The studio render of the 3D view and its window.
+    pub render: RenderState,
     pub stats: SceneStats,
     /// Labels of the next undo/redo steps, for the Edit menu.
     pub undo_label: Option<String>,
     pub redo_label: Option<String>,
+}
+
+/// The studio render: a still of the 3D view in studio light, refined
+/// sample by sample. The application makes it; the UI shows it.
+#[derive(Debug, Clone)]
+pub struct RenderState {
+    /// The render window is shown.
+    pub open: bool,
+    /// Start a new render on the next frame.
+    pub start: bool,
+    /// The picture so far, once one has started.
+    pub texture: Option<egui::TextureId>,
+    /// Its size in pixels.
+    pub size: [u32; 2],
+    /// Samples done and to do.
+    pub samples: (u32, u32),
+    /// Write the finished picture to this PNG file.
+    pub save_to: Option<std::path::PathBuf>,
+    /// Outcome of the last save.
+    pub status: Option<Result<String, String>>,
+    /// Depth of field, 0..=1: how much what is nearer or farther than the
+    /// figure blurs (0: everything sharp).
+    pub depth_of_field: f32,
+}
+
+impl Default for RenderState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            start: false,
+            texture: None,
+            size: [0; 2],
+            samples: (0, 0),
+            save_to: None,
+            status: None,
+            depth_of_field: 0.3,
+        }
+    }
+}
+
+impl RenderState {
+    /// The lens radius in metres for [`Self::depth_of_field`].
+    pub fn aperture(&self) -> f32 {
+        self.depth_of_field.clamp(0.0, 1.0) * 0.025
+    }
+
+    pub fn rendering(&self) -> bool {
+        self.start || (self.texture.is_some() && self.samples.0 < self.samples.1)
+    }
 }
 
 /// Requests the UI cannot fulfil itself.
@@ -548,6 +657,30 @@ pub enum UiCommand {
         piece: PieceId,
         anchor: u32,
         kind: cad_core::PointKind,
+    },
+    /// Cut the line through `edge` into `parts` lines of equal length.
+    SplitLine {
+        piece: PieceId,
+        edge: u32,
+        parts: u32,
+    },
+    /// Mirror a piece cut on the fold about its straight line through
+    /// `edge`, making the whole piece.
+    UnfoldPiece {
+        piece: PieceId,
+        edge: u32,
+    },
+    /// Give the line through `edge` a new length in mm.
+    SetLineLength {
+        piece: PieceId,
+        edge: u32,
+        length: f32,
+    },
+    /// Turn the line through `edge` to a direction in degrees.
+    SetLineAngle {
+        piece: PieceId,
+        edge: u32,
+        degrees: f32,
     },
     /// Lay all pieces out side by side without overlaps.
     TidyLayout,
