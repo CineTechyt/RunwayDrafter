@@ -21,5 +21,7 @@ mod contacts;
 mod mesh;
 
 pub use bvh::{Aabb, Bvh};
-pub use contacts::{ClothContacts, ContactParams, ContactPlane, ContactStats, PLANES_PER_VERTEX};
+pub use contacts::{
+    ClothContacts, ContactPair, ContactParams, ContactPlane, ContactStats, PLANES_PER_VERTEX,
+};
 pub use mesh::{Clearance, SurfaceHit, SurfacePoint, TriangleMesh};

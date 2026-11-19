@@ -10,6 +10,7 @@ pub mod mesh;
 pub mod props;
 mod refine;
 mod shadow;
+pub mod stitches;
 pub mod studio;
 pub mod weave;
 
@@ -23,6 +24,7 @@ use wgpu::util::DeviceExt;
 
 pub use mesh::{MeshData, MeshVertex, Shading, SurfaceMaterial, SurfaceOverlay};
 pub use props::garment_props;
+pub use stitches::Stitches;
 pub use studio::StudioRender;
 
 use crate::camera::OrbitCamera;
@@ -32,6 +34,10 @@ use crate::{ViewportRenderer, srgba};
 
 use shadow::{LightSlot, ShadowKit, ShadowMaps, light_matrix};
 use studio::StudioKit;
+
+/// How deep a scan's height map reaches at relief 1, metres (as
+/// `MAP_RELIEF` in pbr.wgsl).
+const MAP_RELIEF: f32 = 0.0015;
 
 /// Resolution of the live view's shadow map.
 const LIVE_SHADOW_SIZE: u32 = 2048;
@@ -93,7 +99,11 @@ impl ObjectUniform {
             weave: [
                 m.weave_repeat[0],
                 m.weave_repeat[1],
-                if m.weave_key != 0 { 1.0 } else { 0.0 },
+                match (m.weave_key != 0, m.weave_maps) {
+                    (false, _) => 0.0,
+                    (true, false) => 1.0,
+                    (true, true) => 2.0,
+                },
                 m.relief.clamp(0.0, 2.0),
             ],
             yarn: m.weave_yarn,
@@ -331,6 +341,9 @@ pub struct SceneRenderer {
     weave_sampler: wgpu::Sampler,
     /// Textures of every weave in use, by key; and white for the rest.
     weaves: std::collections::HashMap<u64, wgpu::BindGroup>,
+    /// The height maps of scanned fabrics (by the same key), on the CPU:
+    /// what the studio render displaces the garment by.
+    heights: std::collections::HashMap<u64, std::sync::Arc<refine::HeightField>>,
     neutral_weave: wgpu::BindGroup,
     statics: Vec<StaticDraw>,
     /// Skin, eyes, hair: whatever makes up the avatar.
@@ -461,6 +474,7 @@ impl SceneRenderer {
             weave_layout,
             weave_sampler,
             weaves: std::collections::HashMap::new(),
+            heights: std::collections::HashMap::new(),
             neutral_weave,
             statics: Vec::new(),
             avatar: Vec::new(),
@@ -536,8 +550,21 @@ impl SceneRenderer {
         keep: &[u64],
     ) {
         self.weaves.retain(|k, _| keep.contains(k));
+        self.heights.retain(|k, _| keep.contains(k));
         let group = weave::bind_group(gpu, &self.weave_layout, &self.weave_sampler, texture);
         self.weaves.insert(key, group);
+        // Scans (no threads): their height map, for displacement.
+        if texture.ends == 0 {
+            self.heights.insert(
+                key,
+                std::sync::Arc::new(refine::HeightField::from_surface(
+                    texture.width,
+                    texture.height,
+                    &texture.surface,
+                    1024,
+                )),
+            );
+        }
     }
 
     /// Adds immutable scenery (floor, props).
@@ -668,6 +695,10 @@ impl SceneRenderer {
             uniform.overlay = self.overlay.uniform();
             // Cloth: sheen, and light through it.
             uniform.fabric[2] = 1.0;
+            // Textures still loading: the plain colour meanwhile.
+            if draw.weave != 0 && !self.weaves.contains_key(&draw.weave) {
+                uniform.weave[2] = 0.0;
+            }
             gpu.queue
                 .write_buffer(&draw.binding.buffer, 0, bytemuck::bytes_of(&uniform));
             draw.uniform = uniform;
@@ -837,7 +868,7 @@ impl SceneRenderer {
             let corduroy = u.weave[2] < 0.5
                 && (u.params[3] + 0.001).floor() == 3.0
                 && u.params[2] > 0.0;
-            let mut refinement = refine::Refinement { levels: 2, ribs: None };
+            let mut refinement = refine::Refinement { levels: 2, relief: None };
             if corduroy {
                 let ribs = 18.0 * u.fabric[0];
                 let depth = 0.0012 * u.fabric[1] * u.params[2];
@@ -845,7 +876,28 @@ impl SceneRenderer {
                 if depth > 0.0 {
                     refinement = refine::Refinement {
                         levels: refine::levels_for_ribs(edge, rib_width, 5.0),
-                        ribs: Some((ribs, depth)),
+                        relief: Some(refine::Relief::Ribs { count: ribs, depth }),
+                    };
+                }
+            }
+            // A scan with a height map: displaced by it, as finely as its
+            // features (a few samples of the map per triangle edge).
+            if u.weave[2] > 1.5
+                && let Some(field) = self.heights.get(&piece.weave)
+            {
+                let repeat = [u.weave[0].max(1e-3), u.weave[1].max(1e-3)];
+                let swatch = metres_per_uv / repeat[0];
+                let feature = swatch / field.width as f32 * 4.0;
+                let depth = MAP_RELIEF * u.weave[3];
+                if depth > 0.0 {
+                    refinement = refine::Refinement {
+                        levels: refine::levels_for_ribs(edge, feature, 1.0),
+                        relief: Some(refine::Relief::Map {
+                            field: field.clone(),
+                            repeat,
+                            depth,
+                            shuffled: u.yarn[1] > 0.5,
+                        }),
                     };
                 }
             }
@@ -871,11 +923,11 @@ impl SceneRenderer {
         // stay with the shader's parallax.
         for ((_, r), piece) in plans.iter_mut().zip(&self.pieces) {
             let _ = piece;
-            if r.ribs.is_some() && r.levels < 3 {
-                r.ribs = None;
+            if r.relief.is_some() && r.levels < 3 {
+                r.relief = None;
             }
         }
-        let displaced: Vec<bool> = plans.iter().map(|(_, r)| r.ribs.is_some()).collect();
+        let displaced: Vec<bool> = plans.iter().map(|(_, r)| r.relief.is_some()).collect();
         let (v, i, ranges) = refine::refine(vertices, indices, &plans);
         (v, i, ranges.into_iter().zip(displaced).collect())
     }
@@ -941,6 +993,11 @@ struct Shell {
     edge_distance: Vec<f32>,
     /// Scratch: how the cloth bends at each vertex (see `bending`).
     bend: Vec<f32>,
+    /// Vertices sewn together (seams, not buttons): their shading is one
+    /// smooth surface across the seam rather than two creased ones.
+    sewn: Vec<(u32, u32)>,
+    /// Scratch: normals smoothed across the seams.
+    normals: Vec<Vec3>,
 }
 
 impl Shell {
@@ -948,8 +1005,19 @@ impl Shell {
         let mut shell = Shell {
             neighbours: vec![Vec::new(); mesh.positions.len()],
             edge_distance: vec![f32::INFINITY; mesh.positions.len()],
+            sewn: mesh
+                .stitches
+                .iter()
+                .filter(|s| s.seam != topology_sync::Stitch::FASTENING && s.a != s.b)
+                .map(|s| (s.a, s.b))
+                .collect(),
             ..Shell::default()
         };
+        let mut is_sewn = vec![false; mesh.positions.len()];
+        for &(a, b) in &shell.sewn {
+            is_sewn[a as usize] = true;
+            is_sewn[b as usize] = true;
+        }
         let mut base = 0u32;
         for span in &mesh.pieces {
             let triangles: Vec<[u32; 3]> = mesh.indices
@@ -973,6 +1041,13 @@ impl Shell {
                 .map(|e| [e.0, e.1, e.2])
                 .collect();
             edges.sort_unstable();
+            // Edges sewn to another piece get no cut edge of their own:
+            // the seam closes them, and drawn they outline every seam.
+            let rims: Vec<[u32; 3]> = edges
+                .iter()
+                .copied()
+                .filter(|&[a, b, _]| !(is_sewn[a as usize] && is_sewn[b as usize]))
+                .collect();
             for &(a, b) in uses.keys() {
                 shell.neighbours[a as usize].push(b);
                 shell.neighbours[b as usize].push(a);
@@ -1015,7 +1090,7 @@ impl Shell {
             }
             // Rim: a quad of its own four vertices per free edge.
             let rim = base + 2 * count;
-            for (k, _) in edges.iter().enumerate() {
+            for (k, _) in rims.iter().enumerate() {
                 let q = rim + 4 * k as u32;
                 shell.indices.extend([q, q + 1, q + 2, q + 1, q + 3, q + 2]);
             }
@@ -1024,7 +1099,7 @@ impl Shell {
                 .push((span.piece, first..shell.indices.len() as u32));
             shell
                 .layout
-                .push((span.piece, span.vertices.clone(), edges, base));
+                .push((span.piece, span.vertices.clone(), rims, base));
             base = rim + 4 * shell.layout.last().map_or(0, |l| l.2.len() as u32);
         }
         shell
@@ -1069,10 +1144,23 @@ impl Shell {
     ) {
         out.clear();
         self.bending(mesh);
-        let (bend, edge_distance) = (&self.bend, &self.edge_distance);
+        // One surface across every seam: sewn vertices share their normal.
+        self.normals.clear();
+        self.normals.extend_from_slice(&mesh.normals);
+        for &(a, b) in &self.sewn {
+            let (a, b) = (a as usize, b as usize);
+            if a < self.normals.len() && b < self.normals.len() {
+                self.normals[a] += mesh.normals[b];
+                self.normals[b] += mesh.normals[a];
+            }
+        }
+        for n in &mut self.normals {
+            *n = n.normalize_or(Vec3::Y);
+        }
+        let (bend, edge_distance, normals) = (&self.bend, &self.edge_distance, &self.normals);
         let vertex = |i: usize, offset: f32, normal: Vec3| {
             let mut v = MeshVertex::new(
-                mesh.positions[i] + mesh.normals[i] * offset,
+                mesh.positions[i] + normals[i] * offset,
                 normal,
                 mesh.uvs[i],
             )
@@ -1086,8 +1174,8 @@ impl Shell {
         for (piece, range, edges, _) in &self.layout {
             let half = 0.5 * thickness(*piece);
             let range = range.start as usize..range.end as usize;
-            out.extend(range.clone().map(|i| vertex(i, half, mesh.normals[i])));
-            out.extend(range.clone().map(|i| vertex(i, -half, -mesh.normals[i])));
+            out.extend(range.clone().map(|i| vertex(i, half, normals[i])));
+            out.extend(range.clone().map(|i| vertex(i, -half, -normals[i])));
             for &[a, b, c] in edges {
                 let (a, b, c) = (a as usize, b as usize, c as usize);
                 // Facing out of the piece, across its edge.

@@ -34,6 +34,13 @@
 //!   for inspecting a particular early animation pose.
 //! * `--fabric denim|corduroy` — apply a close-up material preset for visual
 //!   shader checks.
+//!
+//! `CLO360_OVERLAP_DEBUG=1` prints, for every buttoned pair of pieces, how
+//! many vertices of the under piece ended up in front of the top piece
+//! (fronts passed through each other); `CLO360_OVERLAP_WHERE=1` lists them.
+//! `CLO360_DRIFT_DEBUG=1` prints every 50 frames where each piece's centre
+//! and the button row are (a garment creeping round the body);
+//! `CLO360_BUTTON_DEBUG=1` adds each button and the hole end it rests in.
 
 use std::path::PathBuf;
 
@@ -105,6 +112,8 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
             Some("add-point") => CanvasTool::AddPoint,
             Some("curve") => CanvasTool::Curve,
             Some("sew") => CanvasTool::Sew,
+            Some("stitch") => CanvasTool::Stitch,
+            Some("flatfell") => CanvasTool::FlatFell,
             _ => CanvasTool::Select,
         },
         piece: value("--piece").and_then(|p| p.parse().ok()),
@@ -112,10 +121,10 @@ fn options(args: &[String]) -> anyhow::Result<Options> {
         commands: [
             value("--open").map(|path| UiCommand::OpenProject(path.into())),
             value("--new").map(|name| {
-                UiCommand::NewProject(if name == "waistcoat" {
-                    app_ui::Sample::Waistcoat
-                } else {
-                    app_ui::Sample::SleevelessTop
+                UiCommand::NewProject(match name.as_str() {
+                    "waistcoat" => app_ui::Sample::Waistcoat,
+                    "jeans" => app_ui::Sample::Jeans,
+                    _ => app_ui::Sample::SleevelessTop,
                 })
             }),
         ]
@@ -337,8 +346,9 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut play_started = false;
     let mut shot_index = 0;
     let (mut jitter, mut jitter_previous): (Vec<f32>, Option<Vec<glam::Vec3>>) = (Vec::new(), None);
+    let mut jitter_where = String::new();
     let mut ready_since: Option<u32> = None;
-    let mut fabric_applied = options.fabric.is_none() && !args.iter().any(|a| a == "--weave" || a == "--preset");
+    let mut fabric_applied = options.fabric.is_none() && !args.iter().any(|a| a == "--weave" || a == "--preset" || a == "--maps" || a == "--stitch");
     loop {
         // Once the import has run (and its piece names are in), make it the
         // project, then set up the requested state.
@@ -443,6 +453,41 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 }
                 session.document.touch();
             }
+            // `--maps PATH`: every fabric from image maps (a U3M, a zip, a
+            // folder or one map of a set).
+            if let Some(path) = args
+                .iter()
+                .position(|a| a == "--maps")
+                .and_then(|at| args.get(at + 1))
+            {
+                let maps = io_cad::fabric_maps::open(std::path::Path::new(path))?;
+                println!("maps: {:?}, swatch {:?} mm", maps.color, maps.size_mm);
+                let ids: Vec<_> = session.document.fabrics().iter().map(|f| f.id).collect();
+                for id in ids {
+                    if let Some(fabric) = session.document.fabric_mut(id) {
+                        fabric.maps = Some(maps.clone());
+                    }
+                }
+                session.document.touch();
+            }
+            // `--stitch KIND`: every seam sewn with this stitch, white thread.
+            if let Some(name) = args
+                .iter()
+                .position(|a| a == "--stitch")
+                .and_then(|at| args.get(at + 1))
+            {
+                let kind = cad_core::StitchKind::ALL
+                    .into_iter()
+                    .find(|k| k.label().replace([' ', '-'], "").eq_ignore_ascii_case(&name.replace([' ', '-'], "")))
+                    .with_context(|| format!("no stitch {name:?}"))?;
+                let ids: Vec<_> = session.document.seams().iter().map(|s| s.id).collect();
+                for id in ids {
+                    session.document.set_seam_stitching(
+                        id,
+                        cad_core::Stitching::of(kind).with_thread([0.8, 0.78, 0.72]),
+                    );
+                }
+            }
             // `--weave NAME`: the fabric woven from a draft of the library.
             if let Some(name) = args
                 .iter()
@@ -533,6 +578,25 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                     .map(|(a, b): (&glam::Vec3, &glam::Vec3)| a.distance(*b))
                     .fold(0.0f32, f32::max);
                 jitter.push(moved);
+                // Which piece still moves most, and where.
+                if let Some((i, d)) = positions
+                    .iter()
+                    .zip(previous)
+                    .map(|(a, b): (&glam::Vec3, &glam::Vec3)| a.distance(*b))
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
+                {
+                    let mesh = session.topology.mesh();
+                    let piece = mesh
+                        .pieces
+                        .iter()
+                        .find(|s| s.vertices.contains(&(i as u32)))
+                        .and_then(|s| session.document.piece(s.piece))
+                        .map_or("?".to_owned(), |p| p.name.clone());
+                    if d * 1000.0 > 0.5 {
+                        jitter_where = format!("{piece} at {:.2?}, {:.2} mm", positions[i].to_array(), d * 1000.0);
+                    }
+                }
             }
             jitter_previous = Some(positions);
         }
@@ -645,6 +709,9 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 None => return Ok(()),
             }
         }
+        if std::env::var_os("CLO360_DRIFT_DEBUG").is_some() && frame % 50 == 0 {
+            drift_report(&session);
+        }
         let waiting_for_garment = (render_window
             && (!render_pressed || session.editor.render.rendering()))
             || (simulate_garment && garment_stage < 2)
@@ -678,7 +745,11 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             }
         );
     }
+    if std::env::var_os("CLO360_OVERLAP_DEBUG").is_some() {
+        overlap_report(&session);
+    }
     if !jitter.is_empty() {
+        println!("moving most: {jitter_where}");
         let tail = &jitter[jitter.len().saturating_sub(30)..];
         println!(
             "cloth movement per frame over the last {} frames: max {:.2} mm, mean {:.2} mm",
@@ -686,6 +757,21 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             tail.iter().fold(0.0f32, |a, &b| a.max(b)) * 1000.0,
             tail.iter().sum::<f32>() / tail.len() as f32 * 1000.0
         );
+    }
+    // `--save-project PATH`: the project as it is now (draped).
+    if let Some(path) = args
+        .iter()
+        .position(|a| a == "--save-project")
+        .and_then(|at| args.get(at + 1))
+    {
+        session.update(
+            app_ui::UiOutput {
+                commands: vec![UiCommand::SaveProject(path.into())],
+                ..Default::default()
+            },
+            0.0,
+        );
+        println!("project: {:?}", session.editor.project_status);
     }
     // `--render`: the studio render of the 3D view instead of the window.
     if args.iter().any(|a| a == "--render") {
@@ -770,4 +856,131 @@ fn save(
     }
     std::fs::write(path, bytes)?;
     Ok(())
+}
+
+/// For every buttoned pair of pieces: how many vertices of the piece with
+/// the buttons (the under-front) lie in front of the piece with the
+/// buttonholes (the top front), i.e. have passed through it.
+fn overlap_report(session: &Session) {
+    let mesh = session.topology.mesh();
+    let n = mesh.positions.len().max(1) as f32;
+    let centre = mesh.positions.iter().fold(Vec3::ZERO, |a, &p| a + p) / n;
+    let mut pairs: Vec<(cad_core::PieceId, cad_core::PieceId)> =
+        session.document.fastenings().map(|(b, _, h, _)| (b, h)).collect();
+    pairs.sort();
+    pairs.dedup();
+    for (under, top) in pairs {
+        let (Some(us), Some(ts)) = (mesh.span(under), mesh.span(top)) else { continue };
+        let triangles: Vec<[Vec3; 3]> = ts
+            .indices
+            .clone()
+            .step_by(3)
+            .map(|i| {
+                let i = i as usize;
+                [0, 1, 2].map(|k| mesh.positions[mesh.indices[i + k] as usize])
+            })
+            .collect();
+        let (mut near, mut through, mut worst) = (0, 0, 0.0f32);
+        for v in us.vertices.clone() {
+            let p = mesh.positions[v as usize];
+            let mut best = (f32::MAX, 0.0f32);
+            for t in &triangles {
+                let q = closest_on_triangle(p, t);
+                let d = p.distance(q);
+                if d < best.0 {
+                    let mut normal = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+                    let out = (q - centre) * Vec3::new(1.0, 0.0, 1.0);
+                    if normal.dot(out) < 0.0 {
+                        normal = -normal;
+                    }
+                    best = (d, (p - q).dot(normal));
+                }
+            }
+            if best.0 < 0.03 {
+                near += 1;
+                if best.1 > 0.001 {
+                    through += 1;
+                    if std::env::var_os("CLO360_OVERLAP_WHERE").is_some() {
+                        println!(
+                            "  v{v} at {:.3?} (pattern {:.0?} mm): {:.1} mm in front, {:.1} mm away",
+                            p,
+                            mesh.pattern_positions[v as usize],
+                            best.1 * 1000.0,
+                            best.0 * 1000.0
+                        );
+                    }
+                    worst = worst.max(best.1);
+                }
+            }
+        }
+        println!(
+            "overlap {:?} under {:?}: {near} vertices within 3 cm, {through} in front of it (worst {:.1} mm)",
+            under,
+            top,
+            worst * 1000.0
+        );
+    }
+}
+
+fn closest_on_triangle(p: Vec3, [a, b, c]: &[Vec3; 3]) -> Vec3 {
+    let (a, b, c) = (*a, *b, *c);
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    if d1 <= 0.0 && d2 <= 0.0 { return a; }
+    let bp = p - b;
+    let d3 = ab.dot(bp);
+    let d4 = ac.dot(bp);
+    if d3 >= 0.0 && d4 <= d3 { return b; }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 { return a + ab * (d1 / (d1 - d3)); }
+    let cp = p - c;
+    let d5 = ab.dot(cp);
+    let d6 = ac.dot(cp);
+    if d6 >= 0.0 && d5 <= d6 { return c; }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 { return a + ac * (d2 / (d2 - d6)); }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
+}
+
+/// Where each piece's centre and each button are, sideways (x) and to the
+/// front (z), in mm: shows a garment creeping round the body.
+fn drift_report(session: &Session) {
+    let mesh = session.topology.mesh();
+    let mut line = format!("step {:5}:", session.editor.timeline.frame);
+    for span in &mesh.pieces {
+        let points = &mesh.positions[span.vertices.start as usize..span.vertices.end as usize];
+        let c = points.iter().fold(Vec3::ZERO, |a, &p| a + p) / points.len().max(1) as f32;
+        let name = session.document.piece(span.piece).map_or("?", |p| p.name.as_str());
+        line += &format!("  {name} x {:+.0} z {:+.0}", c.x * 1000.0, c.z * 1000.0);
+    }
+    // The button row: the under-piece vertices nearest each button.
+    let mut xs = Vec::new();
+    for piece in session.document.pieces() {
+        for button in &piece.buttons {
+            if let Some(v) = mesh.nearest_vertex(piece.id, button.position) {
+                xs.push(mesh.positions[v as usize].x * 1000.0);
+            }
+        }
+    }
+    if std::env::var_os("CLO360_BUTTON_DEBUG").is_some() {
+        for (bp, button, hp, hole) in session.document.fastenings() {
+            let Some(outline) = session.document.piece(hp).map(|p| &p.outline) else { continue };
+            if let (Some(a), Some(b)) = (mesh.nearest_vertex(bp, button.position), mesh.nearest_vertex(hp, hole.button_end(outline))) {
+                let (pa, pb) = (mesh.positions[a as usize], mesh.positions[b as usize]);
+                println!("  button at {:+.0?} mm, hole end at {:+.0?} mm, {:.1} mm apart", pa * 1000.0, pb * 1000.0, pa.distance(pb) * 1000.0);
+            }
+        }
+    }
+    if !xs.is_empty() {
+        line += &format!("  buttons x {:+.0}..{:+.0}", xs.iter().cloned().fold(f32::MAX, f32::min), xs.iter().cloned().fold(f32::MIN, f32::max));
+    }
+    println!("{line}");
 }

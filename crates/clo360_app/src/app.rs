@@ -60,6 +60,7 @@ impl ApplicationHandler for App {
         // `EventLoopProxy`; everything below `Running::new` is target-agnostic.
         match pollster::block_on(Running::new(event_loop)) {
             Ok(mut running) => {
+                running.session.refresh_characters();
                 if let Some(path) = self.avatar.take() {
                     let import = app_ui::UiOutput {
                         commands: vec![app_ui::UiCommand::ImportAvatar(path)],
@@ -676,6 +677,7 @@ pub(crate) fn draw_viewports(
         if let Some((min, max)) = session.chair() {
             gfx_render::scene3d::props::chair(&mut props, min, max);
         }
+        session.stitch_props(&mut props);
         scene.set_props(gpu, &props);
         let session = &*session;
         session.load_weaves(gpu, scene);

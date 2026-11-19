@@ -14,6 +14,7 @@ pub mod document;
 pub mod edit;
 pub mod fabric_library;
 pub mod fit;
+pub mod jeans;
 pub mod geometry;
 pub mod ids;
 pub mod lines;
@@ -21,6 +22,7 @@ pub mod material;
 pub mod pattern;
 pub mod transform;
 pub mod uv;
+pub mod stitch;
 pub mod weave;
 
 pub use document::{PatternDocument, Seam};
@@ -28,11 +30,12 @@ pub use edit::{DocumentChange, DocumentSnapshot, EditCommand, EditError, History
 pub use geometry::{CubicBezier, Curve, CurveSegment, Line, QuadBezier};
 pub use ids::{EdgeRef, FabricId, HandleKind, HandleRef, PieceId, SeamId};
 pub use lines::EdgeSpan;
-pub use material::{Fabric, FabricPattern, FabricPhysics};
+pub use material::{Fabric, FabricMaps, FabricPattern, FabricPhysics};
+pub use stitch::{EdgeStitching, StitchKind, StitchSide, Stitching, Zipper, ZipperTeeth};
 pub use weave::{Weave, WeaveTexture, Yarn};
 pub use pattern::{
     Arrangement, BodyPart, Button, ButtonFinish, ButtonStyle, Buttonhole, ButtonholeRef, ControlPoint,
-    FlatOutline, Grainline, Notch, NotchKind, Outline, PatternPiece, Placement, PointKind,
+    FlatOutline, FoldLine, Grainline, Notch, NotchKind, Outline, PatternPiece, Placement, PointKind,
     SeamAllowance, Segment,
 };
 pub use transform::PieceTransform;

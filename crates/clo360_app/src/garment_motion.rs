@@ -78,8 +78,13 @@ pub struct GarmentMotion {
     /// Garment vertex positions over one loop of the motion, evenly spaced
     /// (about `FPS` per second).
     pub frames: Vec<Vec<Vec3>>,
-    /// How far the fabric was stretched beyond its cut length: the worst
-    /// frame's 99th percentile, as a fraction.
+    /// The time the frames cover, seconds: the whole motion, unless only
+    /// its beginning was simulated.
+    pub seconds: f32,
+    /// How much further the fabric was stretched than it was as draped:
+    /// the worst frame's 99th percentile less the draped garment's, as a
+    /// fraction of the cut length. (A garment cut too tight for its wearer
+    /// is stretched before it moves at all.)
     pub stretch: f32,
 }
 
@@ -97,7 +102,8 @@ impl GarmentMotion {
         let duration = self.motion.duration();
         // Between the last frame and the next loop's first too: the loop
         // is `n` frames long, not `n - 1`.
-        let at = (time.rem_euclid(duration) / duration * n as f32).min(n as f32 - 1e-3);
+        let at = (time.rem_euclid(duration) / self.seconds.max(1e-6) * n as f32)
+            .min(n as f32 - 1e-3);
         let k = at.floor() as usize;
         let (a, b, f) = (&self.frames[k], &self.frames[(k + 1) % n], at.fract());
         // Past the last frame the loop starts over, a walk a stride on.
@@ -209,12 +215,45 @@ fn run(job: Job, sender: &Sender<Message>) {
     let mut body = lead_in(0.0);
     mesh.recompute_normals();
     let (worst, typical) = stretch(&mesh, std::slice::from_ref(&mesh.positions));
+    let draped = typical;
     log::info!(
         "garment as draped: edges stretched at most {:.1} %, 99 % of them within {:.1} %",
         worst * 100.0,
         typical * 100.0
     );
 
+    if std::env::var_os("CLO360_STRETCH_DEBUG").is_some() {
+        for span in &mesh.pieces {
+            let name = document.piece(span.piece).map(|p| p.name.clone()).unwrap_or_default();
+            let mut strains: Vec<f32> = mesh
+                .indices
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .filter(|t| span.vertices.contains(&t[0]))
+                .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+                .filter_map(|(a, b)| {
+                    let r = mesh.pattern_positions[a as usize]
+                        .distance(mesh.pattern_positions[b as usize])
+                        * 1e-3;
+                    (r > 1e-5).then(|| {
+                        mesh.positions[a as usize].distance(mesh.positions[b as usize]) / r - 1.0
+                    })
+                })
+                .collect();
+            strains.sort_unstable_by(f32::total_cmp);
+            if !strains.is_empty() {
+                eprintln!(
+                    "  piece {name}: {} vertices, median {:.1} %, p90 {:.1} %, p99 {:.1} %, max {:.1} %",
+                    span.vertices.len(),
+                    strains[strains.len() / 2] * 100.0,
+                    strains[strains.len() * 9 / 10] * 100.0,
+                    strains[strains.len() * 99 / 100] * 100.0,
+                    strains[strains.len() - 1] * 100.0
+                );
+            }
+        }
+    }
     let region = |mesh: &GarmentMesh| {
         let (low, high) = mesh
             .positions
@@ -279,8 +318,22 @@ fn run(job: Job, sender: &Sender<Message>) {
     };
     // Where the time goes: posing, collision field, collision mesh, solver.
     let mut timing = [std::time::Duration::ZERO; 4];
+    // CLO360_STRETCH_DEBUG: the waistband's vertices, to tell how much it
+    // moves on its own.
+    let band: Vec<usize> = mesh
+        .pieces
+        .iter()
+        .filter(|span| {
+            document
+                .piece(span.piece)
+                .is_some_and(|p| p.name.to_lowercase().contains("band"))
+        })
+        .flat_map(|span| span.vertices.start as usize..span.vertices.end as usize)
+        .collect();
     for frame in 0..total {
         let clock = std::time::Instant::now();
+        let frame_start = mesh.positions.clone();
+        let mut carried = Vec3::ZERO;
         // A body part that moves far in one frame (a leg swinging out) would
         // land deep inside cloth it swept through, and push it out on the
         // wrong side. Such frames are split so that nothing near the garment
@@ -334,6 +387,7 @@ fn run(job: Job, sender: &Sender<Message>) {
                 // The garment travels with its wearer: only the body's
                 // motion against itself is left to the collision.
                 let travelled = avatar::travelled(&body, &then, region(&mesh));
+                carried += travelled;
                 solver.travel(&mut mesh, travelled, step);
                 let velocities: Vec<Vec3> = body
                     .positions
@@ -377,6 +431,24 @@ fn run(job: Job, sender: &Sender<Message>) {
         if std::env::var_os("CLO360_STRETCH_DEBUG").is_some() {
             let (worst, typical) = stretch(&mesh, std::slice::from_ref(&mesh.positions));
             let stats = solver.stats();
+            // How far the cloth moved this frame, apart from being carried
+            // along with its wearer, mm.
+            let moved = |indices: &mut dyn Iterator<Item = usize>| {
+                let mut m: Vec<f32> = indices
+                    .map(|i| (mesh.positions[i] - frame_start[i] - carried).length() * 1000.0)
+                    .collect();
+                m.sort_unstable_by(f32::total_cmp);
+                if m.is_empty() {
+                    return [0.0; 3];
+                }
+                [m[m.len() / 2], m[m.len() * 95 / 100], m[m.len() - 1]]
+            };
+            let all = moved(&mut (0..mesh.positions.len()));
+            let waist = moved(&mut band.iter().copied());
+            eprintln!(
+                "  moved mm: all p50 {:.2} p95 {:.2} max {:.1}; band p50 {:.2} p95 {:.2} max {:.1}",
+                all[0], all[1], all[2], waist[0], waist[1], waist[2]
+            );
             eprintln!(
                 "step {frame:3} ({pieces} parts): worst {:6.1} %, p99 {:5.1} %, body stops {}, cloth contacts {}, crossings {}",
                 worst * 100.0,
@@ -384,6 +456,24 @@ fn run(job: Job, sender: &Sender<Message>) {
                 stats.body_stops,
                 stats.cloth_contacts,
                 stats.cloth_crossings
+            );
+            let g = solver.global_stats();
+            let depths: Vec<f32> = mesh
+                .positions
+                .iter()
+                .filter_map(|&p| collider.sides(p.into(), 0.08)[0].map(|side| side.distance))
+                .collect();
+            eprintln!(
+                "  global: contacts {}, pinched {}, factorisations {}, halvings {}, last step {:.2} mm; inside skin: {} (> 5 mm: {}), deepest {:.1} mm, near skin {}",
+                g.contacts,
+                g.pinched,
+                g.factorisations,
+                g.halvings,
+                g.last_step * 1000.0,
+                depths.iter().filter(|d| **d < 0.0).count(),
+                depths.iter().filter(|d| **d < -0.005).count(),
+                depths.iter().copied().fold(0.0f32, f32::min) * -1000.0,
+                depths.len()
             );
             // Where the worst edge is.
             let p = &mesh.positions;
@@ -491,7 +581,8 @@ fn run(job: Job, sender: &Sender<Message>) {
         shape_version,
         document_revision: document.revision(),
         frames,
-        stretch: typical,
+        seconds: count as f32 * frame_time,
+        stretch: (typical - draped).max(0.0),
     }));
 }
 

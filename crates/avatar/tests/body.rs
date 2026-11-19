@@ -486,3 +486,37 @@ fn centres_of_rotation_do_not_tear_the_skin() {
         "an edge is stretched {worst:.1} times as far as linear blending stretches it"
     );
 }
+
+/// The buttonhole front of the sample waistcoat is on layer 2, the rest on
+/// layer 1. In one sewn garment that only means "lapped on top": it must
+/// start exactly as if it were on layer 1 (a whole layer further out, the
+/// closure started turned round the body and the vest draped lopsided),
+/// with its holes over the buttons.
+#[test]
+fn a_buttonhole_front_on_a_higher_layer_starts_lapped_not_a_layer_out() {
+    let model = model();
+    let body = model.build(&BodyParams::female());
+    let measurements = measure(&model, &body);
+    let mut layered = cad_core::PatternDocument::demo_waistcoat();
+    let mut flat = layered.clone();
+    let ids: Vec<_> = flat.pieces().iter().map(|p| p.id).collect();
+    for id in ids {
+        flat.piece_mut(id).unwrap().layer = 1;
+    }
+    assert!(layered.pieces().iter().any(|p| p.layer == 2));
+    avatar::arrange_around(&mut layered, &body, &measurements);
+    avatar::arrange_around(&mut flat, &body, &measurements);
+    for (a, b) in layered.pieces().iter().zip(flat.pieces()) {
+        assert_eq!(a.arrangement, b.arrangement, "{} starts elsewhere", a.name);
+    }
+    for (button_piece, button, hole_piece, hole) in layered.fastenings() {
+        let b = layered.piece(button_piece).unwrap().arrangement.place(button.position);
+        let holed = layered.piece(hole_piece).unwrap();
+        let h = holed.arrangement.place(hole.button_end(&holed.outline));
+        // Same direction round the body, the hole a little further out.
+        let turn = (b.x.atan2(b.z) - h.x.atan2(h.z)).abs().to_degrees();
+        assert!(turn < 0.5, "hole {turn:.1}° round from its button");
+        let radius = |p: Vec3| Vec2::new(p.x, p.z).length();
+        assert!(radius(h) > radius(b), "the hole side starts outside the buttons");
+    }
+}

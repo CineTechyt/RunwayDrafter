@@ -189,6 +189,8 @@ pub struct Limbs {
     /// Upper arm and forearm of the left arm (+x), then the right.
     pub arms: [Option<(usize, usize)>; 2],
     pub neck: Option<usize>,
+    /// Thigh and shin of the left leg (+x), then the right.
+    pub legs: [Option<(usize, usize)>; 2],
 }
 
 /// One bone of the skeleton. Its joints are defined by marker vertices of
@@ -225,6 +227,13 @@ impl BodyMesh {
     pub fn arm_axis(&self, left: bool) -> Option<(Vec3, Vec3)> {
         let (upper, lower) = self.limbs.arms[usize::from(!left)]?;
         Some((self.joints.get(upper)?.head, self.joints.get(lower)?.head))
+    }
+
+    /// The hip joint, the knee and the ankle of a leg (`left`: +x).
+    pub fn leg_axis(&self, left: bool) -> Option<(Vec3, Vec3, Vec3)> {
+        let (upper, lower) = self.limbs.legs[usize::from(!left)]?;
+        let (thigh, shin) = (self.joints.get(upper)?, self.joints.get(lower)?);
+        Some((thigh.head, shin.head, shin.tail))
     }
 
     /// The base of the neck: the head of the neck's first bone.
@@ -577,9 +586,16 @@ impl BodyModel {
                 self.bone(&format!("lowerarm01.{side}"))?,
             ))
         };
+        let leg = |side: &str| {
+            Some((
+                self.bone(&format!("upperleg01.{side}"))?,
+                self.bone(&format!("lowerleg01.{side}"))?,
+            ))
+        };
         let limbs = Limbs {
             arms: [arm("L"), arm("R")],
             neck: self.bone("neck01"),
+            legs: [leg("L"), leg("R")],
         };
         let mut mesh = BodyMesh {
             joints,

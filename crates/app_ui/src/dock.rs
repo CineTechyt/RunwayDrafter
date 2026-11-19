@@ -44,6 +44,7 @@ impl Panel for CanvasPanel {
     }
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
         canvas_toolbar(ui, cx);
+        stitch_options(ui, cx.editor);
         // What the tool expects next is shown inside the view, not in the
         // toolbar.
         let hint = if cx.editor.canvas_hint.is_empty() {
@@ -59,6 +60,44 @@ impl Panel for CanvasPanel {
     fn fills_tab(&self) -> bool {
         true
     }
+}
+
+/// Under the toolbar while a stitching tool is active: the stitch chart to
+/// choose from and the machine's settings.
+fn stitch_options(ui: &mut egui::Ui, editor: &mut EditorState) {
+    use crate::panels::stitch_editor;
+    use crate::state::CanvasTool;
+    let tool = editor.canvas_tool;
+    if !matches!(tool, CanvasTool::Stitch | CanvasTool::FlatFell | CanvasTool::Zipper) {
+        return;
+    }
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .fill(ui.visuals().faint_bg_color)
+        .show(ui, |ui| {
+            if tool == CanvasTool::Zipper {
+                ui.strong("Zipper");
+                stitch_editor::zipper_settings(ui, "zipper tool", &mut editor.zipper);
+            } else if tool == CanvasTool::Stitch {
+                egui::CollapsingHeader::new("Stitch")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        stitch_editor::palette(ui, &mut editor.sew_stitching);
+                        ui.add_space(4.0);
+                        stitch_editor::show(ui, "stitch tool", &mut editor.sew_stitching, None);
+                    });
+            } else {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
+                    stitch_editor::picture(ui.painter(), rect, &editor.felled_stitching.0);
+                    ui.vertical(|ui| {
+                        ui.strong("Flat-felled seam");
+                        ui.weak("Allowances folded into each other: two rows outside, nothing raw inside.");
+                    });
+                });
+                stitch_editor::show(ui, "felled tool", &mut editor.felled_stitching.0, None);
+            }
+        });
 }
 
 /// The 2D view's toolbar: tools on the left, operations on the selected
@@ -80,6 +119,9 @@ fn canvas_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
                     (CanvasTool::AddPoint, Icon::AddPoint),
                     (CanvasTool::Curve, Icon::Curve),
                     (CanvasTool::Sew, Icon::Sew),
+                    (CanvasTool::FlatFell, Icon::FlatFell),
+                    (CanvasTool::Zipper, Icon::Zipper),
+                    (CanvasTool::Stitch, Icon::Stitch),
                 ] {
                     if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label())
                         .clicked()
@@ -203,7 +245,9 @@ impl Panel for ScenePanel {
         "3D Garment"
     }
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
-        surface_toolbar(ui, cx.editor);
+        if surface_toolbar(ui, cx.editor) {
+            cx.output.commands.push(UiCommand::ResetDrape);
+        }
         let hint =
             "Drag to orbit · middle/right-drag to pan · scroll to zoom · click a piece to select";
         cx.output.scene = Some(viewport::show(ui, cx.textures.scene, hint));
@@ -232,13 +276,34 @@ fn heat_color(t: f32) -> egui::Color32 {
 
 /// The row above the 3D view: what the garment's surface shows, the range
 /// of the heatmap and its legend.
-fn surface_toolbar(ui: &mut egui::Ui, editor: &mut EditorState) {
-    let render = &mut editor.render;
-    let view = &mut editor.view;
+fn surface_toolbar(ui: &mut egui::Ui, editor: &mut EditorState) -> bool {
+    let mut reset = false;
+    let EditorState { render, view, timeline, .. } = editor;
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(8, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
+                let playing = timeline.playing;
+                if ui
+                    .button(if playing { "⏸ Pause" } else { "▶ Drape" })
+                    .on_hover_text(
+                        "Sew and drape the garment (Space). It stops by itself once the \
+                         cloth has settled, and starts again when you pull at the cloth or \
+                         change the avatar.",
+                    )
+                    .clicked()
+                {
+                    timeline.toggle();
+                }
+                if ui
+                    .button("⏮ Reset")
+                    .on_hover_text("Take the garment off: the pieces go back around the avatar, unsewn")
+                    .clicked()
+                {
+                    timeline.stop();
+                    reset = true;
+                }
+                ui.separator();
                 if ui
                     .button("Render")
                     .on_hover_text(
@@ -313,6 +378,7 @@ fn surface_toolbar(ui: &mut egui::Ui, editor: &mut EditorState) {
                 ui.weak(high);
             });
         });
+    reset
 }
 
 #[derive(Default)]
@@ -411,8 +477,9 @@ impl AppUi {
             0.76,
             vec![Tab::PatternProperties, Tab::Materials, Tab::Simulation],
         );
-        let [views, _timeline] = surface.split_below(work, 0.86, vec![Tab::Timeline]);
-        surface.split_right(views, 0.5, vec![Tab::Viewport3d]);
+        // No timeline: draping is started from the 3D view's bar and stops
+        // by itself when the cloth has settled.
+        surface.split_right(work, 0.5, vec![Tab::Viewport3d]);
         dock
     }
 
@@ -519,6 +586,9 @@ impl AppUi {
                     (Key::A, CanvasTool::AddPoint),
                     (Key::C, CanvasTool::Curve),
                     (Key::S, CanvasTool::Sew),
+                    (Key::T, CanvasTool::Stitch),
+                    (Key::F, CanvasTool::FlatFell),
+                    (Key::Z, CanvasTool::Zipper),
                     (Key::L, CanvasTool::SketchLine),
                     (Key::B, CanvasTool::SketchSpline),
                     (Key::U, CanvasTool::Button),

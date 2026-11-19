@@ -99,6 +99,16 @@ pub fn build(
         annotations(batch, piece, overlay, px);
         outline(batch, doc, piece, selected, px);
     }
+    // Seams' topstitching, on the piece it lies on.
+    for seam in doc.seams() {
+        let (piece, span) = match seam.stitching.side {
+            cad_core::StitchSide::A => (seam.a.piece, seam.a_span()),
+            cad_core::StitchSide::B => (seam.b.piece, seam.b_span()),
+        };
+        if let Some(piece) = doc.piece(piece) {
+            stitch_marks(batch, piece, span, &seam.stitching, px);
+        }
+    }
     seam_connectors(batch, doc, overlay, px);
     for highlight in &overlay.highlights {
         highlight_line(batch, doc, highlight, px);
@@ -326,7 +336,63 @@ fn annotations(batch: &mut CanvasBatch, piece: &PatternPiece, overlay: &CanvasOv
         }
     }
 
+    // Fold lines: dash-dot, as on paper patterns.
+    let fold = srgba(140, 200, 255, 0.9);
+    for line in &piece.folds {
+        batch.dashed_polyline(&[line.a, line.b], false, 1.5 * px, 10.0 * px, 4.0 * px, fold);
+    }
+
+    // Topstitching: fine dashes along the rows, in the thread's colour.
+    for edge in &piece.edge_stitches {
+        stitch_marks(batch, piece, edge.span, &edge.stitching, px);
+    }
+
     buttons(batch, piece, px);
+}
+
+/// Where a stitch's rows run, drawn on the piece.
+fn stitch_marks(
+    batch: &mut CanvasBatch,
+    piece: &PatternPiece,
+    span: cad_core::EdgeSpan,
+    stitching: &cad_core::Stitching,
+    px: f32,
+) {
+    use cad_core::Curve;
+    if !stitching.visible() {
+        return;
+    }
+    let edges = piece.outline.edge_count();
+    let mut points: Vec<glam::Vec2> = Vec::new();
+    for k in 0..span.count.max(1) {
+        let flat = piece.outline.curve((span.first + k) % edges.max(1)).flatten(0.5);
+        let skip = usize::from(!points.is_empty());
+        points.extend(flat.into_iter().skip(skip));
+    }
+    if points.len() < 2 {
+        return;
+    }
+    let sign = if piece.outline.is_ccw() { 1.0 } else { -1.0 };
+    let [r, g, b] = stitching.thread.map(|c| (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
+    let color = srgba(r, g, b, 0.95);
+    let mut rows = vec![stitching.offset.max(0.6)];
+    if matches!(
+        stitching.kind,
+        cad_core::StitchKind::DoubleTopstitch | cad_core::StitchKind::FlatFelled | cad_core::StitchKind::Coverstitch
+    ) {
+        rows.push(stitching.offset + stitching.width);
+    }
+    for offset in rows {
+        let n = points.len();
+        let row: Vec<glam::Vec2> = (0..n)
+            .map(|i| {
+                let a = points[i.saturating_sub(1)];
+                let b = points[(i + 1).min(n - 1)];
+                points[i] + (b - a).perp().normalize_or_zero() * sign * offset
+            })
+            .collect();
+        batch.dashed_polyline(&row, false, 1.2 * px, stitching.length.max(1.0) * 0.7, stitching.length.max(1.0) * 0.3, color);
+    }
 }
 
 /// Buttons in their own colour with their holes and thread, buttonholes

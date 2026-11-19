@@ -610,6 +610,25 @@ pub struct Buttonhole {
 }
 
 impl Buttonhole {
+    /// Where a button done up through this hole sits, on `outline`: the
+    /// closure is pulled apart round the body, so the button rests at the
+    /// end of the hole nearest the garment's edge (a horizontal hole by a
+    /// front edge). A hole with both ends about as far from the edge (a
+    /// vertical hole down a placket) holds it in the middle.
+    pub fn button_end(&self, outline: &Outline) -> Vec2 {
+        let along = Vec2::from_angle(self.angle) * (0.5 * self.length);
+        let ends = [self.position - along, self.position + along];
+        let flat = outline.flatten(0.5);
+        if flat.points.len() < 3 {
+            return self.position;
+        }
+        let [near, far] = ends.map(|end| geometry::distance_to_polygon(end, &flat.points));
+        if (near - far).abs() < 0.25 * self.length {
+            return self.position;
+        }
+        if near < far { ends[0] } else { ends[1] }
+    }
+
     /// A buttonhole sized for a button: the button's diameter plus its
     /// thickness, as tailors cut them.
     pub fn for_button(position: Vec2, button_diameter: f32) -> Self {
@@ -710,6 +729,26 @@ pub struct PatternPiece {
     /// Where the piece goes around the body before sewing.
     #[serde(default)]
     pub placement: Placement,
+    /// Free edges sewn on their own (hems, necklines).
+    #[serde(default)]
+    pub edge_stitches: Vec<crate::stitch::EdgeStitching>,
+    /// Lines the cloth is folded or pressed along (pleats, creases).
+    #[serde(default)]
+    pub folds: Vec<FoldLine>,
+}
+
+/// A line across a piece that the cloth is folded along: a pressed crease
+/// or the edge of a pleat. The cloth is meshed with edges along it and
+/// kept folded there.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FoldLine {
+    /// End points in the piece's pattern space, mm.
+    pub a: Vec2,
+    pub b: Vec2,
+    /// How far the cloth is folded, degrees: 0 flat, ±180 folded flat onto
+    /// itself (a pressed pleat). Positive folds the cloth towards the
+    /// inside (under), negative towards the outside.
+    pub angle: f32,
 }
 
 /// Where a piece is put around the avatar before it is sewn, like the
@@ -725,6 +764,15 @@ pub struct Placement {
     /// (sleeves) or the neck (collars, neck bands).
     #[serde(default)]
     pub part: BodyPart,
+    /// Further out (positive) or in (negative) than it would go, in mm:
+    /// what lies under other pieces (a fly shield, a facing) starts inside.
+    #[serde(default)]
+    pub depth: f32,
+    /// Lies under this piece, which it is sewn to (a fly shield, a facing,
+    /// a pocket bag): it starts right behind it, `depth` mm in (negative),
+    /// where their seam is, instead of somewhere of its own.
+    #[serde(default)]
+    pub under: Option<PieceId>,
 }
 
 /// The part of the body a piece is placed around before sewing.
@@ -736,10 +784,24 @@ pub enum BodyPart {
     LeftArm,
     RightArm,
     Neck,
+    /// Around the waist (waistbands): `angle` says which side it faces.
+    Waist,
+    /// The avatar's left leg (+x), trouser legs: `angle` 0 in front, 180
+    /// behind.
+    LeftLeg,
+    RightLeg,
 }
 
 impl BodyPart {
-    pub const ALL: [Self; 4] = [Self::Torso, Self::LeftArm, Self::RightArm, Self::Neck];
+    pub const ALL: [Self; 7] = [
+        Self::Torso,
+        Self::LeftArm,
+        Self::RightArm,
+        Self::Neck,
+        Self::Waist,
+        Self::LeftLeg,
+        Self::RightLeg,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -747,11 +809,29 @@ impl BodyPart {
             Self::LeftArm => "Left arm",
             Self::RightArm => "Right arm",
             Self::Neck => "Neck",
+            Self::Waist => "Waist",
+            Self::LeftLeg => "Left leg",
+            Self::RightLeg => "Right leg",
         }
     }
 }
 
 impl PatternPiece {
+    /// Moves what lies on the piece (buttons, buttonholes, fold lines)
+    /// along with its outline: every point through `map`.
+    pub fn map_details(&mut self, map: impl Fn(Vec2) -> Vec2) {
+        for button in &mut self.buttons {
+            button.position = map(button.position);
+        }
+        for hole in &mut self.buttonholes {
+            hole.position = map(hole.position);
+        }
+        for fold in &mut self.folds {
+            fold.a = map(fold.a);
+            fold.b = map(fold.b);
+        }
+    }
+
     /// Creates a piece with sensible defaults derived from the outline: a
     /// vertical grainline through the centre and a UV mapping aligned to it.
     pub fn new(id: PieceId, name: impl Into<String>, outline: Outline, fabric: FabricId) -> Self {
@@ -781,6 +861,8 @@ impl PatternPiece {
             },
             layer: Self::default_layer(),
             placement: Placement::default(),
+            edge_stitches: Vec::new(),
+            folds: Vec::new(),
         }
     }
 
@@ -837,6 +919,22 @@ impl PatternPiece {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_button_rests_at_the_end_of_a_horizontal_hole_by_the_edge() {
+        // A front 200 mm wide with its front edge at x = 200.
+        let front = Outline::polygon([
+            Vec2::new(0.0, 0.0),
+            Vec2::new(200.0, 0.0),
+            Vec2::new(200.0, 400.0),
+            Vec2::new(0.0, 400.0),
+        ]);
+        let hole = Buttonhole { position: Vec2::new(180.0, 200.0), length: 20.0, angle: 0.0 };
+        assert!(hole.button_end(&front).abs_diff_eq(Vec2::new(190.0, 200.0), 1e-3));
+        // Down a placket both ends are as far from the edge: the middle.
+        let vertical = Buttonhole { angle: std::f32::consts::FRAC_PI_2, ..hole };
+        assert!(vertical.button_end(&front).abs_diff_eq(hole.position, 1e-3));
+    }
 
     fn rounded() -> Outline {
         let mut o = Outline::polygon([

@@ -49,6 +49,42 @@ const NEAR_THICKNESSES: f32 = 5.0;
 /// … but never further than this fraction of the mean edge length, or a
 /// vertex would be in "contact" with its neighbours in the mesh.
 const MAX_NEAR_PER_EDGE: f32 = 0.6;
+/// Cloth of the same piece this close along it, in mean edge lengths, is
+/// not tested against: to lie on itself it would have to crease tighter
+/// than the mesh can. Tested, cloth bunched at an ankle counts as stacked
+/// layers, is held apart and gripped like them, and moves as one stiff
+/// lump. (Along the piece only: across seams, where pieces meet at an
+/// angle, the crotch, cloth still collides.)
+const OWN_REACH: f32 = 2.0;
+
+
+/// A vertex against a point of another triangle: the vertex is to keep
+/// `normal · (x − Σ weights · triangle) ≥ target`. The plane of
+/// [`ClothContacts::planes`] is this pair with the triangle held where it
+/// was found; a solver that moves both sides at once uses the pair.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ContactPair {
+    pub triangle: [u32; 3],
+    pub weights: [f32; 3],
+    pub normal: Vec3A,
+    pub target: f32,
+}
+
+impl ContactPair {
+    /// The point of the triangle the vertex faces, at positions `x`.
+    #[inline]
+    pub fn point(&self, x: &[Vec3A]) -> Vec3A {
+        (0..3).fold(Vec3A::ZERO, |sum, k| {
+            sum + x[self.triangle[k] as usize] * self.weights[k]
+        })
+    }
+
+    /// How far vertex `p` is on the wrong side (negative: on the right one).
+    #[inline]
+    pub fn depth(&self, p: Vec3A, x: &[Vec3A]) -> f32 {
+        self.target - self.normal.dot(p - self.point(x))
+    }
+}
 
 /// The half-space `normal · x + offset ≥ 0`. All zero means unused. The
 /// layout is a `vec4<f32>` for the compute shader.
@@ -85,6 +121,10 @@ pub struct ContactParams {
     /// brought back, in metres. Beyond it the triangle is taken to belong
     /// to another part of the garment (the far side of a sleeve, say).
     pub layer_reach: f32,
+    /// Whether a vertex found on the wrong side of another layer is moved
+    /// to the right one at once. If not, it only gets the plane, and the
+    /// solver brings it round.
+    pub move_layers: bool,
 }
 
 impl Default for ContactParams {
@@ -92,6 +132,7 @@ impl Default for ContactParams {
         Self {
             thickness: 0.0025,
             layer_reach: 0.02,
+            move_layers: true,
         }
     }
 }
@@ -112,12 +153,18 @@ pub struct ClothContacts {
     /// Vertices sewn together share a group; a vertex is never tested
     /// against a triangle that contains a member of its own group.
     groups: Vec<u32>,
+    /// Per vertex, the vertices of its own piece within [`OWN_REACH`]
+    /// along it, sorted (`near[near_start[v]..near_start[v + 1]]`).
+    near_start: Vec<u32>,
+    near: Vec<u32>,
     layered: bool,
     mean_edge: f32,
     bvh: Bvh,
     boxes: Vec<Aabb>,
     steps_since_build: u32,
     planes: Vec<[ContactPlane; PLANES_PER_VERTEX]>,
+    /// The two strongest planes per vertex as pairs (see [`ContactPair`]).
+    pairs: Vec<[Option<ContactPair>; 2]>,
     /// Vertices the last detection moved.
     moved: Vec<u32>,
 }
@@ -157,13 +204,24 @@ impl ClothContacts {
             }
         }
         let layered = layers.iter().any(|&layer| layer != layers[0]);
+        let mean = if count > 0 {
+            (total / count as f64) as f32
+        } else {
+            0.0
+        };
+        let (near_start, near) =
+            neighbourhoods(layers.len(), &triangles, rest, OWN_REACH * mean);
+        let mean_edge = if count > 0 {
+            (total / count as f64) as f32
+        } else {
+            0.0
+        };
         Self {
             planes: vec![[ContactPlane::NONE; PLANES_PER_VERTEX]; layers.len()],
-            mean_edge: if count > 0 {
-                (total / count as f64) as f32
-            } else {
-                0.0
-            },
+            pairs: vec![[None; 2]; layers.len()],
+            mean_edge,
+            near_start,
+            near,
             triangles,
             layers,
             groups,
@@ -175,6 +233,11 @@ impl ClothContacts {
     /// The planes found by the last [`ClothContacts::detect`], per vertex.
     pub fn planes(&self) -> &[[ContactPlane; PLANES_PER_VERTEX]] {
         &self.planes
+    }
+
+    /// The same contacts as pairs of vertex and triangle, per vertex.
+    pub fn pairs(&self) -> &[[Option<ContactPair>; 2]] {
+        &self.pairs
     }
 
     /// The vertices whose position the last [`ClothContacts::detect`]
@@ -191,8 +254,19 @@ impl ClothContacts {
             any |= planes[0].is_active();
             *planes = [ContactPlane::NONE; PLANES_PER_VERTEX];
         }
+        self.pairs.fill([None; 2]);
         self.moved.clear();
         any
+    }
+
+    /// The cloth as a whole was moved by `delta` (it travels with its
+    /// wearer): the planes go with it.
+    pub fn translate(&mut self, delta: Vec3A) {
+        for plane in self.planes.iter_mut().flatten() {
+            if plane.is_active() {
+                plane.offset -= Vec3A::from(plane.normal).dot(delta);
+            }
+        }
     }
 
     /// The fabric thickness actually used for a requested one.
@@ -250,14 +324,16 @@ impl ClothContacts {
 
         let end: &[Vec3A] = positions;
         let mut planes = std::mem::take(&mut self.planes);
+        let mut pairs = std::mem::take(&mut self.pairs);
         let this = &*self;
         let mut touching = vec![false; vertex_count];
         let results: Vec<(Option<Vec3A>, bool)> = planes
             .par_iter_mut()
             .zip(&mut touching)
+            .zip(&mut pairs)
             .enumerate()
             .with_min_len(128)
-            .map(|(v, (planes, touching))| {
+            .map(|(v, ((planes, touching), pairs))| {
                 this.vertex_contacts(
                     v as u32,
                     start,
@@ -266,11 +342,13 @@ impl ClothContacts {
                     params,
                     outward,
                     planes,
+                    pairs,
                     touching,
                 )
             })
             .collect();
         self.planes = planes;
+        self.pairs = pairs;
 
         let mut stats = ContactStats::default();
         for (v, (moved, crossed)) in results.into_iter().enumerate() {
@@ -297,9 +375,11 @@ impl ClothContacts {
         params: &ContactParams,
         outward: Option<&(dyn Fn(Vec3A) -> Option<Vec3A> + Sync)>,
         planes: &mut [ContactPlane; PLANES_PER_VERTEX],
+        pairs: &mut [Option<ContactPair>; 2],
         touching: &mut bool,
     ) -> (Option<Vec3A>, bool) {
         *planes = [ContactPlane::NONE; PLANES_PER_VERTEX];
+        *pairs = [None; 2];
         let (p0, p1) = (start[v as usize], end[v as usize]);
         let group = self.groups[v as usize];
         let layer = self.layers[v as usize];
@@ -320,11 +400,16 @@ impl ClothContacts {
             if t.iter().any(|&u| self.groups[u as usize] == group) {
                 return;
             }
+            let own = &self.near
+                [self.near_start[v as usize] as usize..self.near_start[v as usize + 1] as usize];
+            if t.iter().any(|u| own.binary_search(u).is_ok()) {
+                return;
+            }
             let [a1, b1, c1] = t.map(|i| end[i as usize]);
             let Some(normal) = (b1 - a1).cross(c1 - a1).try_normalize() else {
                 return;
             };
-            let (closest, _) = closest_point_on_triangle(p1, a1, b1, c1);
+            let (closest, weights) = closest_point_on_triangle(p1, a1, b1, c1);
             let offset = p1 - closest;
             let distance = offset.length();
             let height = offset.dot(normal);
@@ -348,7 +433,7 @@ impl ClothContacts {
                         normal * side,
                         signed,
                         (0.5 * (signed + thickness)).max(0.5 * thickness),
-                        signed < 0.0,
+                        signed < 0.0 && params.move_layers,
                     ));
                 }
             } else {
@@ -398,18 +483,94 @@ impl ClothContacts {
                 normal: allowed.to_array(),
                 offset: -allowed.dot(closest) - target,
             };
+            let pair = Some(ContactPair {
+                triangle: t,
+                weights,
+                normal: allowed,
+                target,
+            });
             if violation > kept[0] {
                 kept[1] = kept[0];
                 planes[1] = planes[0];
+                pairs[1] = pairs[0];
                 kept[0] = violation;
                 planes[0] = plane;
+                pairs[0] = pair;
             } else if violation > kept[1] {
                 kept[1] = violation;
                 planes[1] = plane;
+                pairs[1] = pair;
             }
         });
         (fix.map(|(_, position)| position), crossed_any)
     }
+}
+
+/// For every vertex, the vertices within `reach` of it along the mesh
+/// edges at their rest length, sorted.
+fn neighbourhoods(
+    count: usize,
+    triangles: &[[u32; 3]],
+    rest: &[Vec3A],
+    reach: f32,
+) -> (Vec<u32>, Vec<u32>) {
+    if reach <= 0.0 || rest.len() < count {
+        return (vec![0; count + 1], Vec::new());
+    }
+    let mut links: Vec<Vec<(u32, f32)>> = vec![Vec::new(); count];
+    for t in triangles {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            let length = rest[a as usize].distance(rest[b as usize]);
+            links[a as usize].push((b, length));
+            links[b as usize].push((a, length));
+        }
+    }
+    let found: Vec<Vec<u32>> = (0..count as u32)
+        .into_par_iter()
+        .with_min_len(64)
+        .map(|start| {
+            // Dijkstra cut off at `reach`; the neighbourhoods are small.
+            let mut best: Vec<(u32, f32)> = vec![(start, 0.0)];
+            let mut open: Vec<(u32, f32)> = vec![(start, 0.0)];
+            while let Some(index) = open
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
+                .map(|(i, _)| i)
+            {
+                let (v, d) = open.swap_remove(index);
+                for &(u, length) in &links[v as usize] {
+                    let e = d + length;
+                    if e > reach {
+                        continue;
+                    }
+                    match best.iter_mut().find(|(w, _)| *w == u) {
+                        Some((_, known)) if *known <= e => {}
+                        Some((_, known)) => {
+                            *known = e;
+                            open.push((u, e));
+                        }
+                        None => {
+                            best.push((u, e));
+                            open.push((u, e));
+                        }
+                    }
+                }
+            }
+            let mut near: Vec<u32> = best.into_iter().map(|(v, _)| v).collect();
+            near.sort_unstable();
+            near
+        })
+        .collect();
+    let mut start = Vec::with_capacity(count + 1);
+    let mut near = Vec::new();
+    start.push(0);
+    for list in found {
+        near.extend(list);
+        start.push(near.len() as u32);
+    }
+    (start, near)
 }
 
 #[cfg(test)]
@@ -432,6 +593,7 @@ mod tests {
         ContactParams {
             thickness: 0.05,
             layer_reach: 0.3,
+            move_layers: true,
         }
     }
 

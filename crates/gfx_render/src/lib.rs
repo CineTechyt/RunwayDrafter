@@ -18,7 +18,7 @@ pub use camera::{Camera2D, OrbitCamera};
 pub use canvas2d::{CanvasBatch, CanvasOverlay, CanvasRenderer, LineHighlight};
 pub use context::{GpuContext, GpuError, preferred_backends};
 pub use scene3d::{
-    StudioRender,
+    Stitches, StudioRender,
     MeshData, MeshVertex, SceneRenderer, Shading, SurfaceMaterial, SurfaceOverlay, garment_props,
 };
 pub use target::RenderTarget;

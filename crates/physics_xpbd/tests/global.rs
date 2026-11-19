@@ -76,8 +76,10 @@ fn drape(backend: SolverBackend, stiffness: Option<f32>) -> (GarmentMesh, f32, u
         if std::env::var("GLOBAL_TRACE").is_ok() {
             let s = solver.global_stats();
             eprintln!(
-                "frame {frame:2}: p99 {:6.1} %, {} contacts, {} pinched, {} halvings, moved {:.2} mm",
+                "frame {frame:2}: p99 {:6.1} %, cloth {} touching {} put back, {} contacts, {} pinched, {} halvings, moved {:.2} mm",
                 stretch(topology.mesh()) * 100.0,
+                solver.stats().cloth_contacts,
+                solver.stats().cloth_crossings,
                 s.contacts,
                 s.pinched,
                 s.halvings,

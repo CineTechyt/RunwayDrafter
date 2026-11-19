@@ -147,6 +147,8 @@ pub struct StudioRender {
     accumulated: wgpu::TextureView,
     output: wgpu::Texture,
     output_view: wgpu::TextureView,
+    /// The picture for the UI (see [`RenderTarget::view`]).
+    display: wgpu::TextureView,
     shadows: ShadowMaps,
     lights: [LightSlot; 2],
     globals: wgpu::Buffer,
@@ -185,7 +187,7 @@ impl StudioRender {
     ) -> Self {
         let device = &gpu.device;
         let size = [size[0].max(1), size[1].max(1)];
-        let texture = |label, format, usage| {
+        let texture = |label, format, usage, view_formats: &[wgpu::TextureFormat]| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -198,24 +200,27 @@ impl StudioRender {
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage,
-                view_formats: &[],
+                view_formats,
             })
         };
         let view = |t: &wgpu::Texture| t.create_view(&Default::default());
         let target = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let frame = view(&texture("studio sample", HDR, target));
-        let accumulated = view(&texture("studio average", HDR, target));
+        let frame = view(&texture("studio sample", HDR, target, &[]));
+        let accumulated = view(&texture("studio average", HDR, target, &[]));
         let depth = view(&texture(
             "studio depth",
             RenderTarget::DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
+            &[],
         ));
         let output = texture(
             "studio image",
             RenderTarget::COLOR_FORMAT,
             target | wgpu::TextureUsages::COPY_SRC,
+            &[RenderTarget::DISPLAY_FORMAT],
         );
         let output_view = view(&output);
+        let display = crate::target::display_view(&output);
         let shadows = ShadowMaps::new(gpu, SHADOW_SIZE, 2);
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("studio globals"),
@@ -266,6 +271,7 @@ impl StudioRender {
             accumulated,
             output,
             output_view,
+            display,
             shadows,
             lights: [LightSlot::new(gpu, shadow_kit), LightSlot::new(gpu, shadow_kit)],
             globals,
@@ -287,9 +293,9 @@ impl StudioRender {
         self.done >= SAMPLES
     }
 
-    /// The picture so far (sRGB), for showing.
+    /// The picture so far, for the UI to show (see [`RenderTarget::view`]).
     pub fn view(&self) -> &wgpu::TextureView {
-        &self.output_view
+        &self.display
     }
 
     pub fn texture(&self) -> &wgpu::Texture {

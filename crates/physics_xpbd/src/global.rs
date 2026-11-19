@@ -39,7 +39,7 @@ use faer::sparse::linalg::solvers::{Llt, SymbolicLlt};
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
 use faer::{MatMut, Side};
 use glam::{DVec3, Vec3, Vec3A};
-use physics_collision::TriangleMesh;
+use physics_collision::{ContactPair, TriangleMesh};
 use rayon::prelude::*;
 use topology_sync::DistanceField;
 
@@ -50,6 +50,12 @@ use crate::model::{INVALID, Model, ROW_ACTIVE, ROW_SEAM};
 const SEAM_STIFFNESS: f32 = 1e5;
 /// Stiffness of the body's surface, N/m per vertex.
 const BODY_STIFFNESS: f32 = 4000.0;
+/// Stiffness of other cloth, N/m per vertex: two layers pressed together
+/// give way before the body under them does.
+const CLOTH_STIFFNESS: f32 = 2000.0;
+/// Other cloth pushes no harder than at this depth, metres: cloth that got
+/// on the wrong side of a fold is eased back, not shot back.
+const CLOTH_DEPTH: f32 = 0.005;
 /// Relative speed below which friction holds, m/s.
 const STICK_SPEED: f32 = 0.01;
 /// Largest pressure friction counts with, N per vertex.
@@ -78,6 +84,9 @@ const COMPRESSED: f32 = 0.25;
 /// would take further than this into the body's margin is stopped there
 /// (and is a contact for the next step), metres.
 const STOP_DEPTH: f32 = 0.00002;
+/// Cloth that a Newton step moves further than this is stopped at other
+/// cloth it reaches, metres.
+const FAST_IN_STEP: f32 = 0.002;
 /// How often a Newton step that raised the energy is halved.
 const HALVINGS: usize = 5;
 /// The steps of a frame stop once none moves a vertex further, metres.
@@ -208,6 +217,10 @@ pub struct StepInput<'a> {
     /// a narrow gap (arm and torso) are found, which a field cannot do.
     pub body_mesh: Option<&'a TriangleMesh>,
     pub body_lag: f32,
+    /// Other cloth near each vertex: the triangles it must stay on its
+    /// side of (see [`physics_collision::ClothContacts::pairs`]); empty for
+    /// none.
+    pub cloth: &'a [[Option<ContactPair>; 2]],
 }
 
 impl StepInput<'_> {
@@ -284,6 +297,19 @@ struct Contact {
     energy: f32,
 }
 
+/// One vertex against the cloth it touches, at the current shape. The
+/// triangle's vertices get the opposite, by their weights.
+#[derive(Debug, Clone, Copy, Default)]
+struct ClothTouch {
+    energy: f32,
+    /// The gradient for the vertex.
+    gradient: Vec3A,
+    /// Its second derivative for the vertex, lower triangle.
+    hessian: [f32; 6],
+    /// What the other cloth presses on it with, N.
+    pressure: f32,
+}
+
 #[inline]
 fn outer(a: Vec3A, scale: f32) -> [f32; 6] {
     [
@@ -325,6 +351,8 @@ pub struct Global {
     symbolic: Option<SymbolicLlt<usize>>,
     /// Pressure on each vertex at the end of the last step, N.
     load: Vec<f32>,
+    /// Pressure of other cloth on each vertex at the end of the last step, N.
+    cloth_load: Vec<f32>,
     // Scratch.
     target: Vec<Vec3A>,
     start: Vec<Vec3A>,
@@ -454,6 +482,7 @@ impl Global {
             row_idx,
             symbolic,
             load: vec![0.0; n],
+            cloth_load: vec![0.0; n],
             target: Vec::new(),
             start: Vec::new(),
             trial: Vec::new(),
@@ -467,6 +496,7 @@ impl Global {
     /// Forgets the pressures: the cloth was moved by hand.
     pub fn reset(&mut self) {
         self.load.fill(0.0);
+        self.cloth_load.fill(0.0);
     }
 
     /// One time step of length `input.h`.
@@ -496,6 +526,7 @@ impl Global {
         }));
 
         let (start, previous_load, friction) = (&self.start, &self.load, input.friction);
+        let previous_cloth_load = &self.cloth_load;
         let (mass, gravity) = (&self.mass, input.gravity);
         // The surfaces vertex `i` at `p` touches, or may touch within the
         // next Newton step.
@@ -570,6 +601,97 @@ impl Global {
             }
             planes
         };
+        // Vertex `i` against the cloth it touches, both sides where `x`
+        // has them: held apart along the normal, and held back by friction
+        // as on the body, against the other cloth's own motion. Without
+        // friction, folds lying on each other (a hem pooled at the heel)
+        // slide on for ever; held against where the other cloth was, a
+        // waistband could not move with the trousers under it, nor two
+        // hems swinging past each other get out of each other's way.
+        let cloth_touch = |i: usize, x: &[Vec3A]| -> ClothTouch {
+            let mut t = ClothTouch::default();
+            let Some(pairs) = input.cloth.get(i) else {
+                return t;
+            };
+            let p = x[i];
+            for (slot, pair) in pairs.iter().enumerate() {
+                let Some(pair) = pair else { continue };
+                let normal = pair.normal;
+                let depth = pair.depth(p, x);
+                if depth > 0.0 {
+                    // Quadratic to `CLOTH_DEPTH`, a constant push beyond.
+                    let pushing = depth.min(CLOTH_DEPTH);
+                    t.pressure += CLOTH_STIFFNESS * pushing;
+                    t.gradient -= normal * (CLOTH_STIFFNESS * pushing);
+                    t.energy += CLOTH_STIFFNESS * pushing * (depth - 0.5 * pushing);
+                    for (sum, value) in t.hessian.iter_mut().zip(outer(normal, CLOTH_STIFFNESS)) {
+                        *sum += value;
+                    }
+                }
+                // Friction on the strongest contact only.
+                if slot > 0 || depth <= -GRIP_BAND || friction <= 0.0 {
+                    continue;
+                }
+                let weight = mass[i] * gravity.length();
+                let load = previous_cloth_load[i].max(weight).min(MAX_FRICTION_LOAD);
+                let moved = (p - start[i]) - (pair.point(x) - pair.point(start));
+                let slid = moved - normal * moved.dot(normal);
+                let distance = slid.length();
+                let limit = friction * load;
+                let (force, energy) = friction_curve(distance, stick);
+                t.energy += limit * energy;
+                let across = if distance > 1e-9 {
+                    t.gradient += slid * (limit * force / distance);
+                    limit * force / distance
+                } else {
+                    limit * 2.0 / stick
+                };
+                let (a, nn) = (
+                    outer(normal, -across),
+                    [across, 0.0, 0.0, across, 0.0, across],
+                );
+                for k in 0..6 {
+                    t.hessian[k] += a[k] + nn[k];
+                }
+            }
+            t
+        };
+        // Every vertex's touch, and what it puts on the triangles' vertices:
+        // the gradient and (the block on each vertex's own diagonal only)
+        // the second derivative.
+        let cloth_forces = |x: &[Vec3A]| -> (Vec<ClothTouch>, Vec<Vec3A>, Vec<[f32; 6]>) {
+            if input.cloth.is_empty() {
+                return (Vec::new(), Vec::new(), Vec::new());
+            }
+            let touches: Vec<ClothTouch> = (0..n)
+                .into_par_iter()
+                .with_min_len(256)
+                .map(|i| cloth_touch(i, x))
+                .collect();
+            let mut gradient = vec![Vec3A::ZERO; n];
+            let mut hessian = vec![[0.0f32; 6]; n];
+            for (i, touch) in touches.iter().enumerate() {
+                if touch.gradient == Vec3A::ZERO && touch.hessian == [0.0; 6] {
+                    continue;
+                }
+                gradient[i] += touch.gradient;
+                for (sum, value) in hessian[i].iter_mut().zip(touch.hessian) {
+                    *sum += value;
+                }
+                // The triangle of the strongest contact takes the reaction
+                // (a second contact, rarer, pushes on the vertex only).
+                if let Some(Some(pair)) = input.cloth.get(i).map(|p| p[0]) {
+                    for k in 0..3 {
+                        let (j, w) = (pair.triangle[k] as usize, pair.weights[k]);
+                        gradient[j] -= touch.gradient * w;
+                        for (sum, value) in hessian[j].iter_mut().zip(touch.hessian) {
+                            *sum += value * w * w;
+                        }
+                    }
+                }
+            }
+            (touches, gradient, hessian)
+        };
         // The energy of vertex `i` at `p` against its planes.
         let contact = |i: usize, p: Vec3A, planes: &Planes| -> Contact {
             let mut c = Contact::default();
@@ -635,6 +757,11 @@ impl Global {
                 .map(|i| {
                     f64::from(0.5 * mass[i] * inertia * (x[i] - target[i]).length_squared())
                         + f64::from(contact(i, x[i], &planes[i]).energy)
+                        + if input.cloth.is_empty() {
+                            0.0
+                        } else {
+                            f64::from(cloth_touch(i, x).energy)
+                        }
                 })
                 .sum();
             elastic + rest
@@ -643,6 +770,7 @@ impl Global {
         // The first step is taken from where the cloth is: there its forces
         // are (nearly) in balance, which is the best place to linearise.
         let mut pressures = vec![0.0f32; n];
+        let mut cloth_pressures = vec![0.0f32; n];
         let mut factor: Option<Llt<usize, f64>> = None;
         let mut last_scale = 1.0f32;
         for _ in 0..input.iterations.max(1) {
@@ -669,8 +797,12 @@ impl Global {
                 .collect();
             self.stats.contacts = contacts.iter().filter(|c| c.pressure > 0.0).count();
             self.stats.pinched = planes.iter().filter(|p| pinched(p)).count();
+            let (touches, cloth_gradient, cloth_hessian) = cloth_forces(x);
             for (pressure, c) in pressures.iter_mut().zip(&contacts) {
                 *pressure = c.pressure;
+            }
+            for (cloth, touch) in cloth_pressures.iter_mut().zip(&touches) {
+                *cloth = touch.pressure;
             }
             let incident = &self.incident;
             let gradient: Vec<Vec3A> = (0..n)
@@ -681,6 +813,9 @@ impl Global {
                         return Vec3A::ZERO;
                     }
                     let mut g = (x[i] - target[i]) * (mass[i] * inertia) + contacts[i].gradient;
+                    if let Some(cloth) = cloth_gradient.get(i) {
+                        g += *cloth;
+                    }
                     for &(term, slot) in &incident[i] {
                         g += locals[term as usize].force
                             * terms[term as usize].weights[slot as usize];
@@ -747,7 +882,12 @@ impl Global {
                     } else {
                         1e12
                     };
-                    let c = contacts[i].hessian.map(f64::from);
+                    let mut c = contacts[i].hessian.map(f64::from);
+                    if let Some(cloth) = cloth_hessian.get(i) {
+                        for (sum, value) in c.iter_mut().zip(cloth) {
+                            *sum += f64::from(*value);
+                        }
+                    }
                     let lower = [
                         [c[0] + m, c[1], c[2]],
                         [0.0, c[3] + m, c[4]],
@@ -803,12 +943,50 @@ impl Global {
             // Take the step, or the largest part of it that lowers the energy.
             let mut scale = 1.0f32;
             let mut taken = false;
-            for _ in 0..=HALVINGS {
+            // Cloth moving fast (a hem swinging past the other leg) stops
+            // at other cloth it reaches within the step, as at the body:
+            // the matrix knows nothing of that cloth, and the step would
+            // take it straight through. Cloth that hardly moves is left
+            // to the planes: stopped, it is out of step with the fabric
+            // around it, which pulls it on again next time, and it never
+            // comes to rest. Should stopping leave a step that no longer
+            // goes downhill, the step is tried again without it.
+            let stopping = !input.cloth.is_empty();
+            for attempt in 0..(1 + usize::from(stopping)) * (HALVINGS + 1) {
+                let stop_at_cloth = stopping && attempt <= HALVINGS;
+                if attempt == HALVINGS + 1 {
+                    scale = 1.0;
+                }
                 self.trial.clear();
                 self.trial
                     .extend((0..n).map(|i| state.positions[i] + step(i) * scale));
                 // A vertex that would pass far into a surface stops at it.
                 // Not one held between two: out of one is into the other.
+                if stop_at_cloth {
+                    // Against the other cloth where the same step takes it.
+                    let (before, trial) = (&state.positions, &self.trial);
+                    let stops: Vec<(usize, Vec3A)> = (0..n)
+                        .into_par_iter()
+                        .with_min_len(256)
+                        .filter_map(|i| {
+                            let p = trial[i];
+                            if p.distance(before[i]) <= FAST_IN_STEP {
+                                return None;
+                            }
+                            let mut shift = Vec3A::ZERO;
+                            for pair in input.cloth.get(i)?.iter().flatten() {
+                                let depth = pair.depth(p + shift, trial);
+                                if pair.depth(before[i], before) <= 0.0 && depth > STOP_DEPTH {
+                                    shift += pair.normal * (depth - STOP_DEPTH);
+                                }
+                            }
+                            (shift != Vec3A::ZERO).then_some((i, shift))
+                        })
+                        .collect();
+                    for (i, shift) in stops {
+                        self.trial[i] += shift;
+                    }
+                }
                 self.trial
                     .par_iter_mut()
                     .zip(&planes)
@@ -862,6 +1040,7 @@ impl Global {
                 }
             });
         self.load.clone_from(&pressures);
+        self.cloth_load.clone_from(&cloth_pressures);
         for i in 0..n {
             state.velocities[i] = if self.mass[i] > 0.0 {
                 ((state.positions[i] - self.start[i]) / h).clamp_length_max(input.max_speed)
@@ -903,6 +1082,7 @@ mod tests {
             body: None,
             body_mesh: None,
             body_lag: 0.0,
+            cloth: &[],
         }
     }
 

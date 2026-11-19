@@ -73,6 +73,9 @@ pub struct GarmentMesh {
     pub indices: Vec<u32>,
     pub pieces: Vec<PieceSpan>,
     pub stitches: Vec<Stitch>,
+    /// Mesh edges the cloth is folded along (pleats, creases): (vertex,
+    /// vertex, fold angle in degrees, 0 flat … 180 folded onto itself).
+    pub folds: Vec<(u32, u32, f32)>,
     /// Bumped whenever the buffers are reassembled.
     pub generation: u64,
 }

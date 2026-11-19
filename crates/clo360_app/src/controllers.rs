@@ -146,6 +146,7 @@ pub fn sew(
     history: &mut History,
     a: SewPick,
     b: SewPick,
+    stitching: cad_core::Stitching,
 ) -> Option<cad_core::SeamId> {
     if is_sewn(document, a.piece, a.span)
         || is_sewn(document, b.piece, b.span)
@@ -162,6 +163,7 @@ pub fn sew(
     let reversed = near_end(&a) != near_end(&b);
     let before = document.clone();
     let id = document.add_seam_spans((a.piece, a.span), (b.piece, b.span), reversed);
+    document.set_seam_stitching(id, stitching);
     history.record(Box::new(DocumentSnapshot::new(
         "Sew",
         before,
@@ -208,7 +210,7 @@ impl CanvasTool {
         if tool != Tool::AddPoint {
             editor.point_marker = None;
         }
-        if tool != Tool::Sew {
+        if !matches!(tool, Tool::Sew | Tool::FlatFell | Tool::Zipper) {
             editor.sew_a = None;
             editor.sew_b = None;
         }
@@ -276,7 +278,7 @@ impl CanvasTool {
                             self.panning = false;
                         }
                     }
-                    Tool::Sew | Tool::AddPoint => {}
+                    Tool::Sew | Tool::FlatFell | Tool::Zipper | Tool::Stitch | Tool::AddPoint => {}
                     Tool::SketchLine | Tool::SketchSpline => {}
                     Tool::Button | Tool::Buttonhole => {}
                     Tool::Pull => {}
@@ -463,9 +465,10 @@ impl CanvasTool {
                         }
                     }
                 }
-                Tool::Sew => {
+                Tool::Sew | Tool::FlatFell | Tool::Zipper => {
                     self.sew_click(document, history, editor, changes, line, at, input.shift)
                 }
+                Tool::Stitch => Self::stitch_click(document, history, editor, line),
                 Tool::SketchLine | Tool::SketchSpline => {}
                 Tool::Button | Tool::Buttonhole => {
                     let Some(piece_id) = line.map(|l| l.0).or_else(|| document.pick_piece(at))
@@ -597,6 +600,39 @@ impl CanvasTool {
         changes.push(DocumentChange::Everything);
     }
 
+    /// The stitch tool: sews the seam (on the piece clicked) or the free
+    /// line under the click with the chosen stitch.
+    fn stitch_click(
+        document: &mut PatternDocument,
+        history: &mut History,
+        editor: &mut EditorState,
+        line: Option<(PieceId, EdgeSpan, EdgeRef)>,
+    ) {
+        let Some((piece, span, edge)) = line else {
+            return;
+        };
+        editor.selected_piece = Some(piece);
+        editor.selected_edge = Some(edge);
+        let before = document.clone();
+        let mut stitching = editor.sew_stitching;
+        let n = document.piece(piece).map_or(0, |p| p.outline.edge_count());
+        let done = match document.seam_of(edge).copied() {
+            Some(seam) => {
+                // The topstitching goes on the piece that was clicked.
+                stitching.side = if seam.a.piece == piece && seam.a_span().contains(edge.edge, n) {
+                    cad_core::StitchSide::A
+                } else {
+                    cad_core::StitchSide::B
+                };
+                document.set_seam_stitching(seam.id, stitching)
+            }
+            None => document.set_edge_stitching(piece, span, stitching.visible().then_some(stitching)),
+        };
+        if done {
+            history.record(Box::new(DocumentSnapshot::new("Stitch", before, document.clone())));
+        }
+    }
+
     fn sew_click(
         &mut self,
         document: &mut PatternDocument,
@@ -657,8 +693,25 @@ impl CanvasTool {
             }
         }
         let (a, b) = (editor.sew_a.take(), editor.sew_b.take());
+        let zipper = (editor.canvas_tool == Tool::Zipper).then_some(editor.zipper);
         if let (Some(a), Some(b)) = (a, b)
-            && sew(document, history, a, b).is_some()
+            && sew(
+                document,
+                history,
+                a,
+                b,
+                if editor.canvas_tool == Tool::FlatFell {
+                    editor.felled_stitching.0
+                } else if zipper.is_some() {
+                    // A zipper is sewn in with a row either side.
+                    cad_core::Stitching::of(cad_core::StitchKind::Edgestitch)
+                        .with_thread(editor.sew_stitching.thread)
+                } else {
+                    editor.sew_stitching
+                },
+            )
+            .map(|id| document.set_seam_zipper(id, zipper))
+            .is_some()
         {
             changes.push(DocumentChange::Seams);
         }
@@ -678,7 +731,11 @@ impl CanvasTool {
                 "Drag points and curve handles · squares are turn points, dots are curve points · double-click a square to join the two lines there into one, a dot to split"
                     .to_owned()
             }
-            Tool::Sew => match (&editor.sew_a, &editor.sew_b) {
+            Tool::Stitch => format!(
+                "Stitching with {}: click a seam (the stitching goes on the piece you click) or a free edge such as a hem · choose the stitch above · Ctrl+Z undoes",
+                editor.sew_stitching.kind.label().to_lowercase()
+            ),
+            Tool::Sew | Tool::FlatFell | Tool::Zipper => match (&editor.sew_a, &editor.sew_b) {
                 (None, _) => {
                     "Sewing: click the first line near the end where the seam starts · a sewn line + Del takes its seam out · Ctrl+Z undoes".to_owned()
                 }
@@ -1012,7 +1069,7 @@ mod tests {
             span: EdgeSpan::single(7),
             at: at(&document, back, 7),
         };
-        sew(&mut document, &mut history, a, b).unwrap();
+        sew(&mut document, &mut history, a, b, Default::default()).unwrap();
         assert_eq!(document.seams().len(), 1);
         history.undo(&mut document).unwrap().unwrap();
         assert!(document.seams().is_empty(), "the stitch is gone");

@@ -10,6 +10,9 @@ pub enum Icon {
     AddPoint,
     Curve,
     Sew,
+    Stitch,
+    FlatFell,
+    Zipper,
     SketchLine,
     SketchSpline,
     Button,
@@ -172,6 +175,47 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 vec![p(3.5, 12.5), p(5.0, 14.2), p(6.5, 13.5)],
                 thin,
             ));
+        }
+        Icon::Stitch => {
+            // A zigzag and a row of stitches: a stitch being chosen.
+            painter.add(Shape::line(
+                vec![p(1.5, 5.0), p(4.0, 2.0), p(6.5, 5.0), p(9.0, 2.0), p(11.5, 5.0), p(14.0, 2.0)],
+                thin,
+            ));
+            for k in 0..4 {
+                let x = 1.0 + 3.8 * k as f32;
+                line(p(x, 9.5), p(x + 2.4, 9.5));
+            }
+            for k in 0..3 {
+                let x = 2.5 + 4.5 * k as f32;
+                painter.add(Shape::line(vec![p(x, 15.0), p(x + 2.0, 12.5), p(x + 4.0, 15.0)], thin));
+            }
+        }
+        Icon::FlatFell => {
+            // Two pieces lapped over each other, two rows of stitches.
+            painter.rect_stroke(
+                Rect::from_min_max(p(5.5, 1.5), p(10.5, 14.5)),
+                0.0,
+                thin,
+                egui::StrokeKind::Middle,
+            );
+            line(p(1.5, 1.5), p(1.5, 14.5));
+            line(p(14.5, 1.5), p(14.5, 14.5));
+            for y in [2.0, 6.0, 10.0] {
+                line(p(6.8, y), p(6.8, y + 2.4));
+                line(p(9.2, y), p(9.2, y + 2.4));
+            }
+        }
+        Icon::Zipper => {
+            // Teeth either side of a line, and the slider with its pull.
+            line(p(8.0, 1.0), p(8.0, 15.0));
+            for k in 0..5 {
+                let y = 6.0 + 2.0 * k as f32;
+                let x = if k % 2 == 0 { 5.5 } else { 8.0 };
+                line(p(x, y), p(x + 2.5, y));
+            }
+            painter.rect_filled(Rect::from_min_max(p(5.5, 1.5), p(10.5, 4.5)), 1.0, color);
+            line(p(8.0, 4.5), p(11.5, 8.0));
         }
         Icon::AddPoint => {
             // A line with a new point in its middle, and a plus.

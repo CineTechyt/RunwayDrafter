@@ -12,6 +12,8 @@ pub struct RenderTarget {
     msaa_view: wgpu::TextureView,
     resolve_texture: wgpu::Texture,
     resolve_view: wgpu::TextureView,
+    /// The same image as plain (not sRGB-decoding) RGBA8, for the UI.
+    display_view: wgpu::TextureView,
     depth_view: Option<wgpu::TextureView>,
 }
 
@@ -20,10 +22,12 @@ impl RenderTarget {
     pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
     pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
     pub const SAMPLE_COUNT: u32 = 4;
+    /// How the UI reads the image: the stored sRGB bytes as they are.
+    pub const DISPLAY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
     pub fn new(gpu: &GpuContext, label: &'static str, size: [u32; 2], with_depth: bool) -> Self {
         let size = [size[0].max(1), size[1].max(1)];
-        let texture = |format, sample_count, usage| {
+        let texture = |format, sample_count, usage, view_formats: &[wgpu::TextureFormat]| {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -36,7 +40,7 @@ impl RenderTarget {
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage,
-                view_formats: &[],
+                view_formats,
             })
         };
         let view =
@@ -45,16 +49,18 @@ impl RenderTarget {
         // Sampled by the UI; COPY_SRC allows read-back for snapshots/export.
         let resolve_usage =
             attachment | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
-        let resolve_texture = texture(Self::COLOR_FORMAT, 1, resolve_usage);
+        let resolve_texture = texture(Self::COLOR_FORMAT, 1, resolve_usage, &[Self::DISPLAY_FORMAT]);
+        let display_view = display_view(&resolve_texture);
         Self {
             label,
             size,
             with_depth,
-            msaa_view: view(&texture(Self::COLOR_FORMAT, Self::SAMPLE_COUNT, attachment)),
+            msaa_view: view(&texture(Self::COLOR_FORMAT, Self::SAMPLE_COUNT, attachment, &[])),
             resolve_view: view(&resolve_texture),
+            display_view,
             resolve_texture,
             depth_view: with_depth
-                .then(|| view(&texture(Self::DEPTH_FORMAT, Self::SAMPLE_COUNT, attachment))),
+                .then(|| view(&texture(Self::DEPTH_FORMAT, Self::SAMPLE_COUNT, attachment, &[]))),
         }
     }
 
@@ -66,9 +72,12 @@ impl RenderTarget {
         self.size[0] as f32 / self.size[1] as f32
     }
 
-    /// The resolved image, for sampling.
+    /// The resolved image for the UI to show. egui expects its textures'
+    /// values sRGB-encoded and does not decode them; sampled through the
+    /// sRGB view, the GPU would hand it decoded (linear) values, and every
+    /// picture would show far too dark.
     pub fn view(&self) -> &wgpu::TextureView {
-        &self.resolve_view
+        &self.display_view
     }
 
     /// Reads the resolved image back as tightly packed sRGB RGBA8 rows, top
@@ -168,6 +177,16 @@ pub fn read_texture(gpu: &GpuContext, texture: &wgpu::Texture, [width, height]: 
         .flat_map(|line| &line[..row as usize])
         .copied()
         .collect()
+}
+
+/// A plain RGBA8 view of an sRGB texture created with that view format:
+/// its bytes as stored, for the UI (see [`RenderTarget::view`]).
+pub fn display_view(texture: &wgpu::Texture) -> wgpu::TextureView {
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("display view"),
+        format: Some(RenderTarget::DISPLAY_FORMAT),
+        ..Default::default()
+    })
 }
 
 /// A GPU buffer that is reallocated (with headroom) when the data outgrows it.

@@ -7,6 +7,8 @@ use super::{Panel, PanelContext, property_grid};
 #[derive(Debug, Default)]
 pub struct MaterialPanel {
     weave: super::weave_editor::WeaveEditorState,
+    /// Why the last image maps could not be opened.
+    maps_error: Option<String>,
 }
 
 impl Panel for MaterialPanel {
@@ -158,6 +160,98 @@ impl Panel for MaterialPanel {
                     look_changed |= super::weave_editor::show(ui, weave, &mut self.weave);
                 });
         }
+        // --- image maps -----------------------------------------------------------------------
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new("Image maps")
+            .default_open(fabric.maps.is_some())
+            .show(ui, |ui| {
+                ui.weak(
+                    "A scanned or downloaded fabric: colour, normal, roughness and height maps \
+                     (ambientCG, Poly Haven, ShareTextures…) or a U3M material.",
+                );
+                let mut picked = None;
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Open maps or U3M…").clicked() {
+                        picked = rfd::FileDialog::new()
+                            .add_filter("Fabric maps", &["png", "jpg", "jpeg", "u3m", "u3ma", "zip"])
+                            .pick_file();
+                    }
+                    if ui.button("Open folder…").clicked() {
+                        picked = rfd::FileDialog::new().pick_folder();
+                    }
+                    if fabric.maps.is_some() && ui.button("Remove maps").clicked() {
+                        fabric.maps = None;
+                        look_changed = true;
+                    }
+                });
+                if let Some(path) = picked {
+                    match io_cad::fabric_maps::open(&path) {
+                        Ok(maps) => {
+                            fabric.maps = Some(maps);
+                            self.maps_error = None;
+                            look_changed = true;
+                        }
+                        Err(error) => self.maps_error = Some(error.to_string()),
+                    }
+                }
+                if let Some(error) = &self.maps_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                if let Some(maps) = &mut fabric.maps {
+                    let name = |p: &Option<std::path::PathBuf>| {
+                        p.as_ref()
+                            .and_then(|p| p.file_name())
+                            .map_or("–".to_owned(), |n| n.to_string_lossy().into_owned())
+                    };
+                    super::property_grid(ui, "fabric maps", |ui| {
+                        for (label, file) in [
+                            ("Colour", Some(maps.color.clone())),
+                            ("Normal", maps.normal.clone()),
+                            ("Roughness", maps.roughness.clone()),
+                            ("Height", maps.height.clone()),
+                        ] {
+                            ui.label(label);
+                            ui.weak(name(&file));
+                            ui.end_row();
+                        }
+                        ui.label("Swatch size");
+                        ui.horizontal(|ui| {
+                            let mut cm = maps.size_mm.map(|v| v / 10.0);
+                            let mut edited = false;
+                            for (k, c) in cm.iter_mut().enumerate() {
+                                edited |= ui
+                                    .add(egui::DragValue::new(c).range(0.5..=500.0).speed(0.2).suffix(" cm"))
+                                    .on_hover_text("How much cloth one repeat of the images shows")
+                                    .changed();
+                                if k == 0 {
+                                    ui.label("×");
+                                }
+                            }
+                            if edited {
+                                maps.size_mm = cm.map(|v| v * 10.0);
+                                look_changed = true;
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Repeats");
+                        look_changed |= ui
+                            .checkbox(&mut maps.break_up_repeats, "break up")
+                            .on_hover_text(
+                                "Take each patch of cloth from another place of the images so \
+                                 no repeat shows. Untick for checks, stripes and prints.",
+                            )
+                            .changed();
+                        ui.end_row();
+                        ui.label("Normal map");
+                        look_changed |= ui
+                            .checkbox(&mut maps.normal_y_up, "green up (OpenGL)")
+                            .on_hover_text("Untick for DirectX normal maps (green down)")
+                            .changed();
+                        ui.end_row();
+                    });
+                }
+            });
+
         ui.add_space(8.0);
         ui.strong("Physical properties");
         let physics = &mut fabric.physics;

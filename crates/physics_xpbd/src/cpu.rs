@@ -10,7 +10,7 @@ use physics_collision::{ContactPlane, PLANES_PER_VERTEX};
 use rayon::prelude::*;
 use topology_sync::DistanceField;
 
-use crate::model::{Element, INVALID, Model, ROW_ACTIVE, ROW_SEAM};
+use crate::model::{Element, INVALID, Model, ROW_ACTIVE, ROW_FOLD, ROW_SEAM};
 
 /// Particles this close to the collision margin count as resting on the
 /// body.
@@ -312,6 +312,49 @@ pub fn project(
     project_gathered(element, x, w, inv_h2, seam_gap, collision)
 }
 
+/// A fold line's hinge (see [`ROW_FOLD`]): turns the two wings about
+/// their shared edge towards the signed fold angle `target`, each half
+/// the way, as far as they are free to move.
+#[inline]
+fn fold(x: &mut [Vec3A; 4], w: &[f32; 4], target: f32) {
+    let edge = x[1] - x[0];
+    let length = edge.length();
+    if length < 1e-9 {
+        return;
+    }
+    let axis = edge / length;
+    let (left, right) = (edge.cross(x[2] - x[0]), (x[3] - x[0]).cross(edge));
+    let (ll, lr) = (left.length(), right.length());
+    if ll < 1e-12 || lr < 1e-12 {
+        return;
+    }
+    let (left, right) = (left / ll, right / lr);
+    let angle = left.cross(right).dot(axis).atan2(left.dot(right));
+    // Folded towards the inside is positive; how far there is to go,
+    // the short way round.
+    let mut error = angle - target;
+    if error > std::f32::consts::PI {
+        error -= std::f32::consts::TAU;
+    } else if error < -std::f32::consts::PI {
+        error += std::f32::consts::TAU;
+    }
+    const STIFFNESS: f32 = 0.35;
+    let origin = x[0];
+    let turn = |p: Vec3A, theta: f32| {
+        let v = p - origin;
+        let (s, c) = theta.sin_cos();
+        origin + v * c + axis.cross(v) * s + axis * axis.dot(v) * (1.0 - c)
+    };
+    // The right wing turning about the edge opens the fold, the left one
+    // closes it.
+    if w[3] > 0.0 {
+        x[3] = turn(x[3], -0.5 * STIFFNESS * error);
+    }
+    if w[2] > 0.0 {
+        x[2] = turn(x[2], 0.5 * STIFFNESS * error);
+    }
+}
+
 /// [`project`] on the element's particles `x` (inverse masses `w`),
 /// already gathered.
 #[inline]
@@ -325,6 +368,10 @@ fn project_gathered(
 ) -> [Vec3A; 4] {
     for row in &element.rows {
         if row.flags & ROW_ACTIVE == 0 {
+            continue;
+        }
+        if row.flags & ROW_FOLD != 0 {
+            fold(&mut x, &w, row.fold_limit);
             continue;
         }
         let c = row.weights;

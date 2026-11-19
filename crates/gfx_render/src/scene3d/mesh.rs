@@ -171,6 +171,9 @@ pub struct SurfaceMaterial {
     pub weave_yarn: [f32; 4],
     /// How worn a garment is, 0..=1 (see [`MeshVertex::wear`]).
     pub wear: f32,
+    /// The textures under `weave_key` are image maps (colour with roughness
+    /// in alpha), not a generated weave.
+    pub weave_maps: bool,
 }
 
 impl Default for SurfaceMaterial {
@@ -190,6 +193,7 @@ impl Default for SurfaceMaterial {
             weave_repeat: [1.0; 2],
             weave_yarn: [0.0; 4],
             wear: 0.0,
+            weave_maps: false,
         }
     }
 }

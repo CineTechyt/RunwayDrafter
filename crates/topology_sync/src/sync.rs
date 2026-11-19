@@ -303,6 +303,7 @@ impl GarmentTopology {
             mesh.indices = std::mem::take(&mut self.mesh.indices);
             mesh.pieces = std::mem::take(&mut self.mesh.pieces);
             mesh.stitches = std::mem::take(&mut self.mesh.stitches);
+            mesh.folds = std::mem::take(&mut self.mesh.folds);
             mesh.origins = std::mem::take(&mut self.mesh.origins);
         } else {
             self.edge_map.clear();
@@ -326,6 +327,13 @@ impl GarmentTopology {
                 vertices: base..mesh.positions.len() as u32,
                 indices: first_index..mesh.indices.len() as u32,
             });
+            mesh.folds.extend(
+                cached
+                    .mesh
+                    .folds
+                    .iter()
+                    .map(|&(a, b, angle)| (base + a, base + b, angle)),
+            );
             for (edge, chain) in cached.mesh.edge_chains.iter().enumerate() {
                 self.edge_map.insert(
                     EdgeRef::new(cached.id, edge as u32),
@@ -350,18 +358,27 @@ impl GarmentTopology {
                 } else {
                     Box::new(a.iter().zip(b.iter()))
                 };
-                mesh.stitches.extend(pairs.map(|(&a, &b)| Stitch {
+                // An open zipper holds only below its slider: the first
+                // `open` of the way along side A comes apart.
+                let count = a.len().min(b.len());
+                let open = seam.zipper.map_or(0.0, |z| z.open.clamp(0.0, 1.0));
+                let first_held = (open * count as f32).round() as usize;
+                mesh.stitches.extend(pairs.skip(first_held).map(|(&a, &b)| Stitch {
                     seam: seam.id,
                     a,
                     b,
                 }));
             }
             // A done-up button holds its buttonhole on itself: one stitch
-            // between the mesh vertices nearest to each.
+            // between the mesh vertices nearest to the button and to the
+            // end of the hole it rests in.
             for (button_piece, button, hole_piece, hole) in doc.fastenings() {
+                let Some(outline) = doc.piece(hole_piece).map(|p| &p.outline) else {
+                    continue;
+                };
                 if let (Some(a), Some(b)) = (
                     mesh.nearest_vertex(button_piece, button.position),
-                    mesh.nearest_vertex(hole_piece, hole.position),
+                    mesh.nearest_vertex(hole_piece, hole.button_end(outline)),
                 ) {
                     mesh.stitches.push(Stitch {
                         seam: Stitch::FASTENING,

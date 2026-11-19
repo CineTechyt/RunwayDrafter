@@ -238,6 +238,68 @@ fn yarn_wander(weave_uv: vec2<f32>) -> vec2<f32> {
     return slow * (1.5 + 2.5 * irregular) + vec2<f32>(end_meander, pick_beat) * (0.4 + 0.9 * irregular);
 }
 
+struct Tiles {
+    offsets: array<vec2<f32>, 3>,
+    weights: vec3<f32>,
+};
+
+// An integer hash (PCG), the same in Rust (`refine::hash`): the studio's
+// displaced geometry picks the same patches as the shading.
+fn hash_u(x: u32) -> u32 {
+    let v = x * 747796405u + 2891336453u;
+    let w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+fn hash22(cell: vec2<f32>) -> vec2<f32> {
+    let i = vec2<i32>(cell);
+    let a = hash_u((bitcast<u32>(i.x) * 1597334677u) ^ (bitcast<u32>(i.y) * 3812015801u));
+    let b = hash_u(a);
+    return vec2<f32>(f32(a & 0xffffu), f32(b & 0xffffu)) / 65536.0;
+}
+
+// The height of a scan's relief at `at`, from the same patches as its
+// colour (see `stochastic_tiles`); one sample when not shuffled.
+fn tiled_height(at: vec2<f32>, tiles: Tiles, lod: f32) -> f32 {
+    var h = 0.0;
+    for (var k = 0; k < 3; k++) {
+        if tiles.weights[k] > 0.0 {
+            h += tiles.weights[k] * textureSampleLevel(weave_surface, weave_sampler, at + tiles.offsets[k], lod).a;
+        }
+    }
+    return h;
+}
+
+// How deep a scan's height map reaches, metres (at relief 1): about what
+// corduroy's ribs or a tweed's yarns stand proud.
+const MAP_RELIEF: f32 = 0.0015;
+
+// The three cells of a triangle grid around `uv` (about two per repeat),
+// each with its own random offset into the texture, and how much each
+// counts here (sharpened, so most places show one sample undiluted).
+fn stochastic_tiles(uv: vec2<f32>) -> Tiles {
+    let skewed = mat2x2<f32>(1.0, 0.0, -0.57735027, 1.15470054) * (uv * 2.4);
+    let cell = floor(skewed);
+    let f = fract(skewed);
+    let z = 1.0 - f.x - f.y;
+    var t: Tiles;
+    var w = vec3<f32>(0.0);
+    var corners: array<vec2<f32>, 3>;
+    if z > 0.0 {
+        w = vec3<f32>(z, f.y, f.x);
+        corners = array<vec2<f32>, 3>(cell, cell + vec2<f32>(0.0, 1.0), cell + vec2<f32>(1.0, 0.0));
+    } else {
+        w = vec3<f32>(-z, 1.0 - f.y, 1.0 - f.x);
+        corners = array<vec2<f32>, 3>(cell + vec2<f32>(1.0, 1.0), cell + vec2<f32>(1.0, 0.0), cell + vec2<f32>(0.0, 1.0));
+    }
+    for (var k = 0; k < 3; k++) {
+        t.offsets[k] = hash22(corners[k]);
+    }
+    let sharp = pow(w, vec3<f32>(3.0));
+    t.weights = sharp / max(sharp.x + sharp.y + sharp.z, 1e-5);
+    return t;
+}
+
 // Fractal noise, four octaves, 0..1.
 fn fbm(p: vec3<f32>) -> f32 {
     var sum = 0.0;
@@ -574,6 +636,28 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> @loca
     let weave_lod = 0.5 * log2(max(max(dot(grad_x * texels, grad_x * texels), dot(grad_y * texels, grad_y * texels)), 1e-8));
     let m_per_uv = metres_per_uv(in.world_position, in.uv);
     let geometric_n = normalize(in.world_normal) * select(-1.0, 1.0, front_facing);
+    // Seams and hems are not ruled lines: the allowance beneath rolls the
+    // cloth up beside the seam, the seam line itself sinks a little, and
+    // the stitching puckers it. A height over the cloth near its edges,
+    // shaded by its gradient (Mikkelsen's surface gradient), so it works
+    // at any mesh density. Only on garments' outer faces.
+    // The distance to the edge is exact only at the mesh's vertices (a
+    // centimetre or two apart): the roll is kept about as wide, or the
+    // triangles would show through as a sawtooth along the seam.
+    let to_edge = in.wear.x / 0.011;
+    let roll = 0.6 * to_edge * exp(1.0 - to_edge) - 0.3 * exp(-2.0 * to_edge * to_edge);
+    let pucker = (noise3(vec3<f32>(in.uv * vec2<f32>(9.0, 9.0), 5.0)) - 0.5) * exp(-in.wear.x / 0.014);
+    let near_edge = step(0.5, in.wear.w) * step(0.5, object.fabric.z) * (1.0 - smoothstep(0.04, 0.06, in.wear.x));
+    let seam_height = (roll * 0.0009 + pucker * 0.0004) * near_edge;
+    let dpx = dpdx(in.world_position);
+    let dpy = dpdy(in.world_position);
+    let r1 = cross(dpy, geometric_n);
+    let r2 = cross(geometric_n, dpx);
+    let det = dot(dpx, r1);
+    let surface_gradient = sign(det) * (dpdx(seam_height) * r1 + dpdy(seam_height) * r2);
+    if near_edge > 0.0 && abs(det) > 1e-16 {
+        n = normalize(abs(det) * geometric_n - surface_gradient);
+    }
     let frame = cotangent_frame(geometric_n, in.world_position, in.uv);
     let rib_footprint = fwidth(in.uv.x * 18.0 * object.fabric.x);
     let key = normalize(globals.key_direction.xyz);
@@ -614,13 +698,43 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> @loca
         // few centimetres, picks are beaten in unevenly, and each crossing
         // sits a little off. So twill lines wobble and step instead of
         // being drawn with a ruler.
-        let yarn_uv = weave_uv + yarn_wander(weave_uv) / max(object.yarn.xy, vec2<f32>(1.0));
+        // Image maps (weave.z = 2) have no threads to follow.
+        let maps = object.weave.z > 1.5;
+        var yarn_uv = weave_uv;
+        if !maps {
+            yarn_uv = weave_uv + yarn_wander(weave_uv) / max(object.yarn.xy, vec2<f32>(1.0));
+        }
+        // A scan or download is one swatch: repeated as it is, its
+        // blemishes line up in rows. Every patch takes it from a different
+        // place instead, blended so contrast is kept (Heitz & Neyret's
+        // tiling and blending). The same patches give the height for the
+        // relief, here and in the studio's displaced geometry.
+        let shuffled = maps && object.yarn.y > 0.5;
+        var tiles: Tiles;
+        tiles.weights = vec3<f32>(1.0, 0.0, 0.0);
+        if shuffled {
+            tiles = stochastic_tiles(yarn_uv);
+        }
         var uv = yarn_uv;
-        let near = 1.0 - smoothstep(1.5, 3.0, weave_lod);
+        // Real geometry in the studio (fabric.z = 2): it hides and shadows
+        // by itself.
+        let displaced = object.fabric.z > 1.5;
+        var near = 1.0 - smoothstep(1.5, 3.0, weave_lod);
+        if maps {
+            // Scans carry features of many texels (ribs, slubs).
+            near = 1.0 - smoothstep(3.5, 5.0, weave_lod);
+        }
+        if displaced {
+            near = 0.0;
+        }
         if near > 0.0 {
-            // Yarns stand about a third of their spacing proud.
+            // Yarns stand about a third of their spacing proud; a scan's
+            // height map spans MAP_RELIEF.
             let spacing = m_per_uv / max(object.weave.x * object.yarn.x, 1e-3);
-            let depth = 0.35 * object.weave.w * spacing * near;
+            var depth = 0.35 * object.weave.w * spacing * near;
+            if maps {
+                depth = MAP_RELIEF * object.weave.w * near;
+            }
             let m_per_weave_uv = m_per_uv / max(object.weave.xy, vec2<f32>(1e-3));
             let lod = max(weave_lod, 0.0);
             let steps = select(8, 16, studio);
@@ -630,7 +744,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> @loca
             for (var k = 1; k <= steps; k++) {
                 let descent = depth * f32(k) / f32(steps);
                 let at = yarn_uv + run * descent;
-                let h = textureSampleLevel(weave_surface, weave_sampler, at, lod).a;
+                let h = tiled_height(at, tiles, lod);
                 let gap = descent - depth * (1.0 - h);
                 if gap >= 0.0 {
                     uv = mix(previous_uv, at, previous_gap / (previous_gap - gap + 1e-6));
@@ -640,29 +754,50 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> @loca
                 previous_uv = at;
             }
             if studio && key_t.z > 0.0 {
-                // Towards the key: does a float rise above the light ray?
-                let h0 = textureSampleLevel(weave_surface, weave_sampler, uv, lod).a;
+                // Towards the key: does the relief rise above the light ray?
+                let h0 = tiled_height(uv, tiles, lod);
                 let up = key_t.xy / max(key_t.z, 0.15) / m_per_weave_uv; // weave uv per metre up
                 var blocked = 0.0;
                 for (var k = 1; k <= 6; k++) {
                     let rise = depth * f32(k) / 6.0 * (1.0 - h0);
-                    let at = uv + up * rise;
-                    let h = textureSampleLevel(weave_surface, weave_sampler, at, lod).a;
+                    let h = tiled_height(uv + up * rise, tiles, lod);
                     blocked = max(blocked, (depth * (h - h0) - rise) / max(depth * 0.15, 1e-7));
                 }
                 relief_shadow = 1.0 - clamp(blocked, 0.0, 1.0) * 0.8 * near;
             }
         }
-        let woven = textureSampleGrad(weave_color, weave_sampler, uv, grad_x, grad_y);
-        let woven_surface = textureSampleGrad(weave_surface, weave_sampler, uv, grad_x, grad_y);
+        var woven = textureSampleGrad(weave_color, weave_sampler, uv, grad_x, grad_y);
+        var woven_surface = textureSampleGrad(weave_surface, weave_sampler, uv, grad_x, grad_y);
+        if shuffled {
+            let mean = textureSampleLevel(weave_color, weave_sampler, uv, 14.0);
+            var colour = vec4<f32>(0.0);
+            var surface = vec4<f32>(0.0);
+            var sum_sq = 0.0;
+            for (var k = 0; k < 3; k++) {
+                let at = uv + tiles.offsets[k];
+                colour += tiles.weights[k] * (textureSampleGrad(weave_color, weave_sampler, at, grad_x, grad_y) - mean);
+                surface += tiles.weights[k] * textureSampleGrad(weave_surface, weave_sampler, at, grad_x, grad_y);
+                sum_sq += tiles.weights[k] * tiles.weights[k];
+            }
+            woven = clamp(mean + colour / sqrt(max(sum_sq, 1e-4)), vec4<f32>(0.0), vec4<f32>(1.0));
+            woven_surface = surface;
+        }
         woven_height = woven_surface.a;
         // From further away the eye no longer resolves the interlacing,
         // only the cloth's colour: twill lines a pixel wide would read as
         // printed stripes. Fade towards the colour averaged over a few
         // threads (which keeps stripes and checks of the colour order).
         let far = textureSampleLevel(weave_color, weave_sampler, uv, max(weave_lod, 5.0));
-        let resolved = mix(woven.rgb, far.rgb, smoothstep(0.5, 3.0, weave_lod) * 0.75);
-        albedo = resolved * in.color * yarn_variation(yarn_uv, grad_x, grad_y);
+        var resolved = mix(woven.rgb, far.rgb, smoothstep(0.5, 3.0, weave_lod) * 0.75);
+        if maps {
+            resolved = woven.rgb;
+            albedo = resolved * in.color;
+            if object.yarn.w > 0.5 {
+                roughness = clamp(woven.a, 0.05, 1.0);
+            }
+        } else {
+            albedo = resolved * in.color * yarn_variation(yarn_uv, grad_x, grad_y);
+        }
         // The normals of the threads average out with distance: what was
         // bumpy becomes rough, not smooth (Toksvig). The mips keep the
         // averaged, shortened normal for this.
@@ -676,9 +811,11 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> @loca
         // Which way the yarns on top run here: along V (warp) or U (weft).
         warp_dir = frame[1];
         weft_dir = frame[0];
-        warpness = woven.a;
+        warpness = select(woven.a, 0.5, maps);
         // Light catches the tops of the yarns; the gaps between are dull.
-        roughness = clamp(roughness * (1.2 - 0.35 * woven_height), 0.3, 1.0);
+        if !maps {
+            roughness = clamp(roughness * (1.2 - 0.35 * woven_height), 0.3, 1.0);
+        }
         // Light reaches less into the gaps between yarns.
         cavity *= mix(0.78, 1.0, woven_height);
     }

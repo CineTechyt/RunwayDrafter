@@ -213,7 +213,8 @@ impl Default for Timeline {
         Self {
             playing: false,
             frame: 0,
-            end_frame: 240,
+            // No end: the drape runs until the cloth has settled.
+            end_frame: u32::MAX,
             fps: 30.0,
             looping: false,
             accumulator: 0.0,
@@ -317,15 +318,19 @@ pub enum Sample {
     SleevelessTop,
     /// A waistcoat that buttons down the front.
     Waistcoat,
+    /// Straight-leg jeans, drafted to the avatar: pleats, darts,
+    /// flat-felled seams, white topstitching on dark denim.
+    Jeans,
 }
 
 impl Sample {
-    pub const ALL: [Sample; 2] = [Sample::SleevelessTop, Sample::Waistcoat];
+    pub const ALL: [Sample; 3] = [Sample::SleevelessTop, Sample::Waistcoat, Sample::Jeans];
 
     pub fn label(self) -> &'static str {
         match self {
             Sample::SleevelessTop => "Sleeveless top",
             Sample::Waistcoat => "Waistcoat with buttons",
+            Sample::Jeans => "Straight-leg jeans",
         }
     }
 
@@ -333,6 +338,7 @@ impl Sample {
         match self {
             Sample::SleevelessTop => cad_core::PatternDocument::demo_top(),
             Sample::Waistcoat => cad_core::PatternDocument::demo_waistcoat(),
+            Sample::Jeans => cad_core::jeans::jeans(Default::default()),
         }
     }
 }
@@ -409,6 +415,42 @@ pub struct AvatarState {
     pub animation: AnimationState,
     /// False if the body model could not be loaded (placeholder avatar).
     pub available: bool,
+    /// Saved characters, by name (filled in by the application).
+    pub characters: Vec<CharacterEntry>,
+    /// The character last put on or saved, if any.
+    pub character: Option<String>,
+    /// The name typed for saving a character.
+    pub character_name: String,
+    /// What the last library action did (or why it failed).
+    pub character_status: Option<Result<String, String>>,
+}
+
+/// One saved character: an avatar's build, measurements and looks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CharacterEntry {
+    pub name: String,
+    /// Measured height in metres when saved.
+    pub height: f32,
+    pub params: BodyParams,
+    pub targets: [Option<f32>; Measure::ALL.len()],
+    pub appearance: Appearance,
+}
+
+impl CharacterEntry {
+    /// True if the avatar looks exactly like this character.
+    pub fn worn_by(&self, avatar: &AvatarState) -> bool {
+        self.params == avatar.params && self.targets == avatar.targets && self.appearance == avatar.appearance
+    }
+
+    /// Puts this character's build, measurements and looks on the avatar
+    /// (the pose stays).
+    pub fn put_on(&self, avatar: &mut AvatarState) {
+        avatar.params = self.params;
+        avatar.targets = self.targets;
+        avatar.appearance = self.appearance;
+        avatar.character = Some(self.name.clone());
+        avatar.character_name = self.name.clone();
+    }
 }
 
 impl Default for AvatarState {
@@ -425,6 +467,10 @@ impl Default for AvatarState {
             appearance: Appearance::default(),
             animation: AnimationState::default(),
             available: false,
+            characters: Vec::new(),
+            character: None,
+            character_name: String::new(),
+            character_status: None,
         }
     }
 }
@@ -453,15 +499,24 @@ pub enum CanvasTool {
     AddPoint,
     /// Drag a line to bend it into a curve; double-click straightens it.
     Curve,
+    /// Click a seam or a free edge to sew it with the chosen stitch.
+    Stitch,
+    /// Sew a line to another as a flat-felled seam.
+    FlatFell,
+    /// Put a zipper between two lines.
+    Zipper,
 }
 
 impl CanvasTool {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 13] = [
         Self::Select,
         Self::Points,
         Self::AddPoint,
         Self::Curve,
         Self::Sew,
+        Self::FlatFell,
+        Self::Zipper,
+        Self::Stitch,
         Self::SketchLine,
         Self::SketchSpline,
         Self::Button,
@@ -481,6 +536,9 @@ impl CanvasTool {
             Self::Pull => "Pull fabric (move piece)",
             Self::AddPoint => "Add point on a line (A)",
             Self::Curve => "Bend lines into curves (C)",
+            Self::Stitch => "Stitch: click a seam or an edge to sew it with the chosen stitch (T)",
+            Self::FlatFell => "Flat-felled seam: sew two lines, allowances folded in, two rows outside (F)",
+            Self::Zipper => "Zipper: put a zipper between two lines, like sewing a seam (Z)",
         }
     }
 }
@@ -573,6 +631,15 @@ pub struct EditorState {
     pub timeline: Timeline,
     /// The studio render of the 3D view and its window.
     pub render: RenderState,
+    /// The stitch the sewing tool sews new seams with, and the stitch tool
+    /// puts on what it is clicked on.
+    pub sew_stitching: cad_core::Stitching,
+    /// How the flat-felled seam tool sews (its thread, stitch length…).
+    pub felled_stitching: FelledStitching,
+    /// The zipper the zipper tool puts in.
+    pub zipper: cad_core::Zipper,
+    /// Settings for the next dart or pleat cut into a line.
+    pub shaping: Shaping,
     pub stats: SceneStats,
     /// Labels of the next undo/redo steps, for the Edit menu.
     pub undo_label: Option<String>,
@@ -625,6 +692,38 @@ impl RenderState {
 
     pub fn rendering(&self) -> bool {
         self.start || (self.texture.is_some() && self.samples.0 < self.samples.1)
+    }
+}
+
+/// The flat-felled seam tool's stitch.
+#[derive(Debug, Clone, Copy)]
+pub struct FelledStitching(pub cad_core::Stitching);
+
+impl Default for FelledStitching {
+    fn default() -> Self {
+        Self(cad_core::Stitching::of(cad_core::StitchKind::FlatFelled).with_thread([0.78, 0.76, 0.7]))
+    }
+}
+
+/// The next dart or pleat: where along the line, and how big (mm).
+#[derive(Debug, Clone, Copy)]
+pub struct Shaping {
+    pub at: f32,
+    pub dart_width: f32,
+    pub dart_length: f32,
+    pub pleat_intake: f32,
+    pub pleat_length: f32,
+}
+
+impl Default for Shaping {
+    fn default() -> Self {
+        Self {
+            at: 0.5,
+            dart_width: 25.0,
+            dart_length: 110.0,
+            pleat_intake: 40.0,
+            pleat_length: 140.0,
+        }
     }
 }
 
@@ -695,12 +794,48 @@ pub enum UiCommand {
     SimulateGarmentMotion,
     /// Turn a seam around (its start meets the other end).
     FlipSeam(cad_core::SeamId),
+    /// Sew a seam with another stitch.
+    SetSeamStitching(cad_core::SeamId, cad_core::Stitching),
+    /// Make a seam a zipper, change it, or (`None`) a plain seam again.
+    SetSeamZipper(cad_core::SeamId, Option<cad_core::Zipper>),
+    /// Cut a dart into a piece at fraction `t` of `edge` (mm).
+    AddDart {
+        piece: PieceId,
+        edge: u32,
+        t: f32,
+        width: f32,
+        length: f32,
+    },
+    /// Lay a knife pleat into a piece at fraction `t` of `edge` (mm).
+    AddPleat {
+        piece: PieceId,
+        edge: u32,
+        t: f32,
+        intake: f32,
+        length: f32,
+    },
+    /// Replace a piece's fold lines.
+    SetFolds {
+        piece: PieceId,
+        folds: Vec<cad_core::FoldLine>,
+    },
+    /// Stitch a free edge (hem, neckline) on its own; `None` unpicks it.
+    SetEdgeStitching {
+        piece: PieceId,
+        span: cad_core::EdgeSpan,
+        stitching: Option<cad_core::Stitching>,
+    },
     /// Copy the outermost garment into a new layer worn over it.
     AddOuterLayer,
     /// Replace the avatar with the geometry in this file.
     ImportAvatar(std::path::PathBuf),
     /// Go back to the built-in parametric avatar.
     RestoreAvatar,
+    /// Save the avatar's build, measurements and looks to the character
+    /// library under this name (replacing one of the same name).
+    SaveCharacter(String),
+    /// Remove the character with this name from the library.
+    DeleteCharacter(String),
     /// Write the pattern or the draped garment to this file.
     Export(std::path::PathBuf),
     /// Inspect/load a pattern file (.pdf or .svg) for the pattern import inspector.

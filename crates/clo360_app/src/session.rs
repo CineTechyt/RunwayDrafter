@@ -27,13 +27,55 @@ struct SceneKey {
 }
 use crate::controllers::{self, CanvasTool};
 
+/// How long the machine takes to sew one row.
+const SEW_TIME: std::time::Duration = std::time::Duration::from_millis(1600);
+
+/// The garment's stitches and how far along each row is being sewn.
+pub struct Sewing {
+    stitches: gfx_render::Stitches,
+    built: Option<(u64, u64)>,
+    started: std::collections::HashMap<u64, std::time::Instant>,
+    /// Rows found after the first build are new: sewn while you watch.
+    primed: bool,
+    epoch: std::time::Instant,
+}
+
+impl Default for Sewing {
+    fn default() -> Self {
+        Self {
+            stitches: Default::default(),
+            built: None,
+            started: Default::default(),
+            primed: false,
+            epoch: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Sewing {
+    /// A row is still being sewn.
+    pub fn busy(&self) -> bool {
+        let now = std::time::Instant::now();
+        self.started.values().any(|t| now.duration_since(*t) < SEW_TIME)
+    }
+
+    /// Everything there now counts as sewn already (an opened project).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Image maps are loaded at most this many pixels across.
+const MAP_PIXELS: u32 = 2048;
 /// Pixels per thread of the woven fabric textures.
 pub const WEAVE_PIXELS: u32 = 8;
 
 /// How far round the grabbed point the pull tool moves the cloth, metres.
-const GRAB_RADIUS: f32 = 0.35;
+/// A handful: the middle of it is held and goes with the cursor, the
+/// cloth around follows by itself.
+const GRAB_RADIUS: f32 = 0.06;
 /// How much of the way to the cursor the grabbed point goes per step.
-const GRAB_STRENGTH: f32 = 0.3;
+const GRAB_STRENGTH: f32 = 1.0;
 
 /// Radius the avatar's collision field is closed with for a cloth mesh of
 /// the given particle distance (mm): half a triangle edge, within reason.
@@ -56,6 +98,16 @@ type GarmentBake = (
 const SETTLE_STEPS: u32 = 60;
 
 pub struct Session {
+    /// The stitches pinned to the garment (for this topology and document
+    /// revision), and when each row started being sewn.
+    pub sewing: Sewing,
+    /// Image maps that could not be loaded (by key): not tried again.
+    failed_maps: std::cell::RefCell<std::collections::HashSet<u64>>,
+    /// Image maps being decoded off the interface's thread (large scans
+    /// take seconds), by key.
+    loading_maps: std::cell::RefCell<
+        std::collections::HashMap<u64, std::sync::mpsc::Receiver<Result<cad_core::WeaveTexture, String>>>,
+    >,
     pub document: PatternDocument,
     pub topology: GarmentTopology,
     pub history: History,
@@ -130,6 +182,13 @@ struct SceneGrab {
 }
 
 impl Session {
+    /// Reads the character library again for the Avatar window.
+    pub fn refresh_characters(&mut self) {
+        self.editor.avatar.characters = crate::characters::folder()
+            .map(|folder| crate::characters::list(&folder).iter().map(|c| c.entry()).collect())
+            .unwrap_or_default();
+    }
+
     /// `threaded`: the simulation steps on its own thread (the editor);
     /// otherwise inline with the frames (headless runs, tests).
     pub fn new(
@@ -166,6 +225,9 @@ impl Session {
             simulation
         });
         Self {
+            sewing: Sewing::default(),
+            failed_maps: Default::default(),
+            loading_maps: Default::default(),
             document,
             topology,
             history: History::default(),
@@ -276,6 +338,9 @@ impl Session {
                         }
                         self.garment_dirty = true;
                         self.settle_steps = SETTLE_STEPS;
+                        // The body moved under the garment: it drapes on
+                        // until it has settled on the new shape.
+                        self.editor.timeline.playing = true;
                         // Keep the pieces' start positions in step with the
                         // body for the next reset, without resetting now.
                         avatar::arrange_around(&mut self.document, &body.mesh, &body.measurements);
@@ -362,7 +427,10 @@ impl Session {
                     self.fit_canvas = true;
                 }
                 UiCommand::DeleteSelection => {
-                    let seam = (self.editor.canvas_tool == app_ui::CanvasTool::Sew)
+                    let seam = matches!(
+                        self.editor.canvas_tool,
+                        app_ui::CanvasTool::Sew | app_ui::CanvasTool::FlatFell | app_ui::CanvasTool::Zipper
+                    )
                         .then_some(self.editor.selected_edge)
                         .flatten()
                         .and_then(|edge| self.document.seam_of(edge))
@@ -487,6 +555,44 @@ impl Session {
                         Err(error) => Err(format!("{error:#}")),
                     });
                 }
+                UiCommand::SaveCharacter(name) => {
+                    let name = name.trim().to_owned();
+                    let result = match (&self.body, crate::characters::folder()) {
+                        (None, _) => Err(anyhow::anyhow!("only the built-in avatar can be saved")),
+                        (_, None) => Err(anyhow::anyhow!("no home folder for the character library")),
+                        (Some(body), Some(folder)) => {
+                            let avatar = crate::project::AvatarFile::new(
+                                &body.params,
+                                &body.pose,
+                                &self.editor.avatar.targets,
+                                &self.editor.avatar.appearance,
+                            );
+                            let height = self.editor.avatar.measurements.get(avatar::Measure::Height);
+                            crate::characters::save(&folder, &crate::characters::Character::new(&name, height, avatar))
+                        }
+                    };
+                    self.editor.avatar.character_status = Some(match result {
+                        Ok(()) => {
+                            self.editor.avatar.character = Some(name.clone());
+                            Ok(format!("Saved \u{201c}{name}\u{201d}"))
+                        }
+                        Err(error) => Err(format!("{error:#}")),
+                    });
+                    self.refresh_characters();
+                }
+                UiCommand::DeleteCharacter(name) => {
+                    let result = crate::characters::folder()
+                        .ok_or_else(|| anyhow::anyhow!("no character library"))
+                        .and_then(|folder| crate::characters::delete(&folder, &name));
+                    self.editor.avatar.character_status = Some(match result {
+                        Ok(()) => Ok(format!("Deleted \u{201c}{name}\u{201d}")),
+                        Err(error) => Err(format!("{error:#}")),
+                    });
+                    if self.editor.avatar.character.as_deref() == Some(name.as_str()) {
+                        self.editor.avatar.character = None;
+                    }
+                    self.refresh_characters();
+                }
                 UiCommand::OpenProject(path) => match crate::project::Project::load(&path) {
                     Ok(project) => {
                         if let Some(avatar) = &project.avatar {
@@ -509,7 +615,28 @@ impl Session {
                 },
                 UiCommand::SimulateGarmentMotion => self.simulate_garment_motion(),
                 UiCommand::NewProject(sample) => {
-                    self.replace_document(sample.document(), &mut changes);
+                    let document = match (sample, self.avatar()) {
+                        // Drafted to the avatar's own measurements.
+                        (app_ui::Sample::Jeans, Some((_, m))) => {
+                            let mm = |v: f32, fallback: f32| if v > 0.0 { v * 1000.0 } else { fallback };
+                            let base = cad_core::jeans::JeansSize::default();
+                            let inseam = mm(m.get(avatar::Measure::Inseam), base.inseam);
+                            cad_core::jeans::jeans(cad_core::jeans::JeansSize {
+                                waist: mm(m.get(avatar::Measure::Waist), base.waist),
+                                hips: mm(m.get(avatar::Measure::Hips), base.hips),
+                                thigh: mm(m.get(avatar::Measure::Thigh), base.thigh),
+                                inseam,
+                                rise: (m.waist_level * 1000.0 - inseam).clamp(180.0, 380.0),
+                            })
+                        }
+                        _ => sample.document(),
+                    };
+                    let mut document = document;
+                    if sample == app_ui::Sample::Jeans {
+                        // Drafted on top of each other: laid out side by side.
+                        document.tidy_layout(40.0);
+                    }
+                    self.replace_document(document, &mut changes);
                     arrange = true;
                     self.editor.project_path = None;
                     self.editor.project_status =
@@ -521,6 +648,66 @@ impl Session {
                         |document| document.remove_seam(seam).is_some(),
                         &mut changes,
                     );
+                }
+                UiCommand::AddDart {
+                    piece,
+                    edge,
+                    t,
+                    width,
+                    length,
+                } => {
+                    self.edit(
+                        "Add dart",
+                        |document| document.add_dart(piece, edge, t, width, length).is_some(),
+                        &mut changes,
+                    );
+                }
+                UiCommand::AddPleat {
+                    piece,
+                    edge,
+                    t,
+                    intake,
+                    length,
+                } => {
+                    self.edit(
+                        "Add pleat",
+                        |document| document.add_pleat(piece, edge, t, intake, length).is_some(),
+                        &mut changes,
+                    );
+                }
+                UiCommand::SetFolds { piece, folds } => {
+                    self.edit(
+                        "Fold lines",
+                        |document| {
+                            let Some(p) = document.piece_mut(piece) else {
+                                return false;
+                            };
+                            p.folds = folds;
+                            document.touch();
+                            true
+                        },
+                        &mut changes,
+                    );
+                }
+                UiCommand::SetSeamZipper(seam, zipper) => {
+                    // Opening or closing it changes what holds the cloth.
+                    self.edit(
+                        "Zipper",
+                        |document| document.set_seam_zipper(seam, zipper),
+                        &mut changes,
+                    );
+                }
+                UiCommand::SetSeamStitching(seam, stitching) => {
+                    self.restitch("Stitch", |document| document.set_seam_stitching(seam, stitching));
+                }
+                UiCommand::SetEdgeStitching {
+                    piece,
+                    span,
+                    stitching,
+                } => {
+                    self.restitch("Stitch edge", |document| {
+                        document.set_edge_stitching(piece, span, stitching)
+                    });
                 }
                 UiCommand::FlipSeam(seam) => {
                     self.edit(
@@ -1030,6 +1217,17 @@ impl Session {
         {
             return;
         }
+        if let Some((_, m)) = self.avatar() {
+            log::info!(
+                "avatar: waist {:.0} mm at {:.0} mm, hips {:.0} mm at {:.0} mm, thigh {:.0} mm, inseam {:.0} mm",
+                m.get(avatar::Measure::Waist) * 1000.0,
+                m.waist_level * 1000.0,
+                m.get(avatar::Measure::Hips) * 1000.0,
+                m.hip_level * 1000.0,
+                m.get(avatar::Measure::Thigh) * 1000.0,
+                m.get(avatar::Measure::Inseam) * 1000.0
+            );
+        }
         self.garment_auto = Some(key);
         if !self.draped && self.garment_at_rest.is_none() {
             return;
@@ -1075,7 +1273,7 @@ impl Session {
                     let key = self.garment_bake.as_ref().map(|(_, _, key)| *key);
                     if garment.stretch > crate::garment_motion::RELIABLE_STRETCH {
                         log::warn!(
-                            "the garment simulation through {:?} overstretched the cloth ({:.0} %); showing it carried with the skin",
+                            "the garment simulation through {:?} stretched the cloth {:.0} % further than as draped; showing it carried with the skin",
                             garment.motion,
                             garment.stretch * 100.0
                         );
@@ -1102,6 +1300,42 @@ impl Session {
     /// none. Placed under where the hips actually come to rest in the played
     /// motion, and kept clear of the body as it stands before sitting, so it
     /// rises behind the legs rather than through them.
+    /// The stitches on the garment as it lies now, with the needles of rows
+    /// being sewn, appended to `props`. True while something is being sewn.
+    pub fn stitch_props(&mut self, props: &mut gfx_render::MeshData) -> bool {
+        let mesh = self.topology.mesh();
+        let key = (mesh.generation, self.document.revision());
+        if self.sewing.built != Some(key) {
+            self.sewing.built = Some(key);
+            self.sewing.stitches = gfx_render::Stitches::build(&self.document, &self.topology);
+            let now = std::time::Instant::now();
+            let primed = self.sewing.primed;
+            for row in self.sewing.stitches.rows() {
+                // Rows there from the start (an opened project) are sewn
+                // already; new ones are sewn now.
+                self.sewing
+                    .started
+                    .entry(row)
+                    .or_insert(if primed { now } else { now - SEW_TIME * 2 });
+            }
+            self.sewing.primed = true;
+        }
+        let now = std::time::Instant::now();
+        let started = &self.sewing.started;
+        let sewn = |row: u64| {
+            started.get(&row).map_or(1.0, |t| {
+                (now.duration_since(*t).as_secs_f32() / SEW_TIME.as_secs_f32()).clamp(0.0, 1.0)
+            })
+        };
+        let needles = self.sewing.stitches.mesh(self.topology.mesh(), sewn, props);
+        // The needle goes up and down about twelve times a second.
+        let phase = (now.duration_since(self.sewing.epoch).as_secs_f32() * 12.0).fract();
+        for needle in &needles {
+            gfx_render::scene3d::stitches::needle_model(props, needle, phase);
+        }
+        !needles.is_empty()
+    }
+
     pub fn chair(&mut self) -> Option<(glam::Vec3, glam::Vec3)> {
         let state = self.editor.avatar.animation;
         let grow = state.motion?.chair(state.time)?;
@@ -1152,6 +1386,7 @@ impl Session {
     /// Starts over with `document`: nothing selected, no history, not draped.
     fn replace_document(&mut self, document: PatternDocument, changes: &mut Vec<DocumentChange>) {
         self.document = document;
+        self.sewing.reset();
         self.editor.selected_piece = None;
         self.editor.selected_edge = None;
         self.editor.sew_a = None;
@@ -1165,6 +1400,19 @@ impl Session {
 
     /// Runs an edit with one undo step for all of it. `edit` returns
     /// whether it changed anything.
+    /// A change of how something is sewn: undoable, but only the look
+    /// changes, so the drape goes on undisturbed.
+    fn restitch(&mut self, label: &str, edit: impl FnOnce(&mut PatternDocument) -> bool) {
+        let before = self.document.clone();
+        if edit(&mut self.document) {
+            self.history.record(Box::new(cad_core::DocumentSnapshot::new(
+                label,
+                before,
+                self.document.clone(),
+            )));
+        }
+    }
+
     fn edit(
         &mut self,
         label: &str,
@@ -1275,6 +1523,8 @@ impl Session {
                     }
                     self.topology.mesh_mut().recompute_normals();
                     self.garment_dirty = true;
+                    // Let go: the cloth falls into place and settles.
+                    self.editor.timeline.playing = true;
                 }
             }
         }
@@ -1567,7 +1817,10 @@ impl Session {
 
     /// Whether the session needs continuous redraws.
     pub fn animating(&self) -> bool {
-        self.editor.timeline.playing
+        // Frames keep coming while textures load, to show them when done.
+        !self.loading_maps.borrow().is_empty()
+            || self.sewing.busy()
+            || self.editor.timeline.playing
             || (self.editor.avatar.animation.playing
                 && self.editor.avatar.animation.motion.is_some())
             || self.garment_bake.is_some()
@@ -1654,18 +1907,60 @@ impl Session {
         self.document
             .fabrics()
             .iter()
+            .filter(|f| f.maps.is_none())
             .filter_map(|f| f.weave.as_ref())
             .map(|w| (w.key(), w))
             .collect()
     }
 
-    /// Loads the textures of every weave in use that the scene lacks.
+    /// Loads the textures of every weave and set of image maps in use that
+    /// the scene lacks. Maps that cannot be read are reported once.
     pub fn load_weaves(&self, gpu: &gfx_render::GpuContext, scene: &mut gfx_render::SceneRenderer) {
         let weaves = self.weaves();
-        let keys: Vec<u64> = weaves.iter().map(|(k, _)| *k).collect();
+        let maps: Vec<(u64, &cad_core::FabricMaps)> = self
+            .document
+            .fabrics()
+            .iter()
+            .filter_map(|f| f.maps.as_ref())
+            .map(|m| (m.key(), m))
+            .collect();
+        let keys: Vec<u64> = weaves.iter().map(|(k, _)| *k).chain(maps.iter().map(|(k, _)| *k)).collect();
         for (key, weave) in weaves {
             if !scene.has_weave(key) {
                 scene.add_weave(gpu, key, &weave.texture(WEAVE_PIXELS), &keys);
+            }
+        }
+        for (key, set) in maps {
+            if scene.has_weave(key) || self.failed_maps.borrow().contains(&key) {
+                continue;
+            }
+            let mut loading = self.loading_maps.borrow_mut();
+            let Some(receiver) = loading.get(&key) else {
+                // Decoded on a thread of its own; shown when it is done.
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let set = set.clone();
+                std::thread::spawn(move || {
+                    let _ = sender.send(io_cad::fabric_maps::load(&set, MAP_PIXELS).map_err(|e| e.to_string()));
+                });
+                loading.insert(key, receiver);
+                continue;
+            };
+            match receiver.try_recv() {
+                Ok(Ok(texture)) => {
+                    scene.add_weave(gpu, key, &texture, &keys);
+                    loading.remove(&key);
+                }
+                Ok(Err(error)) => {
+                    log::error!("fabric maps: {error}");
+                    self.failed_maps.borrow_mut().insert(key);
+                    loading.remove(&key);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::error!("fabric maps: the loader stopped");
+                    self.failed_maps.borrow_mut().insert(key);
+                    loading.remove(&key);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
     }
@@ -1683,18 +1978,36 @@ impl Session {
             wash: f.wash,
             pattern_scale: f.pattern_scale,
             relief: f.relief,
-            weave_key: f.weave.as_ref().map_or(0, cad_core::Weave::key),
-            weave_repeat: match (&f.weave, piece_data) {
-                (Some(weave), Some(p)) => {
+            weave_key: match (&f.maps, &f.weave) {
+                (Some(maps), _) => maps.key(),
+                (None, Some(weave)) => weave.key(),
+                (None, None) => 0,
+            },
+            weave_maps: f.maps.is_some(),
+            weave_repeat: match (&f.maps, &f.weave, piece_data) {
+                (Some(maps), _, Some(p)) => {
+                    let tile = p.uv.tile_size.to_array();
+                    [tile[0] / maps.size_mm[0].max(1.0), tile[1] / maps.size_mm[1].max(1.0)]
+                }
+                (None, Some(weave), Some(p)) => {
                     weave.repeats(WEAVE_PIXELS, p.uv.tile_size.to_array())
                 }
                 _ => [1.0; 2],
             },
             wear: f.wear,
-            weave_yarn: f.weave.as_ref().map_or([0.0; 4], |weave| {
+            weave_yarn: if let Some(maps) = &f.maps {
+                // No threads to vary; w: the alpha holds a roughness map.
+                // y: shuffle the patches.
+                [
+                    0.0,
+                    if maps.break_up_repeats { 1.0 } else { 0.0 },
+                    0.0,
+                    if maps.roughness.is_some() { 1.0 } else { 0.0 },
+                ]
+            } else { f.weave.as_ref().map_or([0.0; 4], |weave| {
                 let (ends, picks) = weave.texture_threads(WEAVE_PIXELS);
                 [ends as f32, picks as f32, weave.irregularity, weave.slubs]
-            }),
+            })},
             ..SurfaceMaterial::default()
         });
         if self.editor.selected_piece == Some(piece) {

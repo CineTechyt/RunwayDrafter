@@ -118,6 +118,67 @@ fn a_falling_sheet_comes_to_rest_on_the_sheet_below() {
 }
 
 #[test]
+fn the_global_solver_rests_a_falling_sheet_on_the_sheet_below() {
+    // The solver garment animations are simulated with: one implicit step
+    // per frame, cloth against cloth as planes in that step.
+    let run = |self_collision: bool| {
+        let (document, mut topology, [lower, upper]) = sheets(0.08);
+        let settings = SolverSettings {
+            backend: topology_sync::SolverBackend::Global,
+            ..settings(self_collision)
+        };
+        let ctx = SolverContext {
+            document: &document,
+            settings: &settings,
+            colliders: &[],
+            body: None,
+            body_mesh: None,
+            ground: 0.0,
+            dt: DT,
+        };
+        let mut solver = XpbdSolver::new();
+        solver.rebind(topology.mesh(), &ctx);
+        let mut most_contacts = 0;
+        for _ in 0..90 {
+            solver.step(topology.mesh_mut(), &ctx);
+            most_contacts = most_contacts.max(solver.stats().cloth_contacts);
+        }
+        // The lowest the upper sheet gets above the lower one's middle.
+        let mesh = topology.mesh();
+        let span = mesh.span(upper).unwrap();
+        let lowest = mesh.positions[span.vertices.start as usize..span.vertices.end as usize]
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::MAX, f32::min);
+        (
+            mean_height(&topology, upper) - mean_height(&topology, lower),
+            lowest - mean_height(&topology, lower),
+            most_contacts,
+        )
+    };
+    let thickness = SolverSettings::default().cloth_thickness;
+    let (gap, lowest, contacts) = run(true);
+    assert!(contacts > 20, "the sheets are in contact ({contacts} vertices)");
+    assert!(
+        gap > 0.3 * thickness && gap < 3.0 * thickness,
+        "the upper sheet lies on the lower one, gap {:.2} mm",
+        gap * 1000.0
+    );
+    assert!(
+        lowest > -0.2 * thickness,
+        "no part of it has gone through, lowest {:.2} mm",
+        lowest * 1000.0
+    );
+    let (gap, _, contacts) = run(false);
+    assert_eq!(contacts, 0);
+    assert!(
+        gap.abs() < 0.2 * thickness,
+        "without cloth collision they share the floor, gap {:.2} mm",
+        gap * 1000.0
+    );
+}
+
+#[test]
 fn a_sheet_thrown_through_another_within_one_step_is_caught() {
     // 20 m/s: 67 cm per step, far more than the 23 cm between the sheets,
     // so no sub-step ever sees them close together… but 30 sub-steps of

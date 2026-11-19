@@ -280,6 +280,77 @@ fn appearance(ui: &mut egui::Ui, looks: &mut avatar::Appearance) {
     ui.weak("Looks are for display: the hair does not touch the garment.");
 }
 
+/// The character library: saved avatars to put on with a click, and
+/// saving the current one under a name.
+fn characters(ui: &mut egui::Ui, avatar: &mut crate::state::AvatarState, output: &mut UiOutput) {
+    if avatar.characters.is_empty() {
+        ui.weak("No saved characters yet. Shape the avatar, give it a name below and save it.");
+    }
+    let mut put_on = None;
+    for (index, character) in avatar.characters.iter().enumerate() {
+        let worn = character.worn_by(avatar);
+        let current = avatar.character.as_deref() == Some(character.name.as_str());
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+            let [r, g, b] = character.appearance.skin;
+            ui.painter().circle_filled(rect.center(), 6.0, egui::Color32::from(egui::Rgba::from_rgb(r, g, b)));
+            let [r, g, b] = character.appearance.hair.color;
+            ui.painter().circle_stroke(rect.center(), 6.0, egui::Stroke::new(2.0, egui::Color32::from(egui::Rgba::from_rgb(r, g, b))));
+            let mut label = character.name.clone();
+            if current && !worn {
+                label.push_str(" (changed)");
+            }
+            let gender = match character.params.gender {
+                g if g <= 0.25 => "woman",
+                g if g >= 0.75 => "man",
+                _ => "in between",
+            };
+            let response = ui
+                .selectable_label(worn, label)
+                .on_hover_text(format!("{:.0} cm, {gender}. Click to put this character on (the pose stays).", character.height * 100.0));
+            if response.clicked() {
+                put_on = Some(index);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("🗑").on_hover_text("Delete this character from the library").clicked() {
+                    output.commands.push(UiCommand::DeleteCharacter(character.name.clone()));
+                }
+                ui.weak(format!("{:.0} cm", character.height * 100.0));
+            });
+        });
+    }
+    if let Some(index) = put_on {
+        let character = avatar.characters[index].clone();
+        character.put_on(avatar);
+    }
+
+    ui.horizontal(|ui| {
+        let field = egui::TextEdit::singleline(&mut avatar.character_name).hint_text("Name").desired_width(150.0);
+        let typed = ui.add(field);
+        let name = avatar.character_name.trim().to_owned();
+        let exists = avatar.characters.iter().any(|c| c.name.eq_ignore_ascii_case(&name));
+        let label = if exists { "Update" } else { "Save character" };
+        let hint = if exists {
+            "Replace the saved character of this name with the avatar as it is now"
+        } else {
+            "Keep this build, these measurements and looks in the library, for every project"
+        };
+        let enter = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (ui.add_enabled(!name.is_empty(), egui::Button::new(label)).on_hover_text(hint).clicked() || enter) && !name.is_empty() {
+            output.commands.push(UiCommand::SaveCharacter(name));
+        }
+    });
+    match &avatar.character_status {
+        Some(Ok(message)) => {
+            ui.weak(message);
+        }
+        Some(Err(message)) => {
+            ui.colored_label(ui.visuals().error_fg_color, message);
+        }
+        None => {}
+    }
+}
+
 /// Allowed range of a measurement field, in centimetres.
 fn range_cm(measure: Measure) -> std::ops::RangeInclusive<f32> {
     match measure {
@@ -315,6 +386,12 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
         dragging |= response.dragged() || response.has_focus();
         response
     };
+
+    // --- saved characters ---------------------------------------------------------
+    egui::CollapsingHeader::new("Characters")
+        .default_open(true)
+        .show(ui, |ui| characters(ui, avatar, output));
+    ui.add_space(4.0);
 
     // --- presets ---------------------------------------------------------------
     ui.horizontal(|ui| {

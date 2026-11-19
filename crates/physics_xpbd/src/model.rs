@@ -16,9 +16,16 @@ pub const INVALID: u32 = u32::MAX;
 pub const ROW_ACTIVE: u32 = 1;
 /// The row is a seam stitch: its rest length is scaled by the seam gap.
 pub const ROW_SEAM: u32 = 2;
+/// A fold line's hinge: particles (edge, edge, left wing, right wing),
+/// folded to the signed angle in `fold_limit` (radians, positive towards
+/// the inside). Solvers that do not know it see a distance row between
+/// the wings (`rest`), which holds the angle but not which way.
+pub const ROW_FOLD: u32 = 4;
 
 /// Compliance of a closed stitch in m/N; effectively rigid.
 const SEAM_COMPLIANCE: f32 = 1e-7;
+/// How firmly a pressed fold holds its angle.
+const FOLD_COMPLIANCE: f32 = 2e-6;
 const MM_TO_M: f32 = 1e-3;
 /// Distance a done-up button keeps its buttonhole at, in metres.
 pub const FASTENING_GAP: f32 = 0.004;
@@ -122,6 +129,12 @@ impl Model {
         let mut masses = vec![0.0f32; particle_count];
         let mut elements = Vec::new();
         let mut model = Model::default();
+        // Mesh edges along fold lines, and how far the cloth folds there.
+        let folds: HashMap<(u32, u32), f32> = mesh
+            .folds
+            .iter()
+            .map(|&(a, b, angle)| ((a.min(b), a.max(b)), angle))
+            .collect();
 
         for span in &mesh.pieces {
             let Some(piece) = document.piece(span.piece) else {
@@ -210,6 +223,36 @@ impl Model {
                 let (c01, c02, c03, c04) = (cot(e0, e1), cot(e0, e2), cot(-e0, e3), cot(-e0, e4));
                 let areas = 0.5 * (e0.perp_dot(e1).abs() + e0.perp_dot(e2).abs());
                 if areas < 1e-12 {
+                    continue;
+                }
+                if let Some(&angle) = folds.get(&(i0, i1)) {
+                    // A fold line: instead of resisting bending, the hinge
+                    // holds the two wings at the fold's angle. Which wing
+                    // lies left of the edge (seen from outside) fixes which
+                    // way is in.
+                    let (left, right, el, er) = if e0.perp_dot(e1) > 0.0 {
+                        (i2, i3, e1, e2)
+                    } else {
+                        (i3, i2, e2, e1)
+                    };
+                    let along = e0.normalize_or_zero();
+                    let (a2, h2) = (el.dot(along), el.perp_dot(along).abs());
+                    let (a3, h3) = (er.dot(along), er.perp_dot(along).abs());
+                    let theta = angle.clamp(-175.0, 175.0).to_radians();
+                    let rest = ((a2 - a3).powi(2)
+                        + (h2 + h3 * theta.abs().cos()).powi(2)
+                        + (h3 * theta.abs().sin()).powi(2))
+                    .sqrt();
+                    let mut element = Element::new([i0, i1, left, right]).with_row(
+                        0,
+                        [0.0, 0.0, 1.0, -1.0],
+                        rest,
+                        FOLD_COMPLIANCE,
+                        ROW_FOLD,
+                    );
+                    element.rows[0].fold_limit = theta;
+                    elements.push(element);
+                    model.bending_hinges += 1;
                     continue;
                 }
                 let weights = [c03 + c04, c01 + c02, -c01 - c03, -c02 - c04];

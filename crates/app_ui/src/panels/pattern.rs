@@ -66,7 +66,8 @@ impl Panel for PatternPropertiesPanel {
             .collect();
         let edge_count = cx.document.piece(id).map_or(0, |p| p.outline.edge_count());
         // Every seam on this piece: (id, partner name, length here, length there).
-        let seams: Vec<(cad_core::SeamId, String, f32, f32)> = cx
+        #[allow(clippy::type_complexity)]
+        let seams: Vec<(cad_core::SeamId, String, f32, f32, cad_core::Stitching, (String, String), Option<cad_core::Zipper>)> = cx
             .document
             .seams()
             .iter()
@@ -84,11 +85,13 @@ impl Panel for PatternPropertiesPanel {
                 } else {
                     other.name.clone()
                 };
-                Some((s.id, name, here, other.outline.span_length(theirs.1)))
+                let piece_name = |p: cad_core::PieceId| cx.document.piece(p).map_or_else(String::new, |p| p.name.clone());
+                let sides = (piece_name(s.a.piece), piece_name(s.b.piece));
+                Some((s.id, name, here, other.outline.span_length(theirs.1), s.stitching, sides, s.zipper))
             })
             .collect();
         // The piece's lines in order: (span, length, sewn?).
-        let lines: Vec<(cad_core::EdgeSpan, f32, bool)> =
+        let lines: Vec<(cad_core::EdgeSpan, f32, bool, cad_core::Stitching)> =
             cx.document.piece(id).map_or_else(Vec::new, |piece| {
                 piece
                     .outline
@@ -98,7 +101,13 @@ impl Panel for PatternPropertiesPanel {
                         let sewn = span
                             .edges(edge_count)
                             .any(|edge| cx.document.seam_of(EdgeRef::new(id, edge)).is_some());
-                        (span, piece.outline.span_length(span), sewn)
+                        let stitching = piece
+                            .edge_stitches
+                            .iter()
+                            .find(|e| e.span.first == span.first)
+                            .map(|e| e.stitching)
+                            .unwrap_or_default();
+                        (span, piece.outline.span_length(span), sewn, stitching)
                     })
                     .collect()
             });
@@ -365,8 +374,15 @@ impl Panel for PatternPropertiesPanel {
             if seams.is_empty() {
                 ui.weak("Use the sewing tool (S) on the 2D view: click a line, then the line it is sewn to.");
             }
+            ui.horizontal(|ui| {
+                ui.label("New seams sewn with");
+                super::stitch_editor::kind_picker(ui, "new seam stitch", &mut cx.editor.sew_stitching);
+                if cx.editor.sew_stitching.visible() {
+                    ui.color_edit_button_rgb(&mut cx.editor.sew_stitching.thread).on_hover_text("Thread colour");
+                }
+            });
             egui::Grid::new("seams").num_columns(3).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
-                for (seam, partner, here, there) in &seams {
+                for (seam, partner, here, there, stitching, sides, zipper) in &seams {
                     ui.label(format!("to {partner}"));
                     let difference = here - there;
                     let text = format!("{here:.0} / {there:.0} mm");
@@ -386,6 +402,32 @@ impl Panel for PatternPropertiesPanel {
                         }
                     });
                     ui.end_row();
+                    ui.label("");
+                    let mut edited = *stitching;
+                    let changed = ui
+                        .vertical(|ui| super::stitch_editor::show(ui, ("seam stitch", seam.0), &mut edited, Some((&sides.0, &sides.1))))
+                        .inner;
+                    if changed {
+                        cx.output.commands.push(crate::state::UiCommand::SetSeamStitching(*seam, edited));
+                    }
+                    ui.end_row();
+                    ui.label("");
+                    ui.vertical(|ui| {
+                        let mut is_zipper = zipper.is_some();
+                        if ui.checkbox(&mut is_zipper, "Zipper").changed() {
+                            cx.output.commands.push(crate::state::UiCommand::SetSeamZipper(
+                                *seam,
+                                is_zipper.then(|| cx.editor.zipper),
+                            ));
+                        }
+                        if let Some(z) = zipper {
+                            let mut z = *z;
+                            if super::stitch_editor::zipper_settings(ui, ("seam zipper", seam.0), &mut z) {
+                                cx.output.commands.push(crate::state::UiCommand::SetSeamZipper(*seam, Some(z)));
+                            }
+                        }
+                    });
+                    ui.end_row();
                 }
             });
         });
@@ -393,7 +435,7 @@ impl Panel for PatternPropertiesPanel {
         // --- lines -----------------------------------------------------------------
         egui::CollapsingHeader::new(format!("Lines ({})", lines.len())).default_open(false).show(ui, |ui| {
             ui.weak("A line runs from one turn point to the next. Join two neighbours to sew them as one; with the point tool, double-click a point to join or split there.");
-            for (index, (span, length, sewn)) in lines.iter().enumerate() {
+            for (index, (span, length, sewn, stitching)) in lines.iter().enumerate() {
                 ui.horizontal(|ui| {
                     let selected = cx.editor.selected_edge.is_some_and(|e| e.piece == id && span.contains(e.edge, edge_count));
                     if ui.selectable_label(selected, format!("Line {}", index + 1)).clicked() {
@@ -404,6 +446,57 @@ impl Panel for PatternPropertiesPanel {
                         ui.weak("sewn");
                     }
                 });
+                let selected = cx.editor.selected_edge.is_some_and(|e| e.piece == id && span.contains(e.edge, edge_count));
+                if selected {
+                    // Shaping the selected line: a dart or a pleat into it.
+                    let shaping = &mut cx.editor.shaping;
+                    ui.indent(("shaping", span.first), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("At");
+                            ui.add(egui::Slider::new(&mut shaping.at, 0.05..=0.95).show_value(false))
+                                .on_hover_text("Where along the line");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add(egui::DragValue::new(&mut shaping.dart_width).range(2.0..=120.0).suffix(" mm wide"));
+                            ui.add(egui::DragValue::new(&mut shaping.dart_length).range(5.0..=400.0).suffix(" mm long"));
+                            if ui.button("Add dart").on_hover_text("Cut a dart into this line and sew its legs together").clicked() {
+                                cx.output.commands.push(crate::state::UiCommand::AddDart {
+                                    piece: id,
+                                    edge: span.first,
+                                    t: shaping.at,
+                                    width: shaping.dart_width,
+                                    length: shaping.dart_length,
+                                });
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add(egui::DragValue::new(&mut shaping.pleat_intake).range(4.0..=200.0).suffix(" mm intake"));
+                            ui.add(egui::DragValue::new(&mut shaping.pleat_length).range(10.0..=800.0).suffix(" mm pressed"));
+                            if ui.button("Add pleat").on_hover_text("Fold a knife pleat into this line, tacked at the line and pressed along fold lines").clicked() {
+                                cx.output.commands.push(crate::state::UiCommand::AddPleat {
+                                    piece: id,
+                                    edge: span.first,
+                                    t: shaping.at,
+                                    intake: shaping.pleat_intake,
+                                    length: shaping.pleat_length,
+                                });
+                            }
+                        });
+                    });
+                }
+                if !*sewn {
+                    // A free edge: a hem, a neckline, sewn on its own.
+                    let mut edited = *stitching;
+                    ui.indent(("edge stitch", span.first), |ui| {
+                        if super::stitch_editor::show(ui, ("edge stitch", id.0, span.first), &mut edited, None) {
+                            cx.output.commands.push(crate::state::UiCommand::SetEdgeStitching {
+                                piece: id,
+                                span: *span,
+                                stitching: Some(edited),
+                            });
+                        }
+                    });
+                }
                 // The turn point between this line and the next.
                 if lines.len() > 1 {
                     let next = (span.first + span.count) % edge_count;
@@ -412,6 +505,50 @@ impl Panel for PatternPropertiesPanel {
                         cx.output.commands.push(crate::state::UiCommand::SetPointKind { piece: id, anchor: next, kind: cad_core::PointKind::Smooth });
                     }
                 }
+            }
+        });
+
+        // --- fold lines ---------------------------------------------------------------
+        let folds = piece.folds.clone();
+        let (fold_bounds, fold_dir) = (piece.outline.bounds(), piece.grainline.direction());
+        egui::CollapsingHeader::new(format!("Fold lines ({})", folds.len())).default_open(!folds.is_empty()).show(ui, |ui| {
+            ui.weak("Lines the cloth is folded or pressed along: creases, pleats. 180° lies folded flat.");
+            let mut edited = folds.clone();
+            let mut changed = false;
+            let mut remove = None;
+            for (k, fold) in edited.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}", k + 1));
+                    for p in [&mut fold.a, &mut fold.b] {
+                        changed |= ui.add(egui::DragValue::new(&mut p.x).speed(0.5).suffix(" mm")).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut p.y).speed(0.5).suffix(" mm")).changed();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Folded");
+                    changed |= ui
+                        .add(egui::Slider::new(&mut fold.angle, -180.0..=180.0).suffix("°"))
+                        .on_hover_text("Positive folds the cloth under (towards the inside), negative over")
+                        .changed();
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(k);
+                    }
+                });
+            }
+            if let Some(k) = remove {
+                edited.remove(k);
+                changed = true;
+            }
+            if ui.button("Add fold line").on_hover_text("A crease down the piece along its grain, through its middle").clicked() {
+                let (lo, hi) = fold_bounds;
+                let centre = (lo + hi) * 0.5;
+                let dir = fold_dir;
+                let reach = (hi - lo).length() * 0.5;
+                edited.push(cad_core::FoldLine { a: centre - dir * reach, b: centre + dir * reach, angle: 90.0 });
+                changed = true;
+            }
+            if changed {
+                cx.output.commands.push(crate::state::UiCommand::SetFolds { piece: id, folds: edited });
             }
         });
 

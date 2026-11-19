@@ -94,7 +94,7 @@
         "buttonholes": [
           {
             "position": [
-              -671.5,
+              -687.5,
               345.0
             ],
             "length": 21.0,
@@ -102,7 +102,7 @@
           },
           {
             "position": [
-              -671.5,
+              -687.5,
               270.0
             ],
             "length": 21.0,
@@ -110,7 +110,7 @@
           },
           {
             "position": [
-              -671.5,
+              -687.5,
               195.0
             ],
             "length": 21.0,
@@ -118,7 +118,7 @@
           },
           {
             "position": [
-              -671.5,
+              -687.5,
               120.0
             ],
             "length": 21.0,
@@ -126,7 +126,7 @@
           },
           {
             "position": [
-              -671.5,
+              -687.5,
               45.0
             ],
             "length": 21.0,
@@ -174,8 +174,13 @@
         "layer": 2,
         "placement": {
           "angle": -36.0,
-          "height": 0.0
-        }
+          "height": 0.0,
+          "part": "Torso",
+          "depth": 0.0,
+          "under": null
+        },
+        "edge_stitches": [],
+        "folds": []
       },
       {
         "id": 4,
@@ -423,8 +428,13 @@
         "layer": 1,
         "placement": {
           "angle": 36.0,
-          "height": 0.0
-        }
+          "height": 0.0,
+          "part": "Torso",
+          "depth": 0.0,
+          "under": null
+        },
+        "edge_stitches": [],
+        "folds": []
       },
       {
         "id": 5,
@@ -583,8 +593,13 @@
         "layer": 1,
         "placement": {
           "angle": 180.0,
-          "height": 0.0
-        }
+          "height": 0.0,
+          "part": "Torso",
+          "depth": 0.0,
+          "under": null
+        },
+        "edge_stitches": [],
+        "folds": []
       }
     ],
     "fabrics": [
@@ -599,6 +614,10 @@
         "roughness": 0.85,
         "metallic": 0.0,
         "weave_strength": 0.35,
+        "pattern": "Plain",
+        "wash": 0.0,
+        "pattern_scale": 1.0,
+        "relief": 1.0,
         "physics": {
           "density": 290.0,
           "stretch_weft": 0.72,
@@ -606,7 +625,10 @@
           "shear": 0.45,
           "bending": 0.42,
           "thickness": 1.3
-        }
+        },
+        "weave": null,
+        "wear": 0.25,
+        "maps": null
       },
       {
         "id": 2,
@@ -619,6 +641,10 @@
         "roughness": 0.3,
         "metallic": 0.0,
         "weave_strength": 0.35,
+        "pattern": "Plain",
+        "wash": 0.0,
+        "pattern_scale": 1.0,
+        "relief": 1.0,
         "physics": {
           "density": 85.0,
           "stretch_weft": 0.7,
@@ -626,7 +652,10 @@
           "shear": 0.35,
           "bending": 0.1,
           "thickness": 0.25
-        }
+        },
+        "weave": null,
+        "wear": 0.25,
+        "maps": null
       }
     ],
     "seams": [
@@ -642,7 +671,21 @@
         },
         "reversed": true,
         "a_count": 1,
-        "b_count": 1
+        "b_count": 1,
+        "stitching": {
+          "kind": "Plain",
+          "thread": [
+            0.02,
+            0.02,
+            0.02
+          ],
+          "length": 2.5,
+          "offset": 0.0,
+          "width": 0.0,
+          "thread_size": 0.25,
+          "side": "A"
+        },
+        "zipper": null
       },
       {
         "id": 7,
@@ -656,7 +699,21 @@
         },
         "reversed": true,
         "a_count": 1,
-        "b_count": 1
+        "b_count": 1,
+        "stitching": {
+          "kind": "Plain",
+          "thread": [
+            0.02,
+            0.02,
+            0.02
+          ],
+          "length": 2.5,
+          "offset": 0.0,
+          "width": 0.0,
+          "thread_size": 0.25,
+          "side": "A"
+        },
+        "zipper": null
       },
       {
         "id": 8,
@@ -670,7 +727,21 @@
         },
         "reversed": true,
         "a_count": 1,
-        "b_count": 1
+        "b_count": 1,
+        "stitching": {
+          "kind": "Plain",
+          "thread": [
+            0.02,
+            0.02,
+            0.02
+          ],
+          "length": 2.5,
+          "offset": 0.0,
+          "width": 0.0,
+          "thread_size": 0.25,
+          "side": "A"
+        },
+        "zipper": null
       },
       {
         "id": 9,
@@ -684,7 +755,21 @@
         },
         "reversed": true,
         "a_count": 1,
-        "b_count": 1
+        "b_count": 1,
+        "stitching": {
+          "kind": "Plain",
+          "thread": [
+            0.02,
+            0.02,
+            0.02
+          ],
+          "length": 2.5,
+          "offset": 0.0,
+          "width": 0.0,
+          "thread_size": 0.25,
+          "side": "A"
+        },
+        "zipper": null
       }
     ],
     "next_id": 9,

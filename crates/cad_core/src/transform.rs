@@ -92,6 +92,13 @@ impl PatternPiece {
                 notch.edge = n - 1 - notch.edge;
                 notch.t = 1.0 - notch.t;
             }
+            for stitched in &mut self.edge_stitches {
+                stitched.span.first = n - 1 - stitched.span.last(n);
+            }
+        }
+        self.map_details(|p| transform.point(centre, p));
+        for hole in &mut self.buttonholes {
+            hole.angle = transform.angle(hole.angle);
         }
         self.grainline.origin = transform.point(centre, self.grainline.origin);
         self.grainline.angle = transform.angle(self.grainline.angle);

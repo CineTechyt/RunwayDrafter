@@ -37,6 +37,9 @@ const PUSH_ROUNDS: usize = 3;
 /// How far behind a cloth face a body point may be and still lift it,
 /// in metres: less than the thinnest body part the cloth meets.
 const PUSH_DEPTH: f32 = 0.01;
+/// How far the global solver's cloth may always be moved back when it is
+/// found on the wrong side of other cloth, metres (see `step_global`).
+const MIN_PUT_BACK: f32 = 0.003;
 
 /// XPBD cloth solver with a CPU backend and, when a device is supplied, a
 /// compute-shader backend. The backend is chosen per step from
@@ -66,6 +69,8 @@ pub struct XpbdSolver {
     planes_on_gpu: bool,
     /// Positions at the start of the step, for the continuous tests.
     step_start: Vec<Vec3A>,
+    /// Where the solver left the cloth, before any was put back.
+    contact_scratch: Vec<Vec3A>,
     #[cfg(feature = "gpu")]
     gpu: Option<crate::gpu::GpuBackend>,
     /// Which side holds the authoritative velocities.
@@ -77,6 +82,10 @@ pub struct XpbdSolver {
     /// The cloth the grab moves, with how much of the move each vertex
     /// gets: found along the fabric from the grabbed vertex.
     grab_patch: Vec<(u32, f32)>,
+    /// The vertices held in the hand (the middle of the patch) and their
+    /// own inverse masses: while held they are immovable to the solver,
+    /// so the cloth around follows them rather than pulling them back.
+    grab_held: Vec<(u32, f32)>,
     /// Vertex → neighbours along the fabric (triangle edges, with their
     /// cut length in metres, and stitches, of length zero).
     fabric_graph: Vec<Vec<(u32, f32)>>,
@@ -147,6 +156,7 @@ impl XpbdSolver {
             self.state.previous[i] += delta;
             self.state.velocities[i] -= felt;
         }
+        self.contacts.translate(delta);
         for (out, p) in mesh.positions.iter_mut().zip(&self.state.positions) {
             *out = (*p).into();
         }
@@ -246,17 +256,45 @@ impl XpbdSolver {
     /// Rebuilds the cloth-against-cloth data for the current mesh: which
     /// layer every vertex is in and which vertices are sewn together.
     fn build_contacts(&mut self, mesh: &GarmentMesh, ctx: &SolverContext<'_>) {
+        // Where one piece buttons onto another of the same layer, the one
+        // with the buttonholes lies on top: it is half a layer further out,
+        // so the lap is kept in order like two garments are, whatever the
+        // cloth has been through.
+        let piece_of = |v: u32| {
+            mesh.pieces
+                .iter()
+                .find(|span| span.vertices.contains(&v))
+                .map(|span| span.piece)
+        };
+        let piece = |id| ctx.document.piece(id);
+        let mut on_top = Vec::new();
+        for stitch in &mesh.stitches {
+            if stitch.seam != topology_sync::Stitch::FASTENING {
+                continue;
+            }
+            let (Some(a), Some(b)) = (piece_of(stitch.a), piece_of(stitch.b)) else {
+                continue;
+            };
+            let (Some(pa), Some(pb)) = (piece(a), piece(b)) else {
+                continue;
+            };
+            if a == b || pa.layer != pb.layer {
+                continue;
+            }
+            match (pa.buttonholes.is_empty(), pb.buttonholes.is_empty()) {
+                (false, true) => on_top.push(a),
+                (true, false) => on_top.push(b),
+                _ => {}
+            }
+        }
         let mut layers = vec![0u32; mesh.vertex_count()];
         for span in &mesh.pieces {
-            let layer = ctx
-                .document
-                .piece(span.piece)
-                .map_or(0, |piece| piece.layer);
+            let layer = 2 * piece(span.piece).map_or(0, |piece| piece.layer)
+                + u32::from(on_top.contains(&span.piece));
             layers[span.vertices.start as usize..span.vertices.end as usize].fill(layer);
         }
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         self.triangles.clone_from(&triangles);
-        let stitches: Vec<(u32, u32)> = mesh.stitches.iter().map(|s| (s.a, s.b)).collect();
         // Undistorted edge lengths come from the pattern, in millimetres.
         let rest: Vec<Vec3A> = mesh
             .pattern_positions
@@ -273,7 +311,10 @@ impl XpbdSolver {
             .collect();
         self.ogc = Ogc::new(&self.model, triangles.clone(), &sewn, &rest);
         self.global = Global::new(&self.model);
-        self.contacts = ClothContacts::new(triangles, layers, &stitches, &rest);
+        // Fastened vertices are not one group either: grouped, the cloth
+        // around every button and its hole was never tested against the
+        // other front, and the fronts drifted through each other there.
+        self.contacts = ClothContacts::new(triangles, layers, &sewn, &rest);
         self.clear_planes();
     }
 
@@ -438,6 +479,9 @@ impl ClothSolver for XpbdSolver {
         self.model = Model::build(mesh, ctx.document);
         self.fabric_graph = fabric_graph(mesh);
         self.grab_patch.clear();
+        // The new model has everyone's own mass again.
+        self.grab_held.clear();
+        self.grab = None;
         self.state = State::at_rest(mesh.positions.iter().map(|&p| Vec3A::from(p)));
         self.set_colliders(ctx);
         self.seam_clock = 0.0;
@@ -455,6 +499,8 @@ impl ClothSolver for XpbdSolver {
         // Seam rest lengths are re-measured from the current gaps, so the
         // closure restarts from where the seams are now.
         self.model = Model::build(mesh, ctx.document);
+        self.grab_held.clear();
+        self.grab = None;
         self.set_colliders(ctx);
         self.seam_clock = 0.0;
         self.bind_gpu();
@@ -482,7 +528,16 @@ impl ClothSolver for XpbdSolver {
 
     fn set_grab(&mut self, vertex: u32, position: Vec3, radius: f32, strength: f32) {
         if self.grab.is_none_or(|(v, _, r, _)| v != vertex || r != radius) {
+            self.release_held();
             self.grab_patch = grab_patch(&self.fabric_graph, vertex, radius.max(0.01));
+            for &(index, weight) in &self.grab_patch {
+                if weight >= 0.5
+                    && let Some(w) = self.model.inverse_mass.get_mut(index as usize)
+                {
+                    self.grab_held.push((index, *w));
+                    *w = 0.0;
+                }
+            }
         }
         self.grab = Some((
             vertex,
@@ -494,6 +549,7 @@ impl ClothSolver for XpbdSolver {
 
     fn clear_grab(&mut self) {
         self.pull_motion_from_gpu();
+        self.release_held();
         self.grab = None;
         self.grab_patch.clear();
     }
@@ -607,6 +663,17 @@ impl ClothSolver for XpbdSolver {
 }
 
 impl XpbdSolver {
+    /// Lets go of the held cloth: it has its own mass again.
+    fn release_held(&mut self) {
+        for (index, w) in self.grab_held.drain(..) {
+            if let Some(slot) = self.model.inverse_mass.get_mut(index as usize) {
+                *slot = w;
+            }
+        }
+    }
+}
+
+impl XpbdSolver {
     /// One step with the global solver: a single implicit step for the
     /// whole frame.
     fn step_global(&mut self, ctx: &SolverContext<'_>, substeps: &[SubstepParams]) {
@@ -650,6 +717,11 @@ impl XpbdSolver {
                 body: self.body.as_deref(),
                 body_mesh: ctx.body_mesh.map(|m| &**m),
                 body_lag: h * (count - 1 - index) as f32,
+                cloth: if settings.self_collision {
+                    self.contacts.pairs()
+                } else {
+                    &[]
+                },
             };
             self.global.step(&mut self.state, &input);
             let step = self.global.stats;
@@ -679,8 +751,60 @@ impl XpbdSolver {
         // between two moving parts (a hand by the hip) were stopped short
         // by skin that had only swept past, tearing the cloth.
         let stopped = 0;
-        self.stats.cloth_contacts = 0;
-        self.stats.cloth_crossings = 0;
+        // Cloth against cloth: what passed through other cloth during the
+        // step is put back, and the planes for the next step are found.
+        if settings.self_collision {
+            let params = ContactParams {
+                thickness: settings.cloth_thickness.max(0.0),
+                // The planes bring a layer round within a few steps; a jump
+                // would be undone by the seams every step (a fly shield
+                // sewn under the front), shaking the cloth around it.
+                move_layers: false,
+                ..ContactParams::default()
+            };
+            // Which way is out, for garment layers: from the skin itself
+            // (the distance field is not kept up to date for this solver).
+            let skin = ctx.body_mesh.map(|m| &**m);
+            let field = self.body.clone();
+            let outward = |p: Vec3A| match skin {
+                Some(skin) => skin.sides(p, 0.1)[0].map(|side| side.normal),
+                None => field
+                    .as_ref()?
+                    .sample(p.into())
+                    .and_then(|(_, gradient)| Vec3A::from(gradient).try_normalize()),
+            };
+            self.contact_scratch.clone_from(&self.state.positions);
+            let found = self.contacts.detect(
+                &self.step_start,
+                &mut self.state.positions,
+                &params,
+                (skin.is_some() || field.is_some())
+                    .then_some(&outward as &(dyn Fn(Vec3A) -> Option<Vec3A> + Sync)),
+            );
+            self.stats.cloth_contacts = found.contacts;
+            self.stats.cloth_crossings = found.crossings;
+            // Put back, it starts the next step at rest: otherwise it would
+            // run into the same cloth again. Never further than it came
+            // in this step (a hem swinging through the other leg goes all
+            // the way back), but at least a fold's thickness. Cloth that
+            // hardly moves (layers by a seam, held there by it) is only
+            // nudged: jumped back, the seam pulls it through again, and it
+            // jitters for ever. The planes ease it apart instead.
+            for &i in self.contacts.moved() {
+                let i = i as usize;
+                let solved = self.contact_scratch[i];
+                let came = (solved - self.step_start[i]).length();
+                let shift = (self.state.positions[i] - solved)
+                    .clamp_length_max(came.max(MIN_PUT_BACK));
+                self.state.positions[i] = solved + shift;
+                self.state.velocities[i] = Vec3A::ZERO;
+                self.state.previous[i] = self.state.positions[i];
+            }
+        } else {
+            self.stats.cloth_contacts = 0;
+            self.stats.cloth_crossings = 0;
+            self.clear_planes();
+        }
         self.stats.body_stops = s.contacts + stopped;
         self.stats.batches = s.factorisations;
     }
@@ -780,7 +904,12 @@ impl XpbdSolver {
             // than a little per step: the fabric around it and the cloth
             // collision keep up, and a hard pull cannot drag the cloth
             // through itself.
-            let shift = ((target - center) * strength).clamp_length_max(MAX_GRAB_SHIFT);
+            let _ = strength;
+            // The cloth in the hand goes with the cursor, but never more
+            // than a little per step: the fabric around it and the cloth
+            // collision keep up, and a hard pull cannot drag the cloth
+            // through itself or the body.
+            let shift = (target - center).clamp_length_max(MAX_GRAB_SHIFT);
             if shift.length_squared() > 1e-12 {
                 for &(index, weight) in &self.grab_patch {
                     let index = index as usize;
@@ -805,7 +934,7 @@ impl XpbdSolver {
 }
 
 /// How far a grab moves the cloth in one step at most, metres.
-const MAX_GRAB_SHIFT: f32 = 0.01;
+const MAX_GRAB_SHIFT: f32 = 0.012;
 
 /// Every vertex's neighbours along the fabric: the edges of its triangles,
 /// with their length as cut, and the vertices it is stitched to.

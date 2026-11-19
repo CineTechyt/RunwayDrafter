@@ -22,7 +22,7 @@ pub use dock::{AppUi, Tab};
 pub use file_browser::{FileBrowserMode, FileBrowserState, FileFilter};
 pub use panels::{Panel, PanelContext};
 pub use state::{
-    AnimationState, AvatarState, CanvasTool, CanvasView, EditorState, ExportFormat, GarmentStatus, IoState,
+    AnimationState, AvatarState, CanvasTool, CharacterEntry, CanvasView, EditorState, ExportFormat, GarmentStatus, IoState,
     PatternImportState, PointMarker, Sample, RenderState, ScaleMode, SceneStats, SewPick, SimulationState, SurfaceView,
     Timeline, UiCommand, UiOutput, ViewOptions, ViewportTextures,
 };

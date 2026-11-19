@@ -2,6 +2,7 @@
 
 mod app;
 mod body;
+mod characters;
 mod controllers;
 mod garment_motion;
 mod project;

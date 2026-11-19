@@ -14,6 +14,7 @@
 //! external glTF buffers touch the file system.
 
 pub mod drawn_text;
+pub mod fabric_maps;
 pub mod dxf;
 pub mod fbx;
 pub mod gltf;

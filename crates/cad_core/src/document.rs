@@ -28,6 +28,12 @@ pub struct Seam {
     pub a_count: u32,
     #[serde(default = "Seam::one")]
     pub b_count: u32,
+    /// How it is sewn: the stitch and what of it shows.
+    #[serde(default)]
+    pub stitching: crate::stitch::Stitching,
+    /// A zipper rather than a seam.
+    #[serde(default)]
+    pub zipper: Option<crate::stitch::Zipper>,
 }
 
 impl Seam {
@@ -141,6 +147,7 @@ impl PatternDocument {
             format!("{} copy", copy.name)
         };
         copy.outline.translate(offset);
+        copy.map_details(|p| p + offset);
         copy.grainline.origin += offset;
         copy.uv.origin += offset;
         copy.arrangement.anchor += offset;
@@ -155,6 +162,7 @@ impl PatternDocument {
             return false;
         };
         piece.outline.translate(delta);
+        piece.map_details(|p| p + delta);
         piece.grainline.origin += delta;
         piece.uv.origin += delta;
         piece.arrangement.anchor += delta;
@@ -467,8 +475,164 @@ impl PatternDocument {
                 side.edge = shift(side.edge);
             }
         }
+        if let Some(p) = self.piece_mut(piece) {
+            for stitched in &mut p.edge_stitches {
+                if stitched.span.contains(edge, n) {
+                    stitched.span.count += 1;
+                }
+                stitched.span.first = shift(stitched.span.first);
+            }
+        }
         self.touch();
         Some(edge + 1)
+    }
+
+    /// Splits `edge` at the three fractions `ts` (ascending, along the
+    /// edge): returns the anchors of the three new points.
+    fn insert_three(&mut self, piece: PieceId, edge: u32, ts: [f32; 3]) -> Option<[u32; 3]> {
+        let [t0, t1, t2] = ts;
+        if !(0.0 < t0 && t0 < t1 && t1 < t2 && t2 < 1.0) {
+            return None;
+        }
+        let a = self.insert_point(piece, edge, t0)?;
+        // What is left of the edge now runs from t0 to 1.
+        let b = self.insert_point(piece, a, (t1 - t0) / (1.0 - t0))?;
+        let c = self.insert_point(piece, b, (t2 - t1) / (1.0 - t1))?;
+        Some([a, b, c])
+    }
+
+    /// Where `edge` of `piece` is at fraction `t`, and the direction into
+    /// the piece there.
+    fn edge_frame(&self, piece: PieceId, edge: u32, t: f32) -> Option<(Vec2, Vec2, f32)> {
+        use crate::geometry::Curve;
+        let p = self.piece(piece)?;
+        let curve = p.outline.curve(edge);
+        let at = curve.eval(t);
+        let tangent = (curve.eval((t + 0.01).min(1.0)) - curve.eval((t - 0.01).max(0.0))).normalize_or_zero();
+        let inward = tangent.perp() * if p.outline.is_ccw() { 1.0 } else { -1.0 };
+        Some((at, inward, curve.length(0.2)))
+    }
+
+    /// Cuts a dart into `piece` at fraction `t` of `edge`: `width` mm wide
+    /// at the edge, its point `length` mm in, and sews its legs together.
+    /// Returns the dart's seam.
+    pub fn add_dart(&mut self, piece: PieceId, edge: u32, t: f32, width: f32, length: f32) -> Option<SeamId> {
+        self.add_dart_points(piece, edge, t, width, length).map(|(id, _)| id)
+    }
+
+    /// [`Self::add_dart`], also returning the dart's two ends on the line
+    /// and its point.
+    pub fn add_dart_points(
+        &mut self,
+        piece: PieceId,
+        edge: u32,
+        t: f32,
+        width: f32,
+        length: f32,
+    ) -> Option<(SeamId, [Vec2; 3])> {
+        let (centre, inward, edge_length) = self.edge_frame(piece, edge, t)?;
+        let half = 0.5 * width / edge_length.max(1e-3);
+        let [l1, apex, _l2] = self.insert_three(piece, edge, [t - half, t, t + half])?;
+        let p = self.piece_mut(piece)?;
+        let tip = centre + inward * length;
+        p.outline.set_handle_position(crate::ids::HandleKind::Anchor(apex), tip);
+        for e in [l1, apex] {
+            p.outline.set_segment(e, Segment::Line);
+        }
+        // Leg one runs in to the point, leg two back out: their outer ends
+        // meet, and so do their ends at the point.
+        let id = self.add_seam_spans(
+            (piece, EdgeSpan::single(l1)),
+            (piece, EdgeSpan::single(apex)),
+            true,
+        );
+        self.touch();
+        let p = self.piece(piece)?;
+        let point = |i: u32| p.outline.points()[i as usize].position;
+        Some((id, [point(l1), tip, point(_l2)]))
+    }
+
+    /// The anchor of `piece` at `position` (within half a millimetre).
+    pub fn anchor_at(&self, piece: PieceId, position: Vec2) -> Option<u32> {
+        let p = self.piece(piece)?;
+        p.outline
+            .points()
+            .iter()
+            .position(|q| q.position.distance(position) < 0.5)
+            .map(|i| i as u32)
+    }
+
+    /// The run of edges of `piece` between the anchors at `from` and `to`,
+    /// the shorter way round, and whether it runs from `from` to `to`.
+    pub fn span_between(&self, piece: PieceId, from: Vec2, to: Vec2) -> Option<(EdgeSpan, bool)> {
+        let n = self.piece(piece)?.outline.edge_count();
+        let (a, b) = (self.anchor_at(piece, from)?, self.anchor_at(piece, to)?);
+        let forward = (b + n - a) % n;
+        let backward = (a + n - b) % n;
+        if forward == 0 {
+            return None;
+        }
+        Some(if forward <= backward {
+            (EdgeSpan { first: a, count: forward }, true)
+        } else {
+            (EdgeSpan { first: b, count: backward }, false)
+        })
+    }
+
+    /// Sews the line of `a` (from its first point to its second) to the line
+    /// of `b`, the first points meeting.
+    pub fn sew_between(
+        &mut self,
+        a: (PieceId, Vec2, Vec2),
+        b: (PieceId, Vec2, Vec2),
+        stitching: crate::stitch::Stitching,
+    ) -> Option<SeamId> {
+        let (span_a, forward_a) = self.span_between(a.0, a.1, a.2)?;
+        let (span_b, forward_b) = self.span_between(b.0, b.1, b.2)?;
+        let id = self.add_seam_spans((a.0, span_a), (b.0, span_b), forward_a != forward_b);
+        self.set_seam_stitching(id, stitching);
+        Some(id)
+    }
+
+    /// Lays a knife pleat into `piece` at fraction `t` of `edge`: `intake`
+    /// mm of cloth folded away, tacked at the edge, pressed along fold
+    /// lines `length` mm long. Returns the tacking seam.
+    pub fn add_pleat(&mut self, piece: PieceId, edge: u32, t: f32, intake: f32, length: f32) -> Option<SeamId> {
+        self.add_pleat_points(piece, edge, t, intake, length).map(|(id, _)| id)
+    }
+
+    /// [`Self::add_pleat`], also returning the pleat's three points on the
+    /// line, in the line's order.
+    pub fn add_pleat_points(
+        &mut self,
+        piece: PieceId,
+        edge: u32,
+        t: f32,
+        intake: f32,
+        length: f32,
+    ) -> Option<(SeamId, [Vec2; 3])> {
+        let (_, inward, edge_length) = self.edge_frame(piece, edge, t)?;
+        let half = 0.5 * intake / edge_length.max(1e-3);
+        let [a, m, b] = self.insert_three(piece, edge, [t - half, t, t + half])?;
+        let p = self.piece_mut(piece)?;
+        let point = |i: u32| p.outline.points()[i as usize].position;
+        let (pa, pm, pb) = (point(a), point(m), point(b));
+        for e in [a, m] {
+            p.outline.set_segment(e, Segment::Line);
+        }
+        // The cloth from a to b is folded in half (at m) and laid under:
+        // turned under at a, and back at m.
+        for (start, angle) in [(pa, 140.0), (pm, -140.0)] {
+            p.folds.push(crate::pattern::FoldLine {
+                a: start,
+                b: start + inward * length,
+                angle,
+            });
+        }
+        // Tacked at the edge: a's side of the pleat sewn to b's.
+        let id = self.add_seam_spans((piece, EdgeSpan::single(a)), (piece, EdgeSpan::single(m)), true);
+        self.touch();
+        Some((id, [pa, pm, pb]))
     }
 
     pub fn piece_mut(&mut self, id: PieceId) -> Option<&mut PatternPiece> {
@@ -486,6 +650,8 @@ impl PatternDocument {
             reversed,
             a_count: 1,
             b_count: 1,
+            stitching: Default::default(),
+            zipper: None,
         });
         self.touch();
         id
@@ -515,9 +681,49 @@ impl PatternDocument {
             reversed,
             a_count: a.1.count.max(1),
             b_count: b.1.count.max(1),
+            stitching: Default::default(),
+            zipper: None,
         });
         self.touch();
         id
+    }
+
+    /// Sews the seam with another stitch.
+    pub fn set_seam_stitching(&mut self, id: SeamId, stitching: crate::stitch::Stitching) -> bool {
+        let Some(seam) = self.seams.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        seam.stitching = stitching;
+        self.touch();
+        true
+    }
+
+    /// Makes a seam a zipper (or a plain seam again with `None`).
+    pub fn set_seam_zipper(&mut self, id: SeamId, zipper: Option<crate::stitch::Zipper>) -> bool {
+        let Some(seam) = self.seams.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        seam.zipper = zipper;
+        self.touch();
+        true
+    }
+
+    /// Stitches a free edge of a piece on its own (`None`: unpicks it).
+    pub fn set_edge_stitching(
+        &mut self,
+        piece: PieceId,
+        span: EdgeSpan,
+        stitching: Option<crate::stitch::Stitching>,
+    ) -> bool {
+        let Some(p) = self.piece_mut(piece) else {
+            return false;
+        };
+        p.edge_stitches.retain(|e| e.span.first != span.first);
+        if let Some(stitching) = stitching.filter(crate::stitch::Stitching::visible) {
+            p.edge_stitches.push(crate::stitch::EdgeStitching { span, stitching });
+        }
+        self.touch();
+        true
     }
 
     pub fn remove_seam(&mut self, id: SeamId) -> Option<Seam> {
@@ -574,6 +780,7 @@ impl PatternDocument {
             piece.outline.scale_about(centre, ease);
             piece.grainline.length *= ease;
             piece.outline.translate(offset);
+            piece.map_details(|p| centre + (p - centre) * ease + offset);
             piece.grainline.origin = centre + (piece.grainline.origin - centre) * ease + offset;
             piece.arrangement.anchor += offset;
             copies.push((source.id, piece.id));
@@ -899,14 +1106,15 @@ impl PatternDocument {
         let diameter = 18.0;
         if let Some(piece) = doc.piece_mut(right) {
             piece.layer = 2;
-            // Horizontal holes reach from the centre line towards the edge;
-            // the button sits at the hole's inner end.
+            // Horizontal holes, as tailors cut them: from 3 mm past the
+            // centre line (towards the edge) inwards. Pulled shut, the
+            // button rests at the end by the edge, on the centre line.
             piece.buttonholes = rows
                 .iter()
                 .map(|&y| {
                     let hole = Buttonhole::for_button(Vec2::ZERO, diameter);
                     Buttonhole {
-                        position: Vec2::new(right_x + 0.5 * hole.length - 2.0, y),
+                        position: Vec2::new(right_x + 3.0 - 0.5 * hole.length, y),
                         ..hole
                     }
                 })

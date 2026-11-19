@@ -107,6 +107,65 @@ pub struct Fabric {
     /// the ridges of folds, darker creases, the odd pill of fuzz.
     #[serde(default = "default_wear")]
     pub wear: f32,
+    /// Its look from image maps (scanned or downloaded) instead of a
+    /// generated weave; takes precedence over [`Self::weave`] for the look.
+    #[serde(default)]
+    pub maps: Option<FabricMaps>,
+}
+
+/// A fabric's look as image maps, one repeat of the cloth each: colour,
+/// and optionally a normal map, roughness and height. Paths are absolute.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FabricMaps {
+    pub color: std::path::PathBuf,
+    #[serde(default)]
+    pub normal: Option<std::path::PathBuf>,
+    /// OpenGL-style normal map (green up), as most libraries ship; DirectX
+    /// maps have green down.
+    #[serde(default = "default_true")]
+    pub normal_y_up: bool,
+    #[serde(default)]
+    pub roughness: Option<std::path::PathBuf>,
+    #[serde(default)]
+    pub height: Option<std::path::PathBuf>,
+    /// How much cloth one repeat of the images shows, millimetres (width,
+    /// height).
+    pub size_mm: [f32; 2],
+    /// Where the maps came from (a U3M file or a folder), for the user.
+    #[serde(default)]
+    pub source: Option<std::path::PathBuf>,
+    /// Take every patch of the cloth from a different place of the images,
+    /// so no repeat shows. Right for plain cloth; off for checks, stripes
+    /// and prints, which must stay in register.
+    #[serde(default = "default_true")]
+    pub break_up_repeats: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl FabricMaps {
+    /// A number that changes whenever the maps change (which files, how
+    /// read); loading them again after editing the files needs a new pick.
+    pub fn key(&self) -> u64 {
+        let mut h: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut eat = |bytes: &[u8]| {
+            for &b in bytes {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for path in [Some(&self.color), self.normal.as_ref(), self.roughness.as_ref(), self.height.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            eat(path.to_string_lossy().as_bytes());
+            eat(&[0]);
+        }
+        eat(&[u8::from(self.normal_y_up)]);
+        h | 1
+    }
 }
 
 fn default_wear() -> f32 {
@@ -137,6 +196,7 @@ impl Fabric {
             physics: FabricPhysics::default(),
             weave: None,
             wear: default_wear(),
+            maps: None,
         }
     }
 }

@@ -45,6 +45,9 @@ pub struct PieceMesh {
     /// For every pattern edge, the ordered chain of vertices along it,
     /// including the corner vertices at both ends.
     pub edge_chains: Vec<Vec<u32>>,
+    /// Mesh edges along the piece's fold lines: (vertex, vertex, fold
+    /// angle in degrees).
+    pub folds: Vec<(u32, u32, f32)>,
 }
 
 /// Arc length of every edge of a piece.
@@ -96,8 +99,46 @@ pub fn mesh_piece(piece: &PatternPiece, subdivisions: &[u32], params: &MeshingPa
     }
     let boundary: Vec<Vec2> = mesh.pattern_positions.clone();
 
-    // --- interior lattice --------------------------------------------------
+    // --- fold lines --------------------------------------------------------
+    // Vertices along every fold line, so that mesh edges lie on it and the
+    // cloth can fold there and nowhere else.
     let h = params.particle_distance.max(1e-3);
+    let mut fold_segments: Vec<(Vec2, Vec2)> = Vec::new();
+    let mut fold_chains: Vec<(Vec<u32>, f32)> = Vec::new();
+    for fold in &piece.folds {
+        let length = fold.a.distance(fold.b);
+        if length < 1e-3 {
+            continue;
+        }
+        fold_segments.push((fold.a, fold.b));
+        let n = (length / h).ceil().max(1.0) as u32;
+        let mut chain = Vec::new();
+        for k in 0..=n {
+            let p = fold.a.lerp(fold.b, k as f32 / n as f32);
+            // Inside, and clear of the outline (whose own vertices end it).
+            if geometry::point_in_polygon(p, &boundary)
+                && geometry::distance_to_polygon(p, &boundary) > 0.35 * h
+            {
+                chain.push(mesh.pattern_positions.len() as u32);
+                mesh.pattern_positions.push(p);
+                mesh.origins.push(VertexOrigin::Interior { piece: piece.id });
+            } else if !chain.is_empty() {
+                fold_chains.push((std::mem::take(&mut chain), fold.angle));
+            }
+        }
+        if !chain.is_empty() {
+            fold_chains.push((chain, fold.angle));
+        }
+    }
+    let near_fold = |p: Vec2| {
+        fold_segments.iter().any(|&(a, b)| {
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+            p.distance(a + ab * t) < 0.5 * h
+        })
+    };
+
+    // --- interior lattice --------------------------------------------------
     let (lo, hi) = boundary
         .iter()
         .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), &p| {
@@ -116,6 +157,7 @@ pub fn mesh_piece(piece: &PatternPiece, subdivisions: &[u32], params: &MeshingPa
             // Keep clear of the boundary so no sliver triangles appear there.
             if geometry::point_in_polygon(p, &boundary)
                 && geometry::distance_to_polygon(p, &boundary) > 0.6 * h
+                && !near_fold(p)
             {
                 mesh.pattern_positions.push(p);
                 mesh.origins
@@ -144,6 +186,15 @@ pub fn mesh_piece(piece: &PatternPiece, subdivisions: &[u32], params: &MeshingPa
         // A self-intersecting outline (mid-drag, say) must not panic.
         if a != b && cdt.can_add_constraint(a, b) {
             cdt.add_constraint(a, b);
+        }
+    }
+    for (chain, angle) in &fold_chains {
+        for w in chain.windows(2) {
+            let (a, b) = (handles[w[0] as usize], handles[w[1] as usize]);
+            if a != b && cdt.can_add_constraint(a, b) {
+                cdt.add_constraint(a, b);
+                mesh.folds.push((w[0], w[1], *angle));
+            }
         }
     }
 
