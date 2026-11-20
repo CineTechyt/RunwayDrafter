@@ -38,11 +38,50 @@ impl Panel for PatternPropertiesPanel {
         };
 
         let mut duplicate_mirrored = None;
+        let mut create_mirrored_clone = false;
+        let mut unlink_clone = false;
         ui.horizontal(|ui| {
-            if ui.button("Duplicate").clicked() {
+            if ui
+                .button("Duplicate")
+                .on_hover_text("Make an independent copy of this piece")
+                .clicked()
+            {
                 duplicate_mirrored = Some(false);
             }
+            if let Some(other_id) = cx.document.piece(id).and_then(|p| p.mirrored_clone) {
+                let other_name = cx.document.piece(other_id).map_or("partner", |p| &p.name);
+                ui.label(format!("🔗 Mirrored clone of {other_name}"));
+                if ui
+                    .small_button("Move independently")
+                    .on_hover_text("Break the mirrored-clone link permanently so both pieces can be moved and edited independently")
+                    .clicked()
+                {
+                    unlink_clone = true;
+                }
+            } else if ui
+                .button("Mirrored clone")
+                .on_hover_text(
+                    "Create a linked mirrored clone: changing either piece updates the other symmetrically",
+                )
+                .clicked()
+            {
+                create_mirrored_clone = true;
+            }
         });
+        if create_mirrored_clone {
+            cx.editor.timeline.stop();
+            cx.output
+                .commands
+                .push(crate::state::UiCommand::MirrorClone);
+            return;
+        }
+        if unlink_clone {
+            cx.editor.timeline.stop();
+            cx.output
+                .commands
+                .push(crate::state::UiCommand::UnlinkClone(id));
+            return;
+        }
         if let Some(mirrored) = duplicate_mirrored {
             if let Some(new_id) = cx.document.duplicate_piece(id, mirrored) {
                 *selected = Some(new_id);
@@ -67,7 +106,15 @@ impl Panel for PatternPropertiesPanel {
         let edge_count = cx.document.piece(id).map_or(0, |p| p.outline.edge_count());
         // Every seam on this piece: (id, partner name, length here, length there).
         #[allow(clippy::type_complexity)]
-        let seams: Vec<(cad_core::SeamId, String, f32, f32, cad_core::Stitching, (String, String), Option<cad_core::Zipper>)> = cx
+        let seams: Vec<(
+            cad_core::SeamId,
+            String,
+            f32,
+            f32,
+            cad_core::Stitching,
+            (String, String),
+            Option<cad_core::Zipper>,
+        )> = cx
             .document
             .seams()
             .iter()
@@ -85,9 +132,21 @@ impl Panel for PatternPropertiesPanel {
                 } else {
                     other.name.clone()
                 };
-                let piece_name = |p: cad_core::PieceId| cx.document.piece(p).map_or_else(String::new, |p| p.name.clone());
+                let piece_name = |p: cad_core::PieceId| {
+                    cx.document
+                        .piece(p)
+                        .map_or_else(String::new, |p| p.name.clone())
+                };
                 let sides = (piece_name(s.a.piece), piece_name(s.b.piece));
-                Some((s.id, name, here, other.outline.span_length(theirs.1), s.stitching, sides, s.zipper))
+                Some((
+                    s.id,
+                    name,
+                    here,
+                    other.outline.span_length(theirs.1),
+                    s.stitching,
+                    sides,
+                    s.zipper,
+                ))
             })
             .collect();
         // The piece's lines in order: (span, length, sewn?).
@@ -156,6 +215,13 @@ impl Panel for PatternPropertiesPanel {
             .iter()
             .flat_map(|p| &p.buttons)
             .filter_map(|b| b.fastened_to)
+            .collect();
+        let host_names: Vec<_> = cx
+            .document
+            .pieces()
+            .iter()
+            .filter(|other| other.id != id)
+            .map(|other| (other.id, other.name.clone()))
             .collect();
         let mut button_action = None;
 
@@ -357,6 +423,31 @@ impl Panel for PatternPropertiesPanel {
                             .add(egui::DragValue::new(&mut piece.placement.height).range(-800.0..=800.0).speed(1.0).suffix(" mm"))
                             .on_hover_text("Raise or lower the piece from where it is placed automatically")
                             .changed();
+                        ui.end_row();
+                        ui.label("Depth");
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut piece.placement.depth).range(-100.0..=100.0).speed(0.5).suffix(" mm"))
+                            .on_hover_text("Move this piece closer to or farther from the avatar")
+                            .changed();
+                        ui.end_row();
+                        ui.label("Snap under");
+                        let selected_host = piece.placement.under.and_then(|host| {
+                            host_names.iter().find(|(candidate, _)| *candidate == host)
+                        });
+                        egui::ComboBox::from_id_salt("placement_under")
+                            .selected_text(
+                                selected_host.map_or("Body / none".to_owned(), |(_, name)| name.clone()),
+                            )
+                            .show_ui(ui, |ui| {
+                                changed |= ui
+                                    .selectable_value(&mut piece.placement.under, None, "Body / none")
+                                    .changed();
+                                for (host_id, name) in host_names {
+                                    changed |= ui
+                                        .selectable_value(&mut piece.placement.under, Some(host_id), name)
+                                        .changed();
+                                }
+                            });
                         ui.end_row();
                     });
                     ui.weak("Pieces are placed on the avatar and sewn from there. Click the ring to choose a spot.");
@@ -862,6 +953,9 @@ impl Panel for PatternPropertiesPanel {
         }
 
         if !changes.is_empty() {
+            if let Some(clone_id) = cx.document.sync_mirrored_clone(id) {
+                changes.push(DocumentChange::PieceGeometry(clone_id));
+            }
             cx.document.touch();
             cx.output.changes.extend(changes);
         }

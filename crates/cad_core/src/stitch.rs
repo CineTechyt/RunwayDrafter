@@ -148,7 +148,11 @@ impl Stitching {
     /// A number that changes whenever how it is sewn changes.
     pub fn key(&self) -> u64 {
         let mut h = self.kind as u64 * 0x9e37_79b9;
-        for v in self.thread.iter().chain(&[self.length, self.offset, self.width, self.thread_size]) {
+        for v in self
+            .thread
+            .iter()
+            .chain(&[self.length, self.offset, self.width, self.thread_size])
+        {
             h = (h ^ u64::from(v.to_bits())).wrapping_mul(0x0100_0000_01b3);
         }
         h ^ (self.side as u64) << 40

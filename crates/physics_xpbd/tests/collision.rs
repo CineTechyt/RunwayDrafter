@@ -158,7 +158,10 @@ fn the_global_solver_rests_a_falling_sheet_on_the_sheet_below() {
     };
     let thickness = SolverSettings::default().cloth_thickness;
     let (gap, lowest, contacts) = run(true);
-    assert!(contacts > 20, "the sheets are in contact ({contacts} vertices)");
+    assert!(
+        contacts > 20,
+        "the sheets are in contact ({contacts} vertices)"
+    );
     assert!(
         gap > 0.3 * thickness && gap < 3.0 * thickness,
         "the upper sheet lies on the lower one, gap {:.2} mm",

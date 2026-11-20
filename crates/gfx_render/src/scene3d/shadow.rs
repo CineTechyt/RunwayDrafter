@@ -5,8 +5,8 @@
 //! the avatar and garment. Several maps live in the layers of one array
 //! texture (the key light, and in the studio render the dome light).
 
-use glam::{Mat4, Vec3};
 use glam::camera::rh::{proj, view};
+use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use crate::context::GpuContext;
@@ -19,7 +19,6 @@ pub(crate) const FORMAT: wgpu::TextureFormat = RenderTarget::DEPTH_FORMAT;
 
 /// The layers of a shadow map array.
 pub(crate) struct ShadowMaps {
-
     layers: Vec<wgpu::TextureView>,
     pub array: wgpu::TextureView,
 }
@@ -67,7 +66,11 @@ impl ShadowMaps {
 /// towards the light), seeing everything within `radius` of `center`.
 pub(crate) fn light_matrix(direction: Vec3, center: Vec3, radius: f32) -> Mat4 {
     let direction = direction.normalize_or(Vec3::Y);
-    let up = if direction.y.abs() > 0.95 { Vec3::Z } else { Vec3::Y };
+    let up = if direction.y.abs() > 0.95 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
     let eye = center + direction * (radius + 1.0);
     proj::directx::orthographic(-radius, radius, -radius, radius, 0.05, 2.0 * radius + 2.0)
         * view::look_at_mat4(eye, center, up)
@@ -100,8 +103,11 @@ impl LightSlot {
     }
 
     pub fn write(&self, gpu: &GpuContext, matrix: Mat4) {
-        gpu.queue
-            .write_buffer(&self.buffer, 0, bytemuck::bytes_of(&matrix.to_cols_array_2d()));
+        gpu.queue.write_buffer(
+            &self.buffer,
+            0,
+            bytemuck::bytes_of(&matrix.to_cols_array_2d()),
+        );
     }
 }
 

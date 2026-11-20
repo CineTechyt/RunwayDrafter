@@ -179,7 +179,14 @@ pub fn mip_chain(size: [u32; 2], pixels: &[[u8; 4]], srgb: bool) -> Vec<([u32; 2
     let mut levels = vec![(size, pixels.to_vec())];
     let mut current: Vec<[f32; 4]> = pixels
         .iter()
-        .map(|p| [to_linear(p[0]), to_linear(p[1]), to_linear(p[2]), f32::from(p[3]) / 255.0])
+        .map(|p| {
+            [
+                to_linear(p[0]),
+                to_linear(p[1]),
+                to_linear(p[2]),
+                f32::from(p[3]) / 255.0,
+            ]
+        })
         .collect();
     let [mut w, mut h] = size;
     while w > 1 || h > 1 {
@@ -237,9 +244,17 @@ mod tests {
     #[ignore]
     fn mip_dump() {
         let dir = std::env::var("MIP_DUMP").unwrap_or_else(|_| ".".into());
-        let weave = cad_core::Weave::library().into_iter().find(|(n, _)| *n == "Denim").unwrap().1;
+        let weave = cad_core::Weave::library()
+            .into_iter()
+            .find(|(n, _)| *n == "Denim")
+            .unwrap()
+            .1;
         let t = weave.texture(8);
-        for (level, ([w, h], data)) in mip_chain([t.width, t.height], &t.albedo, true).iter().enumerate().take(6) {
+        for (level, ([w, h], data)) in mip_chain([t.width, t.height], &t.albedo, true)
+            .iter()
+            .enumerate()
+            .take(6)
+        {
             let (w, h) = (*w as usize, *h as usize);
             let mut bytes = format!("P6\n{} {}\n255\n", 2 * w, 2 * h).into_bytes();
             for y in 0..2 * h {
@@ -257,7 +272,13 @@ mod tests {
         // Black and white: the average in linear light is 0.5, which is
         // sRGB 188, not 128.
         let pixels: Vec<[u8; 4]> = (0..16)
-            .map(|i| if (i % 4 + i / 4) % 2 == 0 { [0, 0, 0, 255] } else { [255, 255, 255, 255] })
+            .map(|i| {
+                if (i % 4 + i / 4) % 2 == 0 {
+                    [0, 0, 0, 255]
+                } else {
+                    [255, 255, 255, 255]
+                }
+            })
             .collect();
         let levels = mip_chain([4, 4], &pixels, true);
         assert_eq!(levels.len(), 3);

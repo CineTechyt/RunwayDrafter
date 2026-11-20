@@ -120,6 +120,18 @@ impl PatternDocument {
         let reversed = piece.apply_transform(transform);
         if reversed {
             self.reverse_seams_on(id, n);
+            for rule in &mut self.parameters_mut().lengths {
+                if rule.piece == id {
+                    rule.edge = n - 1 - rule.edge;
+                }
+            }
+            // The piece line now runs the other way round.
+            for flat in &mut self.drawing_mut().flat_edges {
+                if flat.piece == id {
+                    flat.edge = n - 1 - flat.edge;
+                    std::mem::swap(&mut flat.from, &mut flat.to);
+                }
+            }
         }
         self.touch();
         true

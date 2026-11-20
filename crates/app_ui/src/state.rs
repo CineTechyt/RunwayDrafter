@@ -396,6 +396,9 @@ pub struct AvatarState {
     /// Edited directly by the build sliders; the application rebuilds the
     /// body whenever this changes.
     pub params: BodyParams,
+    /// Apply these parameters directly instead of solving the targets again.
+    /// Set when a complete saved character or project avatar is loaded.
+    pub apply_saved_params: bool,
     pub pose: PoseParams,
     /// Tape measurements the body must have, in metres, indexed by
     /// `Measure as usize`. The application solves the shape so that all of
@@ -423,6 +426,8 @@ pub struct AvatarState {
     pub character_name: String,
     /// What the last library action did (or why it failed).
     pub character_status: Option<Result<String, String>>,
+    /// When true, render the avatar in a neutral colour (safe for public use).
+    pub modest: bool,
 }
 
 /// One saved character: an avatar's build, measurements and looks.
@@ -439,13 +444,16 @@ pub struct CharacterEntry {
 impl CharacterEntry {
     /// True if the avatar looks exactly like this character.
     pub fn worn_by(&self, avatar: &AvatarState) -> bool {
-        self.params == avatar.params && self.targets == avatar.targets && self.appearance == avatar.appearance
+        self.params == avatar.params
+            && self.targets == avatar.targets
+            && self.appearance == avatar.appearance
     }
 
     /// Puts this character's build, measurements and looks on the avatar
     /// (the pose stays).
     pub fn put_on(&self, avatar: &mut AvatarState) {
         avatar.params = self.params;
+        avatar.apply_saved_params = true;
         avatar.targets = self.targets;
         avatar.appearance = self.appearance;
         avatar.character = Some(self.name.clone());
@@ -471,6 +479,7 @@ impl Default for AvatarState {
             character: None,
             character_name: String::new(),
             character_status: None,
+            modest: avatar::config::MODEST.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 }
@@ -505,10 +514,12 @@ pub enum CanvasTool {
     FlatFell,
     /// Put a zipper between two lines.
     Zipper,
+    /// Draw guide lines (helplines) that formulas place.
+    Guide,
 }
 
 impl CanvasTool {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Select,
         Self::Points,
         Self::AddPoint,
@@ -522,6 +533,7 @@ impl CanvasTool {
         Self::Button,
         Self::Buttonhole,
         Self::Pull,
+        Self::Guide,
     ];
 
     pub fn label(self) -> &'static str {
@@ -537,8 +549,13 @@ impl CanvasTool {
             Self::AddPoint => "Add point on a line (A)",
             Self::Curve => "Bend lines into curves (C)",
             Self::Stitch => "Stitch: click a seam or an edge to sew it with the chosen stitch (T)",
-            Self::FlatFell => "Flat-felled seam: sew two lines, allowances folded in, two rows outside (F)",
+            Self::FlatFell => {
+                "Flat-felled seam: sew two lines, allowances folded in, two rows outside (F)"
+            }
             Self::Zipper => "Zipper: put a zipper between two lines, like sewing a seam (Z)",
+            Self::Guide => {
+                "Helpline (R): drag to draw a guide line, then give its distance as a formula (inseam, waist / 4 …). Shapes drawn on helplines stretch when they move"
+            }
         }
     }
 }
@@ -585,6 +602,80 @@ pub struct SewPick {
     pub at: glam::Vec2,
 }
 
+/// What a left click in the 3D view does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SceneTool {
+    /// Select pieces, pull the cloth.
+    #[default]
+    Orbit,
+    /// Directly move an arrangement piece around the avatar.
+    Place,
+    /// Draw lines on the avatar.
+    Pen,
+    /// Select drawn lines: make them straight, delete them.
+    EditLines,
+    /// Turn an area closed by drawn lines into a pattern piece.
+    Flatten,
+}
+
+/// The 3D pen: drawing lines on the avatar and flattening the areas they
+/// close.
+#[derive(Debug, Clone)]
+pub struct PenState {
+    pub tool: SceneTool,
+    /// The points of the line being drawn.
+    pub drawing: Vec<cad_core::SkinPoint>,
+    /// Draw every line on the other side of the body too.
+    pub mirror: bool,
+    pub selected_line: Option<u32>,
+    /// The point of the selected line picked with Edit lines.
+    pub selected_point: Option<usize>,
+    /// Enter: finish the line being drawn (open).
+    pub finish: bool,
+    /// Escape: drop the line being drawn.
+    pub cancel: bool,
+    /// What the last flatten or drawing step did.
+    pub status: Option<Result<String, String>>,
+}
+
+impl SceneTool {
+    pub fn label(self) -> &'static str {
+        match self {
+            SceneTool::Orbit => "Select: click a piece, pull the cloth",
+            SceneTool::Place => {
+                "Place: drag the selected fabric around the avatar · left/right moves around it, up/down raises or lowers it"
+            }
+            SceneTool::Pen => {
+                "3D pen: draw lines on the avatar (or just beside it). Click to add points; \
+                 lines snap together where they meet"
+            }
+            SceneTool::EditLines => {
+                "Edit lines: drag a line's points along the body · double-click a line to add a \
+                 point, a point to remove it · Del deletes the selected point or line"
+            }
+            SceneTool::Flatten => {
+                "Flatten: click inside an area closed by lines: it becomes a pattern piece in the \
+                 2D view, sewn to the pieces next to it"
+            }
+        }
+    }
+}
+
+impl Default for PenState {
+    fn default() -> Self {
+        Self {
+            tool: SceneTool::Orbit,
+            drawing: Vec::new(),
+            mirror: true,
+            selected_line: None,
+            selected_point: None,
+            finish: false,
+            cancel: false,
+            status: None,
+        }
+    }
+}
+
 /// Selection, view options and timeline: UI state that outlives a frame and
 /// that the application reads as well.
 #[derive(Debug, Clone, Default)]
@@ -618,6 +709,16 @@ pub struct EditorState {
     pub canvas_view: CanvasView,
     /// Text of the length / angle boxes of the selected line.
     pub line_input: (String, String),
+    /// Every name formulas can use, with its value: the avatar's
+    /// measurements and the document's variables (filled in by the
+    /// application).
+    pub parameters: Vec<cad_core::Param>,
+    /// Formulas without a value, with what they belong to.
+    pub parameter_errors: Vec<(String, String)>,
+    /// The guide line selected in the 2D view.
+    pub selected_guide: Option<u32>,
+    /// Drawing on the avatar in the 3D view.
+    pub pen: PenState,
     /// The project file being edited, once saved or opened.
     pub project_path: Option<std::path::PathBuf>,
     /// Outcome of the last save or open, for the status bar.
@@ -701,7 +802,10 @@ pub struct FelledStitching(pub cad_core::Stitching);
 
 impl Default for FelledStitching {
     fn default() -> Self {
-        Self(cad_core::Stitching::of(cad_core::StitchKind::FlatFelled).with_thread([0.78, 0.76, 0.7]))
+        Self(
+            cad_core::Stitching::of(cad_core::StitchKind::FlatFelled)
+                .with_thread([0.78, 0.76, 0.7]),
+        )
     }
 }
 
@@ -745,6 +849,11 @@ pub enum UiCommand {
     /// Add a mirrored copy of the selected piece, for the other side of
     /// the body.
     MirrorCopy,
+    /// Add a linked mirrored clone of the selected piece: changes to either piece
+    /// are automatically mirrored to the other.
+    MirrorClone,
+    /// Break the mirrored clone link for a piece.
+    UnlinkClone(PieceId),
     /// Delete the selected piece and its seams.
     DeletePiece,
     /// The Delete key: with the sewing tool, take the seam of the selected
@@ -831,6 +940,34 @@ pub enum UiCommand {
     ImportAvatar(std::path::PathBuf),
     /// Go back to the built-in parametric avatar.
     RestoreAvatar,
+    /// Replace the document's variables.
+    SetVariables(Vec<cad_core::Variable>),
+    /// Scripted drawing (headless runs): a line on the avatar through
+    /// points seen straight from the front (x, y in metres).
+    PenLineFromFront {
+        points: Vec<glam::Vec2>,
+        closed: bool,
+    },
+    /// Scripted flattening: the area seen straight from the front at x, y.
+    FlattenFromFront(glam::Vec2),
+    /// Flatten every area the drawn lines close that is not a piece yet.
+    FlattenAll,
+    /// Flatten a drawn line as a straight line, or not.
+    SetAvatarLineStraight {
+        line: u32,
+        straight: bool,
+    },
+    DeleteAvatarLine(u32),
+    /// Replace the guide line with this one's id.
+    SetGuide(cad_core::Guide),
+    DeleteGuide(u32),
+    /// Hold the line through `edge` at a formula's length; `None` lets it
+    /// go. A plain number just sets the length.
+    SetLineFormula {
+        piece: PieceId,
+        edge: u32,
+        formula: Option<String>,
+    },
     /// Save the avatar's build, measurements and looks to the character
     /// library under this name (replacing one of the same name).
     SaveCharacter(String),

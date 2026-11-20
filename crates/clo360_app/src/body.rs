@@ -57,6 +57,7 @@ pub struct Body {
 pub struct Looks {
     appearance: Appearance,
     shape_version: u64,
+    modest: bool,
     pub skin_colors: Vec<[f32; 3]>,
     /// In the modelled pose.
     pub eyes: LookMesh,
@@ -151,11 +152,12 @@ impl Body {
     }
 
     /// The looks for `appearance`, rebuilt only when it or the shape changed.
-    pub fn looks(&mut self, appearance: &Appearance) -> Option<&Looks> {
-        let current = self
-            .looks
-            .as_ref()
-            .is_some_and(|l| l.appearance == *appearance && l.shape_version == self.shape_version);
+    pub fn looks(&mut self, appearance: &Appearance, modest: bool) -> Option<&Looks> {
+        let current = self.looks.as_ref().is_some_and(|l| {
+            l.appearance == *appearance
+                && l.shape_version == self.shape_version
+                && l.modest == modest
+        });
         if !current {
             let head = avatar::Head::find(&self.rest)?;
             let crown = glam::Vec3::new(0.0, head.crown, head.axis_z);
@@ -172,9 +174,10 @@ impl Body {
             self.looks = Some(Looks {
                 appearance: *appearance,
                 shape_version: self.shape_version,
-                skin_colors: avatar::look::skin_colors(&self.rest, Some(&head), appearance),
-                eyes: avatar::look::eyeballs(&head, appearance),
-                hair: avatar::look::hair(&self.rest, &head, appearance),
+                modest,
+                skin_colors: avatar::look::skin_colors(&self.rest, Some(&head), appearance, modest),
+                eyes: avatar::look::eyeballs(&head, appearance, modest),
+                hair: avatar::look::hair(&self.rest, &head, appearance, modest),
                 hair_root: avatar::look::hair_root(&head, &appearance.hair),
                 anchor,
             });

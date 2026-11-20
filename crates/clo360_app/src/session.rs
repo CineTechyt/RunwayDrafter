@@ -6,8 +6,8 @@ use cad_core::{DocumentChange, History, PatternDocument, PieceId};
 use gfx_render::{Camera2D, CanvasOverlay, OrbitCamera, SurfaceMaterial, SurfaceOverlay};
 use glam::{Vec2, Vec3};
 use topology_sync::{
-    ClothSolver, Collider, GarmentTopology, MeshingParams, SolverBackend,
-    SolverSettings, TopologySync,
+    ClothSolver, Collider, GarmentTopology, MeshingParams, SolverBackend, SolverSettings,
+    TopologySync,
 };
 
 use avatar::Measure;
@@ -26,6 +26,11 @@ struct SceneKey {
     dt: f32,
 }
 use crate::controllers::{self, CanvasTool};
+
+/// How far above the floor the jeans sample's hems end, mm.
+const JEANS_HEM_ABOVE_FLOOR: f32 = 30.0;
+
+mod pen;
 
 /// How long the machine takes to sew one row.
 const SEW_TIME: std::time::Duration = std::time::Duration::from_millis(1600);
@@ -56,7 +61,9 @@ impl Sewing {
     /// A row is still being sewn.
     pub fn busy(&self) -> bool {
         let now = std::time::Instant::now();
-        self.started.values().any(|t| now.duration_since(*t) < SEW_TIME)
+        self.started
+            .values()
+            .any(|t| now.duration_since(*t) < SEW_TIME)
     }
 
     /// Everything there now counts as sewn already (an opened project).
@@ -106,7 +113,10 @@ pub struct Session {
     /// Image maps being decoded off the interface's thread (large scans
     /// take seconds), by key.
     loading_maps: std::cell::RefCell<
-        std::collections::HashMap<u64, std::sync::mpsc::Receiver<Result<cad_core::WeaveTexture, String>>>,
+        std::collections::HashMap<
+            u64,
+            std::sync::mpsc::Receiver<Result<cad_core::WeaveTexture, String>>,
+        >,
     >,
     pub document: PatternDocument,
     pub topology: GarmentTopology,
@@ -138,6 +148,11 @@ pub struct Session {
     solved_targets: [Option<f32>; Measure::ALL.len()],
     /// Targets or build changed while dragging: solve on release.
     fit_due: bool,
+    /// The measurements and document revision the pattern's formulas were
+    /// last applied for.
+    formulas_applied: Option<(Vec<cad_core::Measured>, u64)>,
+    /// Drawn lines traced over the body, and what the 3D pen points at.
+    pen_cache: pen::PenCache,
     /// The garment has been simulated since it was last arranged, so it is
     /// worn rather than laid out.
     draped: bool,
@@ -185,7 +200,12 @@ impl Session {
     /// Reads the character library again for the Avatar window.
     pub fn refresh_characters(&mut self) {
         self.editor.avatar.characters = crate::characters::folder()
-            .map(|folder| crate::characters::list(&folder).iter().map(|c| c.entry()).collect())
+            .map(|folder| {
+                crate::characters::list(&folder)
+                    .iter()
+                    .map(|c| c.entry())
+                    .collect()
+            })
             .unwrap_or_default();
     }
 
@@ -247,6 +267,8 @@ impl Session {
             shown_appearance: avatar::Appearance::default(),
             solved_targets: [None; Measure::ALL.len()],
             fit_due: false,
+            formulas_applied: None,
+            pen_cache: pen::PenCache::default(),
             draped: false,
             settle_steps: 0,
             fit_canvas: true,
@@ -366,7 +388,11 @@ impl Session {
             match command {
                 UiCommand::Undo => self.apply_history(History::undo, &mut changes),
                 UiCommand::Redo => self.apply_history(History::redo, &mut changes),
-                UiCommand::ResetDrape => changes.push(DocumentChange::Everything),
+                UiCommand::ResetDrape => {
+                    self.editor.avatar.animation = app_ui::state::AnimationState::default();
+                    self.editor.avatar.pose = avatar::PoseParams::default();
+                    changes.push(DocumentChange::Everything);
+                }
                 UiCommand::StepSimulation => extra_steps += 1,
                 UiCommand::FitCanvas => self.fit_canvas = true,
                 UiCommand::ArrangePieces => arrange = true,
@@ -402,6 +428,31 @@ impl Session {
                         }
                     }
                 }
+                UiCommand::MirrorClone => {
+                    if let Some(id) = self.editor.selected_piece {
+                        let mut clone = None;
+                        self.edit(
+                            "Mirrored clone",
+                            |document| {
+                                clone = document.clone_piece_mirrored(id);
+                                clone.is_some()
+                            },
+                            &mut changes,
+                        );
+                        if clone.is_some() {
+                            self.editor.selected_piece = clone;
+                            self.editor.selected_edge = None;
+                            arrange = true;
+                        }
+                    }
+                }
+                UiCommand::UnlinkClone(id) => {
+                    self.edit(
+                        "Unlink mirrored clone",
+                        |document| document.unlink_mirrored_clone(id),
+                        &mut changes,
+                    );
+                }
                 UiCommand::DeletePiece => {
                     if let Some(id) = self.editor.selected_piece {
                         self.edit(
@@ -426,30 +477,71 @@ impl Session {
                     );
                     self.fit_canvas = true;
                 }
+                UiCommand::DeleteSelection
+                    if self.editor.pen.tool == app_ui::SceneTool::EditLines
+                        && self.editor.pen.selected_line.is_some() =>
+                {
+                    let line = self.editor.pen.selected_line.expect("checked");
+                    match self.editor.pen.selected_point {
+                        // A selected point goes, the line stays.
+                        Some(k) => {
+                            self.remove_line_point(line, k);
+                        }
+                        None => {
+                            self.editor.pen.selected_line = None;
+                            self.edit(
+                                "Delete line",
+                                |document| {
+                                    document.drawing_mut().remove_line(line);
+                                    true
+                                },
+                                &mut changes,
+                            );
+                        }
+                    }
+                }
                 UiCommand::DeleteSelection => {
                     let seam = matches!(
                         self.editor.canvas_tool,
-                        app_ui::CanvasTool::Sew | app_ui::CanvasTool::FlatFell | app_ui::CanvasTool::Zipper
+                        app_ui::CanvasTool::Sew
+                            | app_ui::CanvasTool::FlatFell
+                            | app_ui::CanvasTool::Zipper
                     )
-                        .then_some(self.editor.selected_edge)
-                        .flatten()
-                        .and_then(|edge| self.document.seam_of(edge))
-                        .map(|seam| seam.id);
-                    match seam {
-                        Some(seam) => self.edit(
-                            "Remove seam",
-                            |document| document.remove_seam(seam).is_some(),
+                    .then_some(self.editor.selected_edge)
+                    .flatten()
+                    .and_then(|edge| self.document.seam_of(edge))
+                    .map(|seam| seam.id);
+                    if let Some(id) = self
+                        .editor
+                        .selected_guide
+                        .filter(|_| self.editor.selected_piece.is_none())
+                    {
+                        self.edit(
+                            "Delete helpline",
+                            |document| {
+                                document.parameters_mut().remove_guide(id);
+                                true
+                            },
                             &mut changes,
-                        ),
-                        None => {
-                            if let Some(id) = self.editor.selected_piece {
-                                self.edit(
-                                    "Delete piece",
-                                    |document| document.remove_piece(id).is_some(),
-                                    &mut changes,
-                                );
-                                self.editor.selected_piece = None;
-                                self.editor.selected_edge = None;
+                        );
+                        self.editor.selected_guide = None;
+                    } else {
+                        match seam {
+                            Some(seam) => self.edit(
+                                "Remove seam",
+                                |document| document.remove_seam(seam).is_some(),
+                                &mut changes,
+                            ),
+                            None => {
+                                if let Some(id) = self.editor.selected_piece {
+                                    self.edit(
+                                        "Delete piece",
+                                        |document| document.remove_piece(id).is_some(),
+                                        &mut changes,
+                                    );
+                                    self.editor.selected_piece = None;
+                                    self.editor.selected_edge = None;
+                                }
                             }
                         }
                     }
@@ -480,7 +572,11 @@ impl Session {
                 }
                 UiCommand::SplitLine { piece, edge, parts } => {
                     self.edit(
-                        if parts == 2 { "Cut line in half" } else { "Split line" },
+                        if parts == 2 {
+                            "Cut line in half"
+                        } else {
+                            "Split line"
+                        },
                         |document| controllers::split_line(document, piece, edge, parts),
                         &mut changes,
                     );
@@ -555,11 +651,151 @@ impl Session {
                         Err(error) => Err(format!("{error:#}")),
                     });
                 }
+                UiCommand::PenLineFromFront { points, closed } => {
+                    self.draw_line_from_front(&points, closed);
+                }
+                UiCommand::FlattenFromFront(at) => self.flatten_from_front(at, &mut changes),
+                UiCommand::FlattenAll => self.flatten_all(&mut changes),
+                UiCommand::SetAvatarLineStraight { line, straight } => {
+                    self.edit(
+                        "Straight line",
+                        |document| match document.drawing().line(line) {
+                            Some(l) if l.straight != straight => {
+                                if let Some(l) = document.drawing_mut().line_mut(line) {
+                                    l.straight = straight;
+                                }
+                                true
+                            }
+                            _ => false,
+                        },
+                        &mut changes,
+                    );
+                }
+                UiCommand::DeleteAvatarLine(line) => {
+                    self.edit(
+                        "Delete line",
+                        |document| {
+                            if document.drawing().line(line).is_none() {
+                                return false;
+                            }
+                            document.drawing_mut().remove_line(line);
+                            true
+                        },
+                        &mut changes,
+                    );
+                    if self.editor.pen.selected_line == Some(line) {
+                        self.editor.pen.selected_line = None;
+                    }
+                }
+                UiCommand::SetVariables(variables) => {
+                    self.edit(
+                        "Variables",
+                        |document| {
+                            if document.parameters().variables == variables {
+                                return false;
+                            }
+                            document.parameters_mut().variables = variables;
+                            true
+                        },
+                        &mut changes,
+                    );
+                }
+                UiCommand::SetGuide(guide) => {
+                    self.edit(
+                        "Helpline",
+                        |document| {
+                            if document.parameters().guide(guide.id) == Some(&guide) {
+                                return false;
+                            }
+                            match document.parameters_mut().guide_mut(guide.id) {
+                                Some(slot) => {
+                                    *slot = guide;
+                                    true
+                                }
+                                None => false,
+                            }
+                        },
+                        &mut changes,
+                    );
+                }
+                UiCommand::DeleteGuide(id) => {
+                    self.edit(
+                        "Delete helpline",
+                        |document| {
+                            if document.parameters().guide(id).is_none() {
+                                return false;
+                            }
+                            document.parameters_mut().remove_guide(id);
+                            true
+                        },
+                        &mut changes,
+                    );
+                    if self.editor.selected_guide == Some(id) {
+                        self.editor.selected_guide = None;
+                    }
+                }
+                UiCommand::SetLineFormula {
+                    piece,
+                    edge,
+                    formula,
+                } => {
+                    self.edit(
+                        "Length formula",
+                        |document| {
+                            let Some(outline) = document.piece(piece).map(|p| p.outline.clone())
+                            else {
+                                return false;
+                            };
+                            if edge >= outline.edge_count() {
+                                return false;
+                            }
+                            let span = outline.line_span(edge);
+                            let same_line =
+                                |e: u32| e < outline.edge_count() && outline.line_span(e) == span;
+                            let had = document
+                                .parameters()
+                                .length_rule(piece, same_line)
+                                .is_some();
+                            let formula = formula
+                                .map(|f| f.trim().to_owned())
+                                .filter(|f| !f.is_empty());
+                            // A plain number is a length, not a rule.
+                            let number = formula.as_deref().and_then(cad_core::params::as_number);
+                            let parameters = document.parameters_mut();
+                            parameters
+                                .lengths
+                                .retain(|r| !(r.piece == piece && same_line(r.edge)));
+                            match (formula, number) {
+                                (Some(_), Some(length)) => {
+                                    let changed = document
+                                        .piece_mut(piece)
+                                        .is_some_and(|p| p.outline.set_span_length(span, length));
+                                    changed || had
+                                }
+                                (Some(formula), None) => {
+                                    document
+                                        .parameters_mut()
+                                        .lengths
+                                        .push(cad_core::LengthRule {
+                                            piece,
+                                            edge,
+                                            formula,
+                                        });
+                                    true
+                                }
+                                (None, _) => had,
+                            }
+                        },
+                        &mut changes,
+                    );
+                }
                 UiCommand::SaveCharacter(name) => {
                     let name = name.trim().to_owned();
                     let result = match (&self.body, crate::characters::folder()) {
                         (None, _) => Err(anyhow::anyhow!("only the built-in avatar can be saved")),
-                        (_, None) => Err(anyhow::anyhow!("no home folder for the character library")),
+                        (_, None) => {
+                            Err(anyhow::anyhow!("no home folder for the character library"))
+                        }
                         (Some(body), Some(folder)) => {
                             let avatar = crate::project::AvatarFile::new(
                                 &body.params,
@@ -567,8 +803,12 @@ impl Session {
                                 &self.editor.avatar.targets,
                                 &self.editor.avatar.appearance,
                             );
-                            let height = self.editor.avatar.measurements.get(avatar::Measure::Height);
-                            crate::characters::save(&folder, &crate::characters::Character::new(&name, height, avatar))
+                            let height =
+                                self.editor.avatar.measurements.get(avatar::Measure::Height);
+                            crate::characters::save(
+                                &folder,
+                                &crate::characters::Character::new(&name, height, avatar),
+                            )
                         }
                     };
                     self.editor.avatar.character_status = Some(match result {
@@ -618,15 +858,22 @@ impl Session {
                     let document = match (sample, self.avatar()) {
                         // Drafted to the avatar's own measurements.
                         (app_ui::Sample::Jeans, Some((_, m))) => {
-                            let mm = |v: f32, fallback: f32| if v > 0.0 { v * 1000.0 } else { fallback };
+                            let mm =
+                                |v: f32, fallback: f32| if v > 0.0 { v * 1000.0 } else { fallback };
                             let base = cad_core::jeans::JeansSize::default();
-                            let inseam = mm(m.get(avatar::Measure::Inseam), base.inseam);
+                            // The avatar's inseam is floor to crotch; jeans
+                            // end at the ankle, a few centimetres up (drafted
+                            // to the full height, the hems pooled on the floor).
+                            let crotch = mm(
+                                m.get(avatar::Measure::Inseam),
+                                base.inseam + JEANS_HEM_ABOVE_FLOOR,
+                            );
                             cad_core::jeans::jeans(cad_core::jeans::JeansSize {
                                 waist: mm(m.get(avatar::Measure::Waist), base.waist),
                                 hips: mm(m.get(avatar::Measure::Hips), base.hips),
                                 thigh: mm(m.get(avatar::Measure::Thigh), base.thigh),
-                                inseam,
-                                rise: (m.waist_level * 1000.0 - inseam).clamp(180.0, 380.0),
+                                inseam: crotch - JEANS_HEM_ABOVE_FLOOR,
+                                rise: (m.waist_level * 1000.0 - crotch).clamp(180.0, 380.0),
                             })
                         }
                         _ => sample.document(),
@@ -698,7 +945,9 @@ impl Session {
                     );
                 }
                 UiCommand::SetSeamStitching(seam, stitching) => {
-                    self.restitch("Stitch", |document| document.set_seam_stitching(seam, stitching));
+                    self.restitch("Stitch", |document| {
+                        document.set_seam_stitching(seam, stitching)
+                    });
                 }
                 UiCommand::SetEdgeStitching {
                     piece,
@@ -841,7 +1090,12 @@ impl Session {
             zoom: self.canvas_camera.zoom,
         };
         if let Some(input) = &scene {
-            if self.editor.canvas_tool == app_ui::CanvasTool::Pull {
+            if matches!(
+                self.editor.pen.tool,
+                app_ui::SceneTool::Pen | app_ui::SceneTool::EditLines | app_ui::SceneTool::Flatten
+            ) {
+                self.update_scene_pen(input, &mut changes);
+            } else if self.editor.canvas_tool == app_ui::CanvasTool::Pull {
                 self.update_scene_pull(input);
             } else if matches!(
                 self.editor.canvas_tool,
@@ -849,12 +1103,17 @@ impl Session {
             ) {
                 self.update_scene_annotation(input, &mut changes);
             } else {
-                controllers::update_scene(
+                let placed = controllers::update_scene(
                     input,
                     &mut self.scene_camera,
                     &self.topology,
                     &mut self.editor,
+                    &mut self.document,
                 );
+                if placed {
+                    arrange = true;
+                    changes.push(DocumentChange::Everything);
+                }
             }
         }
 
@@ -867,6 +1126,17 @@ impl Session {
             });
             changes.push(DocumentChange::Everything);
         }
+
+        // The garment is hidden while drawing on the avatar.
+        if self.garment_hidden() != self.pen_cache.hid_garment {
+            self.pen_cache.hid_garment = self.garment_hidden();
+            self.garment_dirty = true;
+        }
+
+        // The pattern's formulas: guides and held lengths follow the
+        // avatar's measurements and the variables. Not while a point or a
+        // line is being dragged (a held length would fight the drag).
+        self.apply_formulas(&mut changes);
 
         // 2D → 3D: re-mesh only what the edits invalidated.
         let report = self.topology.apply(&self.document, &changes);
@@ -924,14 +1194,15 @@ impl Session {
                 dt: step,
             };
             let rebind = report.topology_changed || rearranged;
-            let scene = (rebind || materials_changed || self.scene_sent != Some(key)).then(|| Scene {
-                document: self.document.clone(),
-                settings: self.editor.simulation.settings,
-                colliders: self.colliders.clone(),
-                body: field.cloned(),
-                body_mesh: collider.cloned(),
-                dt: step,
-            });
+            let scene =
+                (rebind || materials_changed || self.scene_sent != Some(key)).then(|| Scene {
+                    document: self.document.clone(),
+                    settings: self.editor.simulation.settings,
+                    colliders: self.colliders.clone(),
+                    body: field.cloned(),
+                    body_mesh: collider.cloned(),
+                    dt: step,
+                });
             let simulation = self.simulation.as_mut().expect("checked");
             if let Some(scene) = scene {
                 if rebind {
@@ -1313,10 +1584,11 @@ impl Session {
             for row in self.sewing.stitches.rows() {
                 // Rows there from the start (an opened project) are sewn
                 // already; new ones are sewn now.
-                self.sewing
-                    .started
-                    .entry(row)
-                    .or_insert(if primed { now } else { now - SEW_TIME * 2 });
+                self.sewing.started.entry(row).or_insert(if primed {
+                    now
+                } else {
+                    now - SEW_TIME * 2
+                });
             }
             self.sewing.primed = true;
         }
@@ -1405,12 +1677,41 @@ impl Session {
     fn restitch(&mut self, label: &str, edit: impl FnOnce(&mut PatternDocument) -> bool) {
         let before = self.document.clone();
         if edit(&mut self.document) {
-            self.history.record(Box::new(cad_core::DocumentSnapshot::new(
-                label,
-                before,
-                self.document.clone(),
-            )));
+            self.history
+                .record(Box::new(cad_core::DocumentSnapshot::new(
+                    label,
+                    before,
+                    self.document.clone(),
+                )));
         }
+    }
+
+    /// Puts the pattern's guides and held lengths where their formulas
+    /// say, when the measurements or the document changed. Not recorded for
+    /// undo: it follows from the formulas.
+    fn apply_formulas(&mut self, changes: &mut Vec<DocumentChange>) {
+        let measured = match (&self.imported, &self.body) {
+            (None, Some(body)) => body.measurements.for_formulas(),
+            _ => Vec::new(),
+        };
+        let current = (measured, self.document.revision());
+        if self.formulas_applied.as_ref() == Some(&current) || self.canvas_tool.reshaping() {
+            return;
+        }
+        let (measured, _) = current;
+        let report = self.document.apply_parameters(&measured);
+        if !report.pieces.is_empty() {
+            changes.push(DocumentChange::Everything);
+            self.garment_dirty = true;
+        }
+        let params = cad_core::params::resolve(self.document.parameters(), &measured);
+        self.editor.parameter_errors = report
+            .errors
+            .iter()
+            .map(|(what, error)| (what.clone(), error.to_string()))
+            .collect();
+        self.editor.parameters = params;
+        self.formulas_applied = Some((measured, self.document.revision()));
     }
 
     fn edit(
@@ -1421,6 +1722,7 @@ impl Session {
     ) {
         let before = self.document.clone();
         if edit(&mut self.document) {
+            self.document.sync_all_mirrored_clones_against(&before);
             self.history
                 .record(Box::new(cad_core::DocumentSnapshot::new(
                     label,
@@ -1771,9 +2073,7 @@ impl Session {
                 }
                 let off = pattern.pieces.iter().filter(|p| !p.enabled).count();
                 if off > 0 {
-                    message.push_str(&format!(
-                        " · {off} page mark(s) switched off"
-                    ));
+                    message.push_str(&format!(" · {off} page mark(s) switched off"));
                 }
                 if unnamed > 0 {
                     // Names drawn as pen strokes need text recognition,
@@ -1924,7 +2224,11 @@ impl Session {
             .filter_map(|f| f.maps.as_ref())
             .map(|m| (m.key(), m))
             .collect();
-        let keys: Vec<u64> = weaves.iter().map(|(k, _)| *k).chain(maps.iter().map(|(k, _)| *k)).collect();
+        let keys: Vec<u64> = weaves
+            .iter()
+            .map(|(k, _)| *k)
+            .chain(maps.iter().map(|(k, _)| *k))
+            .collect();
         for (key, weave) in weaves {
             if !scene.has_weave(key) {
                 scene.add_weave(gpu, key, &weave.texture(WEAVE_PIXELS), &keys);
@@ -1940,7 +2244,9 @@ impl Session {
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let set = set.clone();
                 std::thread::spawn(move || {
-                    let _ = sender.send(io_cad::fabric_maps::load(&set, MAP_PIXELS).map_err(|e| e.to_string()));
+                    let _ = sender.send(
+                        io_cad::fabric_maps::load(&set, MAP_PIXELS).map_err(|e| e.to_string()),
+                    );
                 });
                 loading.insert(key, receiver);
                 continue;
@@ -1987,7 +2293,10 @@ impl Session {
             weave_repeat: match (&f.maps, &f.weave, piece_data) {
                 (Some(maps), _, Some(p)) => {
                     let tile = p.uv.tile_size.to_array();
-                    [tile[0] / maps.size_mm[0].max(1.0), tile[1] / maps.size_mm[1].max(1.0)]
+                    [
+                        tile[0] / maps.size_mm[0].max(1.0),
+                        tile[1] / maps.size_mm[1].max(1.0),
+                    ]
                 }
                 (None, Some(weave), Some(p)) => {
                     weave.repeats(WEAVE_PIXELS, p.uv.tile_size.to_array())
@@ -2004,10 +2313,12 @@ impl Session {
                     0.0,
                     if maps.roughness.is_some() { 1.0 } else { 0.0 },
                 ]
-            } else { f.weave.as_ref().map_or([0.0; 4], |weave| {
-                let (ends, picks) = weave.texture_threads(WEAVE_PIXELS);
-                [ends as f32, picks as f32, weave.irregularity, weave.slubs]
-            })},
+            } else {
+                f.weave.as_ref().map_or([0.0; 4], |weave| {
+                    let (ends, picks) = weave.texture_threads(WEAVE_PIXELS);
+                    [ends as f32, picks as f32, weave.irregularity, weave.slubs]
+                })
+            },
             ..SurfaceMaterial::default()
         });
         if self.editor.selected_piece == Some(piece) {

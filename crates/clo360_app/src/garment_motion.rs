@@ -102,8 +102,8 @@ impl GarmentMotion {
         let duration = self.motion.duration();
         // Between the last frame and the next loop's first too: the loop
         // is `n` frames long, not `n - 1`.
-        let at = (time.rem_euclid(duration) / self.seconds.max(1e-6) * n as f32)
-            .min(n as f32 - 1e-3);
+        let at =
+            (time.rem_euclid(duration) / self.seconds.max(1e-6) * n as f32).min(n as f32 - 1e-3);
         let k = at.floor() as usize;
         let (a, b, f) = (&self.frames[k], &self.frames[(k + 1) % n], at.fract());
         // Past the last frame the loop starts over, a walk a stride on.
@@ -224,7 +224,10 @@ fn run(job: Job, sender: &Sender<Message>) {
 
     if std::env::var_os("CLO360_STRETCH_DEBUG").is_some() {
         for span in &mesh.pieces {
-            let name = document.piece(span.piece).map(|p| p.name.clone()).unwrap_or_default();
+            let name = document
+                .piece(span.piece)
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
             let mut strains: Vec<f32> = mesh
                 .indices
                 .as_chunks::<3>()
@@ -510,7 +513,12 @@ fn run(job: Job, sender: &Sender<Message>) {
         // into (see below).
         if warm_up > 0 && frame + blend >= kept_from && frame < kept_from {
             let back = travel * (warm_up - 1) as f32;
-            before.push(mesh.positions.iter().map(|&p| p - back).collect::<Vec<Vec3>>());
+            before.push(
+                mesh.positions
+                    .iter()
+                    .map(|&p| p - back)
+                    .collect::<Vec<Vec3>>(),
+            );
         }
         if frame >= kept_from {
             // Back to where the loop starts.

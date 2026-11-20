@@ -63,51 +63,50 @@ impl MeshVertex {
 pub struct MeshData {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
-
 }
 
 impl MeshData {
-        /// Appends an ellipsoid with the given orientation.
-        pub fn add_ellipsoid(&mut self, center: Vec3, radii: Vec3, rotation: Quat, segments: u32) {
-            let (rings, sectors) = (segments.max(3), segments.max(3) * 2);
-            let base = self.vertices.len() as u32;
-            for ring in 0..=rings {
-                let v = ring as f32 / rings as f32;
-                let (sin_phi, cos_phi) = (v * std::f32::consts::PI).sin_cos();
-                for sector in 0..=sectors {
-                    let u = sector as f32 / sectors as f32;
-                    let (sin_theta, cos_theta) = (u * std::f32::consts::TAU).sin_cos();
-                    let unit = Vec3::new(sin_phi * sin_theta, cos_phi, sin_phi * cos_theta);
-                    // Gradient of the implicit ellipsoid gives the true normal.
-                    let normal = rotation * (unit / radii).normalize();
-                    self.vertices.push(MeshVertex::new(
-                        center + rotation * (unit * radii),
-                        normal,
-                        Vec2::new(u, v),
-                    ));
-                }
-            }
-            let stride = sectors + 1;
-            for ring in 0..rings {
-                for sector in 0..sectors {
-                    let a = base + ring * stride + sector;
-                    let b = a + stride;
-                    self.indices.extend([a, b, a + 1, a + 1, b, b + 1]);
-                }
+    /// Appends an ellipsoid with the given orientation.
+    pub fn add_ellipsoid(&mut self, center: Vec3, radii: Vec3, rotation: Quat, segments: u32) {
+        let (rings, sectors) = (segments.max(3), segments.max(3) * 2);
+        let base = self.vertices.len() as u32;
+        for ring in 0..=rings {
+            let v = ring as f32 / rings as f32;
+            let (sin_phi, cos_phi) = (v * std::f32::consts::PI).sin_cos();
+            for sector in 0..=sectors {
+                let u = sector as f32 / sectors as f32;
+                let (sin_theta, cos_theta) = (u * std::f32::consts::TAU).sin_cos();
+                let unit = Vec3::new(sin_phi * sin_theta, cos_phi, sin_phi * cos_theta);
+                // Gradient of the implicit ellipsoid gives the true normal.
+                let normal = rotation * (unit / radii).normalize();
+                self.vertices.push(MeshVertex::new(
+                    center + rotation * (unit * radii),
+                    normal,
+                    Vec2::new(u, v),
+                ));
             }
         }
-
-        /// Appends a horizontal square centred on `center`, facing up.
-        pub fn add_ground(&mut self, center: Vec3, half_extent: f32) {
-            let base = self.vertices.len() as u32;
-            for (x, z) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (1.0, -1.0)] {
-                let offset = Vec3::new(x, 0.0, z) * half_extent;
-                self.vertices
-                    .push(MeshVertex::new(center + offset, Vec3::Y, Vec2::new(x, z)));
-                self.indices.extend([0, 1, 2, 0, 2, 3].map(|i| base + i));
+        let stride = sectors + 1;
+        for ring in 0..rings {
+            for sector in 0..sectors {
+                let a = base + ring * stride + sector;
+                let b = a + stride;
+                self.indices.extend([a, b, a + 1, a + 1, b, b + 1]);
             }
         }
     }
+
+    /// Appends a horizontal square centred on `center`, facing up.
+    pub fn add_ground(&mut self, center: Vec3, half_extent: f32) {
+        let base = self.vertices.len() as u32;
+        for (x, z) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (1.0, -1.0)] {
+            let offset = Vec3::new(x, 0.0, z) * half_extent;
+            self.vertices
+                .push(MeshVertex::new(center + offset, Vec3::Y, Vec2::new(x, z)));
+            self.indices.extend([0, 1, 2, 0, 2, 3].map(|i| base + i));
+        }
+    }
+}
 
 /// How a surface reflects light, beyond the metallic-roughness basics.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

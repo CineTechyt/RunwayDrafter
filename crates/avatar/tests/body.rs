@@ -292,7 +292,7 @@ fn hair_never_covers_the_face_or_ears() {
                 },
                 ..Appearance::default()
             };
-            let mesh = hair(&body, &head, &looks);
+            let mesh = hair(&body, &head, &looks, false);
             // Nothing of the hair that shows is in front of the eyes or
             // over the cheeks and mouth.
             for (p, coverage) in mesh.positions.iter().zip(&mesh.coverage) {
@@ -316,9 +316,15 @@ fn a_walk_is_two_steps_and_starts_over_a_stride_ahead() {
     let rest = model.build(&BodyParams::male());
     for motion in [Motion::Walk, Motion::StiffWalk, Motion::HipSwayWalk] {
         let duration = motion.duration();
-        assert!(duration < 1.5, "{motion:?}: one stride, not a lap ({duration} s)");
+        assert!(
+            duration < 1.5,
+            "{motion:?}: one stride, not a lap ({duration} s)"
+        );
         let travel = motion.travel();
-        assert!(travel.z > 0.7 && travel.x == 0.0, "{motion:?} walks ahead: {travel}");
+        assert!(
+            travel.z > 0.7 && travel.x == 0.0,
+            "{motion:?} walks ahead: {travel}"
+        );
         let performance = Performance::bake(motion, &model, &rest);
         let start = performance.pose(0.0, &model, &rest).offset;
         let end = performance.pose(duration - 1e-3, &model, &rest).offset;
@@ -510,13 +516,104 @@ fn a_buttonhole_front_on_a_higher_layer_starts_lapped_not_a_layer_out() {
         assert_eq!(a.arrangement, b.arrangement, "{} starts elsewhere", a.name);
     }
     for (button_piece, button, hole_piece, hole) in layered.fastenings() {
-        let b = layered.piece(button_piece).unwrap().arrangement.place(button.position);
+        let b = layered
+            .piece(button_piece)
+            .unwrap()
+            .arrangement
+            .place(button.position);
         let holed = layered.piece(hole_piece).unwrap();
         let h = holed.arrangement.place(hole.button_end(&holed.outline));
         // Same direction round the body, the hole a little further out.
         let turn = (b.x.atan2(b.z) - h.x.atan2(h.z)).abs().to_degrees();
         assert!(turn < 0.5, "hole {turn:.1}° round from its button");
         let radius = |p: Vec3| Vec2::new(p.x, p.z).length();
-        assert!(radius(h) > radius(b), "the hole side starts outside the buttons");
+        assert!(
+            radius(h) > radius(b),
+            "the hole side starts outside the buttons"
+        );
     }
+}
+
+/// Lines drawn on the front of the torso: a loop split down the middle.
+/// Each half flattens into a piece whose outline is as long as its lines
+/// on the body, and both halves know the middle line, so they can be sewn.
+#[test]
+fn areas_drawn_on_the_torso_flatten_true_to_length() {
+    use avatar::drawing;
+    let model = model();
+    let body = model.build(&BodyParams::female());
+    let collider = body.collider();
+    let adjacency = drawing::adjacency(&body);
+    let at = |x: f32, y: f32| {
+        drawing::hit(&body, &collider, Vec3::new(x, y, 1.0), Vec3::NEG_Z).expect("on the body")
+    };
+    let (top, bottom, side) = (1.12, 0.95, 0.09);
+    let corners = [
+        at(-side, top),
+        at(0.0, top),
+        at(side, top),
+        at(side, bottom),
+        at(0.0, bottom),
+        at(-side, bottom),
+    ];
+    let mut drawn = cad_core::Drawing::default();
+    let loop_id = drawn.add_line(corners.to_vec(), true);
+    let middle_id = drawn.add_line(vec![corners[1], corners[4]], false);
+    let lines = drawn.lines.clone();
+
+    let left =
+        drawing::flatten_area(&body, &collider, &adjacency, &lines, at(-0.045, 1.03)).unwrap();
+    let right =
+        drawing::flatten_area(&body, &collider, &adjacency, &lines, at(0.045, 1.03)).unwrap();
+    for (name, piece) in [("left", &left), ("right", &right)] {
+        // The loop's half and the middle line, traced on the body.
+        let outline_mm: f32 = (0..piece.outline.edge_count())
+            .map(|e| cad_core::geometry::Curve::length(&piece.outline.curve(e), 0.1))
+            .sum();
+        assert_eq!(
+            piece.runs.len(),
+            4,
+            "{name}: four sides between the corners"
+        );
+        assert!(piece.runs.iter().any(|r| r.line == middle_id));
+        assert!(piece.runs.iter().filter(|r| r.line == loop_id).count() == 3);
+        println!(
+            "{name}: outline {outline_mm:.1} mm, stretch {:.2} %",
+            piece.stretch * 100.0
+        );
+        assert!(
+            piece.stretch < 0.03,
+            "{name}: the skin stretched {:.1} % to lie flat",
+            piece.stretch * 100.0
+        );
+        let (lo, hi) = piece.outline.bounds();
+        let height = hi.y - lo.y;
+        assert!(
+            (height - 1000.0 * (top - bottom)).abs() < 25.0,
+            "{name}: {height:.1} mm high, up is up"
+        );
+    }
+    let traced = drawing::trace_line(&body, &collider, &lines[1]);
+    let middle_3d: f32 = traced
+        .positions
+        .windows(2)
+        .map(|w| w[0].distance(w[1]))
+        .sum::<f32>()
+        * 1000.0;
+    let run_length = |piece: &drawing::Flattened| {
+        let run = piece.runs.iter().find(|r| r.line == middle_id).unwrap();
+        let span = piece.outline.line_span(run.edge);
+        piece.outline.span_length(span)
+    };
+    for (name, piece) in [("left", &left), ("right", &right)] {
+        let flat = run_length(piece);
+        assert!(
+            (flat - middle_3d).abs() < 0.02 * middle_3d,
+            "{name}: middle line {flat:.1} mm, on the body {middle_3d:.1} mm"
+        );
+    }
+    // The two halves run the middle line in opposite directions.
+    let l = left.runs.iter().find(|r| r.line == middle_id).unwrap();
+    let r = right.runs.iter().find(|r| r.line == middle_id).unwrap();
+    assert!(l.from.same(&r.to) && l.to.same(&r.from));
 }

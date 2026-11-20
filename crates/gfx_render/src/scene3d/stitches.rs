@@ -7,7 +7,9 @@
 //! drape ([`Stitches::mesh`]). Rows can be revealed stitch by stitch, with
 //! a needle going up and down at the end, as if being sewn just then.
 
-use cad_core::{Curve, PatternDocument, PieceId, StitchKind, StitchSide, Stitching, Zipper, ZipperTeeth};
+use cad_core::{
+    Curve, PatternDocument, PieceId, StitchKind, StitchSide, Stitching, Zipper, ZipperTeeth,
+};
 use glam::{Vec2, Vec3};
 use topology_sync::{GarmentMesh, PatternLocation, TopologySync};
 
@@ -83,7 +85,9 @@ fn rows_of(stitching: &Stitching) -> Vec<(f32, Pattern, bool)> {
             (s.offset, Pattern::Straight, true),
             (s.offset + s.width, Pattern::Straight, true),
         ],
-        StitchKind::Zigzag | StitchKind::Bartack => vec![(s.offset, Pattern::Zigzag(s.width), true)],
+        StitchKind::Zigzag | StitchKind::Bartack => {
+            vec![(s.offset, Pattern::Zigzag(s.width), true)]
+        }
         StitchKind::Overlock => vec![(0.6, Pattern::Overlock(s.width), false)],
         StitchKind::Coverstitch => vec![
             (s.offset, Pattern::Straight, true),
@@ -103,6 +107,9 @@ enum Pattern {
     Catch,
     /// Straight, curving into the seam over its last few centimetres.
     J,
+    /// One unbroken strand: the rolled edge of a fly's lap, or the
+    /// shadow beside it.
+    Solid,
 }
 
 /// A polyline in pattern space with its inward normals (mm).
@@ -145,7 +152,11 @@ impl Line {
         for w in points.windows(2) {
             lengths.push(lengths.last().unwrap() + w[0].distance(w[1]));
         }
-        Some(Self { points, inward, lengths })
+        Some(Self {
+            points,
+            inward,
+            lengths,
+        })
     }
 
     fn length(&self) -> f32 {
@@ -155,11 +166,16 @@ impl Line {
     /// The point `s` mm along, `offset` mm inside.
     fn at(&self, s: f32, offset: f32) -> Vec2 {
         let s = s.clamp(0.0, self.length());
-        let i = self.lengths.partition_point(|&l| l <= s).clamp(1, self.points.len() - 1);
+        let i = self
+            .lengths
+            .partition_point(|&l| l <= s)
+            .clamp(1, self.points.len() - 1);
         let (l0, l1) = (self.lengths[i - 1], self.lengths[i]);
         let t = if l1 > l0 { (s - l0) / (l1 - l0) } else { 0.0 };
         let p = self.points[i - 1].lerp(self.points[i], t);
-        let n = self.inward[i - 1].lerp(self.inward[i], t).normalize_or_zero();
+        let n = self.inward[i - 1]
+            .lerp(self.inward[i], t)
+            .normalize_or_zero();
         p + n * offset
     }
 }
@@ -187,9 +203,12 @@ impl Stitches {
             let face = 0.5 * thickness(piece);
             for (r, (offset, pattern, outside)) in rows_of(stitching).into_iter().enumerate() {
                 let row = key.wrapping_mul(31).wrapping_add(r as u64);
-                stitches.row(topology, piece, &line, offset, pattern, outside, stitching, face, row);
+                stitches.row(
+                    topology, piece, &line, offset, pattern, outside, stitching, face, row,
+                );
             }
         };
+        let mut laps: Vec<(PieceId, Line, f32, Stitching, f32, u64)> = Vec::new();
         for seam in document.seams() {
             let (side, span) = match seam.stitching.side {
                 StitchSide::A => (seam.a.piece, seam.a_span()),
@@ -197,6 +216,70 @@ impl Stitches {
             };
             let key = (u64::from(seam.id.0) << 1) ^ seam.stitching.key();
             sew(side, span.first, span.count, &seam.stitching, key);
+            // A fly: the stitched side laps over the other. Its folded edge
+            // shows as a soft roll of the cloth along the seam, with a thin
+            // shadow on the other side where the lap overhangs.
+            if seam.stitching.kind == StitchKind::FlyJ {
+                let (other, other_span) = match seam.stitching.side {
+                    StitchSide::A => (seam.b.piece, seam.b_span()),
+                    StitchSide::B => (seam.a.piece, seam.a_span()),
+                };
+                let cloth = document
+                    .piece(side)
+                    .and_then(|p| document.fabric(p.fabric))
+                    .map_or([0.05, 0.08, 0.2], |f| match &f.weave {
+                        // Mostly warp on the face, a little weft between.
+                        Some(weave) => {
+                            let yarn = |order: &[u8]| {
+                                order
+                                    .first()
+                                    .and_then(|&i| weave.yarns.get(i as usize))
+                                    .map_or(f.base_color, |y| y.color)
+                            };
+                            let (warp, weft) = (yarn(&weave.warp_order), yarn(&weave.weft_order));
+                            std::array::from_fn(|k| 0.92 * warp[k] + 0.08 * weft[k])
+                        }
+                        None => f.base_color,
+                    });
+                let roll = Stitching {
+                    kind: StitchKind::Topstitch,
+                    thread: cloth,
+                    thread_size: 2.4,
+                    // One strand the whole way (it is pinned to the cloth
+                    // every 2 mm all the same).
+                    length: 10_000.0,
+                    ..seam.stitching
+                };
+                if let Some(line) = Line::of_span(document, side, span.first, span.count) {
+                    laps.push((
+                        side,
+                        line,
+                        0.9,
+                        roll,
+                        0.5 * thickness(side),
+                        key ^ 0x0F01_D000,
+                    ));
+                }
+                let shadow = Stitching {
+                    kind: StitchKind::Topstitch,
+                    thread: cloth.map(|c| c * 0.2),
+                    thread_size: 0.8,
+                    length: 10_000.0,
+                    ..seam.stitching
+                };
+                if let Some(line) =
+                    Line::of_span(document, other, other_span.first, other_span.count)
+                {
+                    laps.push((
+                        other,
+                        line,
+                        1.4,
+                        shadow,
+                        0.5 * thickness(other),
+                        key ^ 0x05AD_0000,
+                    ));
+                }
+            }
             // Inside, an overlock neatens both allowances together; on the
             // other side the seam shows only its own row.
         }
@@ -214,7 +297,10 @@ impl Stitches {
             let pin = |piece: PieceId, p: Vec2| {
                 topology
                     .pattern_to_surface(PatternLocation { piece, position: p })
-                    .map(|l| Pin { triangle: l.triangle, barycentric: l.barycentric })
+                    .map(|l| Pin {
+                        triangle: l.triangle,
+                        barycentric: l.barycentric,
+                    })
             };
             let pitch = match zipper.teeth {
                 ZipperTeeth::Metal => 1.6,
@@ -225,7 +311,11 @@ impl Stitches {
             for k in 0..count {
                 let along = (k as f32 + 0.5) / count as f32;
                 let sa = along * la.length();
-                let sb = if seam.reversed { (1.0 - along) * lb.length() } else { along * lb.length() };
+                let sb = if seam.reversed {
+                    (1.0 - along) * lb.length()
+                } else {
+                    along * lb.length()
+                };
                 let pins = (
                     pin(seam.a.piece, la.at(sa, 0.4)),
                     pin(seam.a.piece, la.at(sa, 4.0)),
@@ -233,7 +323,13 @@ impl Stitches {
                     pin(seam.b.piece, lb.at(sb, 4.0)),
                 );
                 if let (Some(a), Some(a_in), Some(b), Some(b_in)) = pins {
-                    teeth.push(Tooth { along, a, a_in, b, b_in });
+                    teeth.push(Tooth {
+                        along,
+                        a,
+                        a_in,
+                        b,
+                        b_in,
+                    });
                 }
             }
             zipper_rows.push(ZipperRow {
@@ -246,8 +342,27 @@ impl Stitches {
         for piece in document.pieces() {
             for (k, edge) in piece.edge_stitches.iter().enumerate() {
                 let key = (u64::from(piece.id.0) << 33) ^ ((k as u64) << 20) ^ edge.stitching.key();
-                sew(piece.id, edge.span.first, edge.span.count, &edge.stitching, key | 1);
+                sew(
+                    piece.id,
+                    edge.span.first,
+                    edge.span.count,
+                    &edge.stitching,
+                    key | 1,
+                );
             }
+        }
+        for (piece, line, offset, stitching, face, key) in laps {
+            stitches.row(
+                topology,
+                piece,
+                &line,
+                offset,
+                Pattern::Solid,
+                true,
+                &stitching,
+                face,
+                key,
+            );
         }
         stitches.zippers = zipper_rows;
         log::debug!(
@@ -313,7 +428,8 @@ impl Stitches {
         };
         let wander = |s: f32| {
             let t = s / 40.0;
-            0.18 * ((t * 1.7 + (row % 97) as f32).sin() * 0.6 + (t * 4.3 + (row % 31) as f32).sin() * 0.4)
+            0.18 * ((t * 1.7 + (row % 97) as f32).sin() * 0.6
+                + (t * 4.3 + (row % 31) as f32).sin() * 0.4)
         };
         // A fly's J: the row swings round into the seam at the end.
         let curve = 35.0f32.min(0.4 * length);
@@ -334,19 +450,40 @@ impl Stitches {
             let (s0, s1) = (ends[k], ends[k + 1]);
             let along = (k as f32 + 0.5) / count as f32;
             match pattern {
+                Pattern::Solid => add(at(s0, offset), at(s1, offset), along, &mut threads),
                 Pattern::Straight | Pattern::J => {
                     // The thread dips into the needle holes at both ends.
                     let gap = 0.3;
-                    add(at(s0 + gap * 0.5, offset), at(s1 - gap * 0.5, offset), along, &mut threads);
+                    add(
+                        at(s0 + gap * 0.5, offset),
+                        at(s1 - gap * 0.5, offset),
+                        along,
+                        &mut threads,
+                    );
                 }
                 Pattern::Zigzag(width) => {
                     let side = |i: usize| if i % 2 == 0 { -0.5 } else { 0.5 } * width;
-                    add(at(s0, offset + side(k)), at(s1, offset + side(k + 1)), along, &mut threads);
+                    add(
+                        at(s0, offset + side(k)),
+                        at(s1, offset + side(k + 1)),
+                        along,
+                        &mut threads,
+                    );
                 }
                 Pattern::Overlock(width) => {
                     // A loop over the allowances: across, then along the edge.
-                    add(at(s0, offset), at(s0 + step * 0.5, offset + width), along, &mut threads);
-                    add(at(s0 + step * 0.5, offset + width), at(s1, offset), along, &mut threads);
+                    add(
+                        at(s0, offset),
+                        at(s0 + step * 0.5, offset + width),
+                        along,
+                        &mut threads,
+                    );
+                    add(
+                        at(s0 + step * 0.5, offset + width),
+                        at(s1, offset),
+                        along,
+                        &mut threads,
+                    );
                     add(at(s0, offset), at(s1, offset), along, &mut threads);
                 }
                 Pattern::Catch => {
@@ -381,7 +518,12 @@ impl Stitches {
     /// shading: colour per vertex, uv = roughness, metallic). `sewn(row)`
     /// says how much of each row is sewn yet (0..=1); where a row is being
     /// sewn its needle is returned.
-    pub fn mesh(&self, mesh: &GarmentMesh, sewn: impl Fn(u64) -> f32, out: &mut MeshData) -> Vec<Needle> {
+    pub fn mesh(
+        &self,
+        mesh: &GarmentMesh,
+        sewn: impl Fn(u64) -> f32,
+        out: &mut MeshData,
+    ) -> Vec<Needle> {
         let surface = |pin: &Pin| {
             let [a, b, c] = mesh.triangle(pin.triangle).map(|v| v as usize);
             let w = pin.barycentric;
@@ -393,7 +535,9 @@ impl Stitches {
             // over a fold the thread would otherwise sink into the cloth.
             let curved: Vec3 = [(a, w.x), (b, w.y), (c, w.z)]
                 .into_iter()
-                .map(|(i, wi)| (flat - mesh.normals[i] * (flat - mesh.positions[i]).dot(mesh.normals[i])) * wi)
+                .map(|(i, wi)| {
+                    (flat - mesh.normals[i] * (flat - mesh.positions[i]).dot(mesh.normals[i])) * wi
+                })
                 .sum();
             (flat.lerp(curved, 0.75), n)
         };
@@ -446,21 +590,34 @@ impl Stitches {
 }
 
 /// A box: `centre`, its axes (unit) and half sizes, in one colour.
-fn add_box(out: &mut MeshData, centre: Vec3, axes: [Vec3; 3], half: Vec3, color: [f32; 3], material: Vec2) {
+fn add_box(
+    out: &mut MeshData,
+    centre: Vec3,
+    axes: [Vec3; 3],
+    half: Vec3,
+    color: [f32; 3],
+    material: Vec2,
+) {
     for (axis, other) in [(0usize, [1usize, 2]), (1, [2, 0]), (2, [0, 1])] {
         for sign in [-1.0f32, 1.0] {
             let n = axes[axis] * sign;
-            let (u, v) = (axes[other[0]] * half[other[0]], axes[other[1]] * half[other[1]]);
+            let (u, v) = (
+                axes[other[0]] * half[other[0]],
+                axes[other[1]] * half[other[1]],
+            );
             let c = centre + n * half[axis];
             let base = out.vertices.len() as u32;
             for (du, dv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                out.vertices.push(MeshVertex::new(c + u * du + v * dv, n, material).with_color(color));
+                out.vertices
+                    .push(MeshVertex::new(c + u * du + v * dv, n, material).with_color(color));
             }
             // Counter-clockwise from outside.
             if sign > 0.0 {
-                out.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                out.indices
+                    .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
             } else {
-                out.indices.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
+                out.indices
+                    .extend([base, base + 2, base + 1, base, base + 3, base + 2]);
             }
         }
     }
@@ -476,8 +633,16 @@ fn zipper_mesh(row: &ZipperRow, surface: &impl Fn(&Pin) -> (Vec3, Vec3), out: &m
     let metal = Vec2::new(0.3, 1.0);
     let cloth = Vec2::new(0.85, 0.0);
     let (tooth_color, tooth_material, tooth_half) = match z.teeth {
-        ZipperTeeth::Metal => (z.metal, metal, Vec3::new(2.6 * MM, 0.55 * row.pitch, 0.7 * MM)),
-        ZipperTeeth::Coil => (z.tape.map(|c| c * 0.8), cloth, Vec3::new(2.0 * MM, 0.4 * row.pitch, 0.45 * MM)),
+        ZipperTeeth::Metal => (
+            z.metal,
+            metal,
+            Vec3::new(2.6 * MM, 0.55 * row.pitch, 0.7 * MM),
+        ),
+        ZipperTeeth::Coil => (
+            z.tape.map(|c| c * 0.8),
+            cloth,
+            Vec3::new(2.0 * MM, 0.4 * row.pitch, 0.45 * MM),
+        ),
     };
     let frame = |at: &Pin, inward: &Pin| {
         let (p, n) = surface(at);
@@ -507,13 +672,24 @@ fn zipper_mesh(row: &ZipperRow, surface: &impl Fn(&Pin) -> (Vec3, Vec3), out: &m
             let (pb, _, _) = frame(&tooth.b, &tooth.b_in);
             let mid = 0.5 * (pa + pb);
             let shift = if k % 2 == 0 { 0.5 } else { -0.5 } * MM;
-            add_box(out, mid + na * lift + across_a * shift, [across_a, along, na], tooth_half, tooth_color, tooth_material);
+            add_box(
+                out,
+                mid + na * lift + across_a * shift,
+                [across_a, along, na],
+                tooth_half,
+                tooth_color,
+                tooth_material,
+            );
             if slider.is_none() {
                 slider = Some((mid, na, across_a, along));
             }
         } else {
             // Open: each tooth on its own tape.
-            let (p, n, across) = if k % 2 == 0 { (pa, na, across_a) } else { frame(&tooth.b, &tooth.b_in) };
+            let (p, n, across) = if k % 2 == 0 {
+                (pa, na, across_a)
+            } else {
+                frame(&tooth.b, &tooth.b_in)
+            };
             add_box(
                 out,
                 p + n * lift + across * 1.6 * MM,
@@ -533,7 +709,14 @@ fn zipper_mesh(row: &ZipperRow, surface: &impl Fn(&Pin) -> (Vec3, Vec3), out: &m
     });
     if let Some((p, n, across, along)) = slider {
         let top = p + n * (row.face + 2.2 * MM);
-        add_box(out, top, [across, along, n], Vec3::new(4.5 * MM, 5.0 * MM, 1.6 * MM), z.metal, metal);
+        add_box(
+            out,
+            top,
+            [across, along, n],
+            Vec3::new(4.5 * MM, 5.0 * MM, 1.6 * MM),
+            z.metal,
+            metal,
+        );
         // The pull hangs down from it, towards the closed end.
         add_box(
             out,
@@ -569,7 +752,8 @@ fn tube(out: &mut MeshData, centre: &[(Vec3, Vec3)], radius: f32, color: [f32; 3
             // Twisted ply: a little lighter on top.
             let shade = 0.85 + 0.15 * angle.sin().max(0.0);
             out.vertices.push(
-                MeshVertex::new(p + normal * r, normal, material).with_color(color.map(|c| c * shade)),
+                MeshVertex::new(p + normal * r, normal, material)
+                    .with_color(color.map(|c| c * shade)),
             );
         }
     }
@@ -599,13 +783,17 @@ pub fn needle_model(out: &mut MeshData, needle: &Needle, phase: f32) {
     let side = n.any_orthonormal_vector();
     let up = n.cross(side);
     const SIDES: u32 = 8;
-    for (k, (h, r)) in [(0.0, 0.05), (1.5, 0.35), (length / MM, 0.45)].iter().enumerate() {
+    for (k, (h, r)) in [(0.0, 0.05), (1.5, 0.35), (length / MM, 0.45)]
+        .iter()
+        .enumerate()
+    {
         let _ = k;
         for s in 0..SIDES {
             let a = s as f32 / SIDES as f32 * std::f32::consts::TAU;
             let normal = side * a.cos() + up * a.sin();
             out.vertices.push(
-                MeshVertex::new(tip + n * (h * MM) + normal * (r * MM), normal, material).with_color(steel),
+                MeshVertex::new(tip + n * (h * MM) + normal * (r * MM), normal, material)
+                    .with_color(steel),
             );
         }
     }
@@ -613,7 +801,8 @@ pub fn needle_model(out: &mut MeshData, needle: &Needle, phase: f32) {
         for s in 0..SIDES {
             let a = base + k * SIDES + s;
             let b = base + k * SIDES + (s + 1) % SIDES;
-            out.indices.extend([a, b, a + SIDES, b, b + SIDES, a + SIDES]);
+            out.indices
+                .extend([a, b, a + SIDES, b, b + SIDES, a + SIDES]);
         }
     }
 }

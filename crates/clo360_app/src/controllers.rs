@@ -1,7 +1,7 @@
 //! Viewport tools: translate raw viewport input into camera moves, selection
 //! and document edits.
 
-use app_ui::{CanvasTool as Tool, EditorState, PointMarker, SewPick, ViewportInput};
+use app_ui::{CanvasTool as Tool, EditorState, PointMarker, SceneTool, SewPick, ViewportInput};
 use cad_core::geometry::Curve as _;
 use cad_core::{
     ControlPoint, DocumentChange, DocumentSnapshot, EdgeRef, EdgeSpan, HandleRef, History,
@@ -54,6 +54,73 @@ pub struct CanvasTool {
     piece_drag: Option<PieceDrag>,
     bend: Option<BendDrag>,
     panning: bool,
+    /// Where a new helpline was started.
+    guide_start: Option<Vec2>,
+    /// A helpline being dragged.
+    guide_drag: Option<GuideDrag>,
+}
+
+/// A helpline being moved with the helpline tool.
+struct GuideDrag {
+    id: u32,
+    before: PatternDocument,
+    moved: bool,
+}
+
+/// The helpline within `radius` of `at`, nearest first.
+pub fn pick_guide(document: &PatternDocument, at: Vec2, radius: f32) -> Option<u32> {
+    document
+        .parameters()
+        .guides
+        .iter()
+        .filter(|g| {
+            let along = g.axis.along(at);
+            along >= g.start.min(g.end) - radius && along <= g.start.max(g.end) + radius
+        })
+        .map(|g| ((g.axis.across(at) - g.at).abs(), g.id))
+        .filter(|(d, _)| *d <= radius)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, id)| id)
+}
+
+/// `at` pulled onto the helplines within `radius`: onto one, or onto the
+/// crossing of two.
+pub fn snap_to_guides(document: &PatternDocument, at: Vec2, radius: f32) -> Vec2 {
+    let mut out = at;
+    for axis in [cad_core::Axis::Horizontal, cad_core::Axis::Vertical] {
+        let nearest = document
+            .parameters()
+            .guides
+            .iter()
+            .filter(|g| g.axis == axis)
+            .filter(|g| {
+                let along = axis.along(at);
+                along >= g.start.min(g.end) - radius && along <= g.start.max(g.end) + radius
+            })
+            .map(|g| ((axis.across(at) - g.at).abs(), g.at))
+            .filter(|(d, _)| *d <= radius)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, value)) = nearest {
+            match axis {
+                cad_core::Axis::Horizontal => out.y = value,
+                cad_core::Axis::Vertical => out.x = value,
+            }
+        }
+    }
+    out
+}
+
+/// A coordinate `value` along `axis`'s across direction pulled onto the
+/// nearest pattern point within `radius` (to start a helpline on a corner).
+fn snap_across(document: &PatternDocument, axis: cad_core::Axis, value: f32, radius: f32) -> f32 {
+    document
+        .pieces()
+        .iter()
+        .flat_map(|p| p.outline.points().iter().map(|c| axis.across(c.position)))
+        .map(|v| ((v - value).abs(), v))
+        .filter(|(d, _)| *d <= radius)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map_or(value, |(_, v)| v)
 }
 
 /// Cuts the line through `edge` into `parts` lines of equal length with
@@ -178,6 +245,12 @@ impl CanvasTool {
         self.drag.as_ref().map(|d| d.handle)
     }
 
+    /// Whether a point or a line is being dragged into a new shape (lengths
+    /// held by formulas wait until it is let go).
+    pub fn reshaping(&self) -> bool {
+        self.drag.is_some() || self.bend.is_some()
+    }
+
     pub fn update(
         &mut self,
         input: &ViewportInput,
@@ -278,6 +351,19 @@ impl CanvasTool {
                             self.panning = false;
                         }
                     }
+                    Tool::Guide => {
+                        self.panning = false;
+                        if let Some(id) = pick_guide(document, at, radius) {
+                            editor.selected_guide = Some(id);
+                            self.guide_drag = Some(GuideDrag {
+                                id,
+                                before: document.clone(),
+                                moved: false,
+                            });
+                        } else {
+                            self.guide_start = Some(at);
+                        }
+                    }
                     Tool::Sew | Tool::FlatFell | Tool::Zipper | Tool::Stitch | Tool::AddPoint => {}
                     Tool::SketchLine | Tool::SketchSpline => {}
                     Tool::Button | Tool::Buttonhole => {}
@@ -290,7 +376,7 @@ impl CanvasTool {
         if input.primary.dragging {
             let pointer = input.pointer.map(|p| world(p, camera));
             if let (Some(drag), Some(at)) = (&self.drag, pointer) {
-                let target = at + drag.grab_offset;
+                let target = snap_to_guides(document, at + drag.grab_offset, radius);
                 let moved = document.handle_position(drag.handle) != Some(target)
                     && document.piece_mut(drag.handle.piece).is_some_and(|piece| {
                         piece.outline.set_handle_position(drag.handle.kind, target)
@@ -298,6 +384,9 @@ impl CanvasTool {
                 if moved {
                     document.touch();
                     changes.push(DocumentChange::PieceGeometry(drag.handle.piece));
+                    if let Some(clone_id) = document.sync_mirrored_clone(drag.handle.piece) {
+                        changes.push(DocumentChange::PieceGeometry(clone_id));
+                    }
                 }
             } else if let (Some(bend), Some(at)) = (&mut self.bend, pointer) {
                 let delta = at - bend.last;
@@ -310,11 +399,46 @@ impl CanvasTool {
                     changes.push(DocumentChange::PieceGeometry(bend.piece));
                     bend.last = at;
                     bend.moved = true;
+                    if let Some(clone_id) = document.sync_mirrored_clone(bend.piece) {
+                        changes.push(DocumentChange::PieceGeometry(clone_id));
+                    }
+                }
+            } else if let (Some(drag), Some(at)) = (&mut self.guide_drag, pointer) {
+                // Only a guide at a plain distance can be dragged: one
+                // placed by a formula is moved by changing the formula.
+                let parameters = document.parameters();
+                if let Some(guide) = parameters.guide(drag.id)
+                    && cad_core::params::as_number(&guide.formula).is_some()
+                {
+                    let base = guide
+                        .from
+                        .and_then(|f| parameters.guide(f))
+                        .map_or(0.0, |g| g.at);
+                    let target = snap_across(document, guide.axis, guide.axis.across(at), radius);
+                    let distance = target - base;
+                    let (formula, reversed) = if guide.from.is_some() {
+                        (cad_core::params::number(distance.abs()), distance < 0.0)
+                    } else {
+                        (cad_core::params::number(distance), false)
+                    };
+                    if formula != guide.formula || reversed != guide.reversed {
+                        if let Some(guide) = document.parameters_mut().guide_mut(drag.id) {
+                            guide.formula = formula;
+                            guide.reversed = reversed;
+                        }
+                        drag.moved = true;
+                    }
                 }
             } else if let (Some(drag), Some(at)) = (&mut self.piece_drag, pointer) {
                 let delta = at - drag.last;
-                if delta != Vec2::ZERO && document.move_piece(drag.piece, delta) {
+                if delta != Vec2::ZERO && document.move_piece_linked(drag.piece, delta) {
                     changes.push(DocumentChange::PieceGeometry(drag.piece));
+                    if let Some(clone_id) = document
+                        .piece(drag.piece)
+                        .and_then(|piece| piece.mirrored_clone)
+                    {
+                        changes.push(DocumentChange::PieceGeometry(clone_id));
+                    }
                     drag.last = at;
                     drag.moved = true;
                 }
@@ -356,6 +480,21 @@ impl CanvasTool {
                     document.clone(),
                 )));
             }
+            if let Some(drag) = self.guide_drag.take()
+                && drag.moved
+            {
+                history.record(Box::new(DocumentSnapshot::new(
+                    "Move helpline",
+                    drag.before,
+                    document.clone(),
+                )));
+            }
+            if let (Some(start), Some(end)) = (
+                self.guide_start.take(),
+                input.pointer.map(|p| world(p, camera)),
+            ) {
+                self.add_guide(document, history, editor, start, end, input.shift, radius);
+            }
         }
 
         // --- double-click with the curve tool: straighten ------------------------
@@ -370,6 +509,9 @@ impl CanvasTool {
                 .is_some_and(|p| p.outline.straighten_edge(edge.edge))
             {
                 document.touch();
+                if let Some(clone_id) = document.sync_mirrored_clone(edge.piece) {
+                    changes.push(DocumentChange::PieceGeometry(clone_id));
+                }
                 history.record(Box::new(DocumentSnapshot::new(
                     "Straighten line",
                     before,
@@ -405,6 +547,9 @@ impl CanvasTool {
                 .is_some_and(|p| p.outline.set_point_kind(anchor, kind))
             {
                 document.touch();
+                if let Some(clone_id) = document.sync_mirrored_clone(piece) {
+                    changes.push(DocumentChange::PieceAnnotations(clone_id));
+                }
                 let label = if kind == PointKind::Smooth {
                     "Join lines"
                 } else {
@@ -424,7 +569,11 @@ impl CanvasTool {
             && let Some(at) = input.pointer.map(|p| world(p, camera))
         {
             if matches!(tool, Tool::SketchLine | Tool::SketchSpline) {
-                let at = sketch_point(&editor.sketch_points, at, input.shift, radius);
+                let at = snap_to_guides(
+                    document,
+                    sketch_point(&editor.sketch_points, at, input.shift, radius),
+                    radius,
+                );
                 let close = editor.sketch_points.len() >= 3
                     && editor
                         .sketch_points
@@ -446,7 +595,23 @@ impl CanvasTool {
                 Tool::Select | Tool::Points | Tool::Pull | Tool::Curve => {
                     editor.selected_edge = line.map(|l| l.2);
                     editor.selected_piece = line.map(|l| l.0).or_else(|| document.pick_piece(at));
+                    editor.selected_guide = if line.is_none() {
+                        pick_guide(document, at, radius)
+                    } else {
+                        None
+                    };
+                    if editor.selected_guide.is_some() && line.is_none() {
+                        editor.selected_piece = None;
+                    }
                 }
+                Tool::Guide => match pick_guide(document, at, radius) {
+                    Some(id) => {
+                        editor.selected_guide = Some(id);
+                        editor.selected_piece = None;
+                        editor.selected_edge = None;
+                    }
+                    None => self.add_guide(document, history, editor, at, at, input.shift, radius),
+                },
                 Tool::AddPoint => {
                     if let Some(marker) = self.marker(document, at, radius) {
                         let before = document.clone();
@@ -485,6 +650,9 @@ impl CanvasTool {
                                 .push(cad_core::Buttonhole::for_button(at, 18.0));
                         }
                         document.touch();
+                        if let Some(clone_id) = document.sync_mirrored_clone(piece_id) {
+                            changes.push(DocumentChange::PieceAnnotations(clone_id));
+                        }
                         editor.selected_piece = Some(piece_id);
                         history.record(Box::new(DocumentSnapshot::new(
                             if tool == Tool::Button {
@@ -518,8 +686,13 @@ impl CanvasTool {
             .map(|(piece, span, _)| (piece, span));
         match tool {
             Tool::SketchLine | Tool::SketchSpline => {
-                editor.sketch_preview =
-                    pointer.map(|at| sketch_point(&editor.sketch_points, at, input.shift, radius));
+                editor.sketch_preview = pointer.map(|at| {
+                    snap_to_guides(
+                        document,
+                        sketch_point(&editor.sketch_points, at, input.shift, radius),
+                        radius,
+                    )
+                });
             }
             Tool::AddPoint => {
                 editor.point_marker = pointer.and_then(|at| self.marker(document, at, radius));
@@ -626,10 +799,16 @@ impl CanvasTool {
                 };
                 document.set_seam_stitching(seam.id, stitching)
             }
-            None => document.set_edge_stitching(piece, span, stitching.visible().then_some(stitching)),
+            None => {
+                document.set_edge_stitching(piece, span, stitching.visible().then_some(stitching))
+            }
         };
         if done {
-            history.record(Box::new(DocumentSnapshot::new("Stitch", before, document.clone())));
+            history.record(Box::new(DocumentSnapshot::new(
+                "Stitch",
+                before,
+                document.clone(),
+            )));
         }
     }
 
@@ -718,6 +897,69 @@ impl CanvasTool {
     }
 
     /// What the active tool expects next.
+    /// A new helpline from a press at `start` released at `end`: dragged,
+    /// along the drag; clicked, horizontal (vertical with Shift) across the
+    /// piece under the cursor. It is measured from the nearest helpline
+    /// running the same way, so its distance is ready to become a formula.
+    #[allow(clippy::too_many_arguments)]
+    fn add_guide(
+        &mut self,
+        document: &mut PatternDocument,
+        history: &mut History,
+        editor: &mut EditorState,
+        start: Vec2,
+        end: Vec2,
+        shift: bool,
+        radius: f32,
+    ) {
+        use cad_core::Axis;
+        let drag = end - start;
+        let clicked = drag.length() < radius * 2.0;
+        let axis = match (clicked, shift) {
+            (true, false) => Axis::Horizontal,
+            (true, true) => Axis::Vertical,
+            (false, _) if drag.x.abs() >= drag.y.abs() => Axis::Horizontal,
+            (false, _) => Axis::Vertical,
+        };
+        let (low, high) = if clicked {
+            match document
+                .pick_piece(start)
+                .or(editor.selected_piece)
+                .and_then(|p| document.piece(p))
+            {
+                Some(piece) => {
+                    let (lo, hi) = piece.outline.bounds();
+                    (axis.along(lo) - 40.0, axis.along(hi) + 40.0)
+                }
+                None => (axis.along(start) - 250.0, axis.along(start) + 250.0),
+            }
+        } else {
+            let (a, b) = (axis.along(start), axis.along(end));
+            (a.min(b), a.max(b))
+        };
+        let across = snap_across(document, axis, axis.across(start), radius);
+        let before = document.clone();
+        let parameters = document.parameters_mut();
+        let id = parameters.add_guide(axis, across, low, high);
+        let nearest = parameters
+            .guides
+            .iter()
+            .filter(|g| g.axis == axis && g.id != id && g.reaches(low, high))
+            .min_by(|a, b| (a.at - across).abs().total_cmp(&(b.at - across).abs()))
+            .map(|g| g.id);
+        if nearest.is_some() {
+            parameters.measure_guide_from(id, nearest);
+        }
+        history.record(Box::new(DocumentSnapshot::new(
+            "Add helpline",
+            before,
+            document.clone(),
+        )));
+        editor.selected_guide = Some(id);
+        editor.selected_piece = None;
+        editor.selected_edge = None;
+    }
+
     fn hint(&self, document: &PatternDocument, editor: &EditorState) -> String {
         let length = |pick: &SewPick| {
             document
@@ -756,6 +998,7 @@ impl CanvasTool {
             Tool::Button => "Click a piece to place a button · edit or remove it in Pattern properties".to_owned(),
             Tool::Buttonhole => "Click a piece to place a buttonhole · edit or remove it in Pattern properties".to_owned(),
             Tool::Pull => "Drag a piece to pull it around the flat layout · Ctrl+Z undoes".to_owned(),
+            Tool::Guide => "Drag to draw a helpline (click: horizontal, Shift+click: vertical) · drag a helpline to move it · select it to set its distance as a formula (inseam, waist / 4 …) · points and drawn shapes snap onto helplines and stretch with them · Del deletes".to_owned(),
         }
     }
 }
@@ -783,8 +1026,37 @@ pub fn update_scene(
     camera: &mut OrbitCamera,
     topology: &impl TopologySync,
     editor: &mut EditorState,
-) {
+    document: &mut cad_core::PatternDocument,
+) -> bool {
     let viewport = Vec2::new(input.size[0] as f32, input.size[1] as f32);
+    if editor.pen.tool == SceneTool::Place {
+        if input.clicked
+            && let Some(pointer) = input.pointer
+        {
+            let (origin, direction) = camera.ray(pointer, viewport);
+            editor.selected_piece = pick_piece(topology, topology.mesh(), origin, direction);
+        }
+        if input.primary.dragging
+            && let Some(id) = editor.selected_piece
+            && let Some(piece) = document.piece_mut(id)
+        {
+            let delta = input.drag_delta;
+            if delta.x != 0.0 {
+                piece.placement.angle =
+                    (piece.placement.angle + delta.x * 0.35).clamp(-180.0, 180.0);
+            }
+            if delta.y != 0.0 {
+                piece.placement.height =
+                    (piece.placement.height - delta.y * 0.5).clamp(-800.0, 800.0);
+            }
+            if delta.x != 0.0 || delta.y != 0.0 {
+                editor.timeline.stop();
+                document.touch();
+                return true;
+            }
+        }
+        return false;
+    }
     if input.primary.dragging {
         camera.orbit(input.drag_delta);
     }
@@ -800,6 +1072,7 @@ pub fn update_scene(
         let (origin, direction) = camera.ray(pointer, viewport);
         editor.selected_piece = pick_piece(topology, topology.mesh(), origin, direction);
     }
+    false
 }
 
 fn pick_piece(
@@ -887,7 +1160,8 @@ mod tests {
     #[test]
     fn clicking_near_the_middle_of_a_line_cuts_it_exactly_in_half() {
         let (mut document, front, mut editor, mut camera) = setup(Tool::AddPoint);
-        let (mut tool, mut history, mut changes) = (CanvasTool::default(), History::default(), Vec::new());
+        let (mut tool, mut history, mut changes) =
+            (CanvasTool::default(), History::default(), Vec::new());
         let outline = document.piece(front).unwrap().outline.clone();
         let span = outline.line_span(1);
         let length = outline.span_length(span);
@@ -895,20 +1169,35 @@ mod tests {
         // A little off the middle: snaps to it.
         let (edge, t) = outline.span_location(span, 0.505);
         let viewport = Vec2::new(1200.0, 1100.0);
-        let input = click(camera.world_to_screen(outline.curve(edge).eval(t), viewport), false);
-        tool.update(&input, &mut camera, &mut document, &mut history, &mut editor, &mut changes);
+        let input = click(
+            camera.world_to_screen(outline.curve(edge).eval(t), viewport),
+            false,
+        );
+        tool.update(
+            &input,
+            &mut camera,
+            &mut document,
+            &mut history,
+            &mut editor,
+            &mut changes,
+        );
 
         let outline = &document.piece(front).unwrap().outline;
         assert_eq!(outline.lines().len(), lines + 1);
         let first = outline.line_span(span.first);
-        assert!((outline.span_length(first) - length / 2.0).abs() < 0.2, "{} of {length}", outline.span_length(first));
+        assert!(
+            (outline.span_length(first) - length / 2.0).abs() < 0.2,
+            "{} of {length}",
+            outline.span_length(first)
+        );
         assert_eq!(history.undo_label(), Some("Add point"));
     }
 
     #[test]
     fn dragging_a_line_with_the_curve_tool_bends_it() {
         let (mut document, front, mut editor, mut camera) = setup(Tool::Curve);
-        let (mut tool, mut history, mut changes) = (CanvasTool::default(), History::default(), Vec::new());
+        let (mut tool, mut history, mut changes) =
+            (CanvasTool::default(), History::default(), Vec::new());
         let viewport = Vec2::new(1200.0, 1100.0);
         let outline = document.piece(front).unwrap().outline.clone();
         let edge = (0..outline.edge_count())
@@ -921,26 +1210,62 @@ mod tests {
             hovered: true,
             pointer: Some(start),
             press_origin: Some(start),
-            primary: app_ui::ButtonDrag { started: true, dragging: true, stopped: false },
+            primary: app_ui::ButtonDrag {
+                started: true,
+                dragging: true,
+                stopped: false,
+            },
             zoom: 1.0,
             ..Default::default()
         };
-        tool.update(&press, &mut camera, &mut document, &mut history, &mut editor, &mut changes);
+        tool.update(
+            &press,
+            &mut camera,
+            &mut document,
+            &mut history,
+            &mut editor,
+            &mut changes,
+        );
         let to = start + Vec2::new(0.0, -40.0);
         let drag = ViewportInput {
             pointer: Some(to),
-            primary: app_ui::ButtonDrag { started: false, dragging: true, stopped: false },
+            primary: app_ui::ButtonDrag {
+                started: false,
+                dragging: true,
+                stopped: false,
+            },
             ..press
         };
-        tool.update(&drag, &mut camera, &mut document, &mut history, &mut editor, &mut changes);
+        tool.update(
+            &drag,
+            &mut camera,
+            &mut document,
+            &mut history,
+            &mut editor,
+            &mut changes,
+        );
         let release = ViewportInput {
-            primary: app_ui::ButtonDrag { started: false, dragging: false, stopped: true },
+            primary: app_ui::ButtonDrag {
+                started: false,
+                dragging: false,
+                stopped: true,
+            },
             ..drag
         };
-        tool.update(&release, &mut camera, &mut document, &mut history, &mut editor, &mut changes);
+        tool.update(
+            &release,
+            &mut camera,
+            &mut document,
+            &mut history,
+            &mut editor,
+            &mut changes,
+        );
 
         let bent = &document.piece(front).unwrap().outline;
-        assert!(matches!(bent.segments()[edge as usize], cad_core::Segment::Cubic { .. }));
+        assert!(matches!(
+            bent.segments()[edge as usize],
+            cad_core::Segment::Cubic { .. }
+        ));
         let target = camera.screen_to_world(to, viewport);
         assert!(bent.curve(edge).eval(0.5).distance(target) < 0.5);
         assert_eq!(history.undo_label(), Some("Bend line"));
@@ -1150,5 +1475,100 @@ mod tests {
         let seam = document.seams()[0];
         assert_eq!((seam.a_count, seam.b_count), (2, 1));
         assert!(changes.contains(&DocumentChange::Seams));
+    }
+
+    /// A drag of the helpline tool from `a` to `b` (screen pixels).
+    fn drag(
+        tool: &mut CanvasTool,
+        a: Vec2,
+        b: Vec2,
+        setup: &mut (PatternDocument, EditorState, Camera2D, History),
+    ) {
+        let (document, editor, camera, history) = setup;
+        let mut changes = Vec::new();
+        let press = ViewportInput {
+            size: [1200, 1100],
+            hovered: true,
+            pointer: Some(a),
+            press_origin: Some(a),
+            primary: app_ui::ButtonDrag {
+                started: true,
+                dragging: true,
+                stopped: false,
+            },
+            zoom: 1.0,
+            ..Default::default()
+        };
+        tool.update(&press, camera, document, history, editor, &mut changes);
+        let release = ViewportInput {
+            pointer: Some(b),
+            primary: app_ui::ButtonDrag {
+                started: false,
+                dragging: false,
+                stopped: true,
+            },
+            ..press
+        };
+        tool.update(&release, camera, document, history, editor, &mut changes);
+    }
+
+    #[test]
+    fn helplines_are_drawn_measured_from_each_other_and_points_snap_onto_them() {
+        let (document, front, editor, camera) = setup(Tool::Guide);
+        let mut world = (document, editor, camera, History::default());
+        let mut tool = CanvasTool::default();
+        let viewport = Vec2::new(1200.0, 1100.0);
+        let (lo, hi) = world.0.piece(front).unwrap().outline.bounds();
+        let screen = |p: Vec2, camera: &Camera2D| camera.world_to_screen(p, viewport);
+
+        // Along the hem, then a little above the top: two horizontal lines.
+        let (a, b) = (
+            screen(Vec2::new(lo.x - 20.0, lo.y), &world.2),
+            screen(Vec2::new(hi.x + 20.0, lo.y), &world.2),
+        );
+        drag(&mut tool, a, b, &mut world);
+        let top = hi.y + 30.0;
+        let (a, b) = (
+            screen(Vec2::new(lo.x - 20.0, top), &world.2),
+            screen(Vec2::new(hi.x + 20.0, top), &world.2),
+        );
+        drag(&mut tool, a, b, &mut world);
+
+        let guides = world.0.parameters().guides.clone();
+        assert_eq!(guides.len(), 2);
+        assert!(guides.iter().all(|g| g.axis == cad_core::Axis::Horizontal));
+        assert!(
+            (guides[0].at - lo.y).abs() < 0.5,
+            "the hem line snapped onto the hem corner"
+        );
+        assert_eq!(
+            guides[1].from,
+            Some(guides[0].id),
+            "measured from the hem line"
+        );
+        assert!(!guides[1].reversed);
+        let gap: f32 = guides[1].formula.parse().unwrap();
+        assert!((gap - (top - lo.y)).abs() < 1.0, "{gap}");
+        assert_eq!(world.1.selected_guide, Some(guides[1].id));
+
+        // A point a few pixels off the line lands on it.
+        let near = Vec2::new(lo.x + 50.0, top + 2.0 * world.2.pixel_size());
+        let snapped = snap_to_guides(&world.0, near, 9.0 * world.2.pixel_size());
+        assert_eq!(snapped.y, guides[1].at);
+        assert_eq!(snapped.x, near.x);
+
+        // A click (no drag) with Shift: a vertical line.
+        let mut changes = Vec::new();
+        let (document, editor, camera, history) = &mut world;
+        let input = click(
+            screen(Vec2::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5), camera),
+            true,
+        );
+        tool.update(&input, camera, document, history, editor, &mut changes);
+        assert_eq!(document.parameters().guides.len(), 3);
+        assert_eq!(
+            document.parameters().guides[2].axis,
+            cad_core::Axis::Vertical
+        );
     }
 }

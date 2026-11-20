@@ -3,8 +3,9 @@
 pub mod material;
 pub mod pattern;
 pub mod simulation;
-pub mod timeline;
 pub mod stitch_editor;
+pub mod timeline;
+pub mod variables;
 pub mod weave_editor;
 
 use cad_core::PatternDocument;

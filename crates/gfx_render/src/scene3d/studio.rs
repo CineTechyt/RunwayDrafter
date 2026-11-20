@@ -117,7 +117,12 @@ impl StudioKit {
                     alpha: running_average,
                 }),
             ),
-            resolve: pipeline("studio resolve", "fs_resolve", RenderTarget::COLOR_FORMAT, None),
+            resolve: pipeline(
+                "studio resolve",
+                "fs_resolve",
+                RenderTarget::COLOR_FORMAT,
+                None,
+            ),
             layout,
         }
     }
@@ -228,8 +233,13 @@ impl StudioRender {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let globals_group =
-            super::globals_group(device, globals_layout, &globals, &shadows, &shadow_kit.sampler);
+        let globals_group = super::globals_group(
+            device,
+            globals_layout,
+            &globals,
+            &shadows,
+            &shadow_kit.sampler,
+        );
         let resolve_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("studio resolve"),
             contents: bytemuck::bytes_of(&ResolveUniform {
@@ -273,7 +283,10 @@ impl StudioRender {
             output_view,
             display,
             shadows,
-            lights: [LightSlot::new(gpu, shadow_kit), LightSlot::new(gpu, shadow_kit)],
+            lights: [
+                LightSlot::new(gpu, shadow_kit),
+                LightSlot::new(gpu, shadow_kit),
+            ],
             globals,
             globals_group,
             _resolve_uniform: resolve_uniform,
@@ -313,7 +326,8 @@ impl StudioRender {
             Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::Z)
         };
         let right = Vec3::Y.cross(toward_camera).normalize();
-        let frame = |x: f32, y: f32, z: f32| (right * x + Vec3::Y * y + toward_camera * z).normalize();
+        let frame =
+            |x: f32, y: f32, z: f32| (right * x + Vec3::Y * y + toward_camera * z).normalize();
 
         // The key, from a random point of a large softbox.
         let key_center = frame(0.55, 0.75, 0.62);
@@ -337,7 +351,10 @@ impl StudioRender {
         let dome_color = (sky + Vec3::splat(rim)) * TAU;
 
         let (center, radius) = self.focus;
-        let matrices = [light_matrix(key, center, radius), light_matrix(dome, center, radius)];
+        let matrices = [
+            light_matrix(key, center, radius),
+            light_matrix(dome, center, radius),
+        ];
 
         // Sub-pixel jitter: the average over samples is the pixel's area.
         let jitter = Vec2::new(halton(index + 1, 2), halton(index + 1, 3)) - 0.5;
@@ -398,7 +415,13 @@ impl StudioRender {
                     label: Some("studio sample"),
                 });
             for layer in 0..2 {
-                shadow_kit.record(&mut encoder, &self.shadows, layer, &self.lights[layer], &self.draws);
+                shadow_kit.record(
+                    &mut encoder,
+                    &self.shadows,
+                    layer,
+                    &self.lights[layer],
+                    &self.draws,
+                );
             }
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

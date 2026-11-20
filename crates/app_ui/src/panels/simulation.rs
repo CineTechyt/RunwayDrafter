@@ -55,6 +55,52 @@ impl Panel for SimulationPanel {
         });
         ui.add_space(6.0);
 
+        // --- piece focus ------------------------------------------------------
+        ui.strong("Drape pieces");
+        ui.horizontal(|ui| {
+            if ui.button("All").clicked() {
+                let ids: Vec<_> = cx.document.pieces().iter().map(|piece| piece.id).collect();
+                for id in ids {
+                    if let Some(piece) = cx.document.piece_mut(id) {
+                        piece.drape_enabled = true;
+                    }
+                }
+                cx.editor.timeline.stop();
+                cx.output.changes.push(cad_core::DocumentChange::Everything);
+            }
+            if ui.button("Selected only").clicked()
+                && let Some(selected) = cx.editor.selected_piece
+            {
+                let ids: Vec<_> = cx.document.pieces().iter().map(|piece| piece.id).collect();
+                for id in ids {
+                    if let Some(piece) = cx.document.piece_mut(id) {
+                        piece.drape_enabled = id == selected;
+                    }
+                }
+                cx.editor.timeline.stop();
+                cx.output.changes.push(cad_core::DocumentChange::Everything);
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            let pieces: Vec<_> = cx
+                .document
+                .pieces()
+                .iter()
+                .map(|piece| (piece.id, piece.name.clone(), piece.drape_enabled))
+                .collect();
+            for (id, name, mut enabled) in pieces {
+                if ui.checkbox(&mut enabled, &name).changed()
+                    && let Some(piece) = cx.document.piece_mut(id)
+                {
+                    piece.drape_enabled = enabled;
+                    cx.editor.timeline.stop();
+                    cx.output.changes.push(cad_core::DocumentChange::Everything);
+                }
+            }
+        });
+        ui.weak("Unchecked pieces stay stationary at their 3D arrangement while the others drape.");
+        ui.add_space(6.0);
+
         // --- solver -----------------------------------------------------------
         ui.strong("Solver");
         property_grid(ui, "solver", |ui| {

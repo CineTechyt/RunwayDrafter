@@ -50,7 +50,13 @@ pub fn presets() -> Vec<Fabric> {
         weave.warp_order = warp_order;
         weave.weft_order = weft_order;
         [weave.ends_per_cm, weave.picks_per_cm] = density;
-        [weave.irregularity, weave.slubs, weave.warp_cover, weave.weft_cover, weave.fuzz] = look;
+        [
+            weave.irregularity,
+            weave.slubs,
+            weave.warp_cover,
+            weave.weft_cover,
+            weave.fuzz,
+        ] = look;
         let mut fabric = Fabric::new(FabricId(0), name, weave.yarns[0].color);
         fabric.weave = Some(weave);
         fabric.roughness = roughness;
@@ -68,7 +74,17 @@ pub fn presets() -> Vec<Fabric> {
         fabric.wear = 0.3 + 0.6 * wear;
         fabric.roughness = 0.88;
         fabric.relief = 1.2;
-        fabric.physics = physics(420.0, 0.55, 0.8, 0.2);
+        // Denim hardly gives along the warp (down the leg) and a little
+        // across, even with some elastane; its twill resists shear. (At
+        // 0.2 it stretched like a knit: jeans came out wavy and limp.)
+        fabric.physics = FabricPhysics {
+            density: 420.0,
+            stretch_weft: 0.62,
+            stretch_warp: 0.92,
+            shear: 0.5,
+            bending: 0.58,
+            thickness: 0.9,
+        };
         fabric
     };
     let corduroy = |name: &str, ribs_scale: f32, relief: f32, color: [f32; 3]| {
@@ -86,9 +102,24 @@ pub fn presets() -> Vec<Fabric> {
 
     vec![
         denim("Raw denim", [0.016, 0.032, 0.115], [0.60, 0.58, 0.51], 0.0),
-        denim("Washed denim", [0.045, 0.095, 0.27], [0.66, 0.65, 0.60], 0.6),
-        denim("Light wash denim", [0.13, 0.24, 0.48], [0.72, 0.72, 0.68], 1.0),
-        denim("Black denim", [0.014, 0.014, 0.018], [0.20, 0.20, 0.20], 0.3),
+        denim(
+            "Washed denim",
+            [0.045, 0.095, 0.27],
+            [0.66, 0.65, 0.60],
+            0.6,
+        ),
+        denim(
+            "Light wash denim",
+            [0.13, 0.24, 0.48],
+            [0.72, 0.72, 0.68],
+            1.0,
+        ),
+        denim(
+            "Black denim",
+            [0.014, 0.014, 0.018],
+            [0.20, 0.20, 0.20],
+            0.3,
+        ),
         woven(
             "Chambray",
             draft("Plain"),
@@ -125,7 +156,10 @@ pub fn presets() -> Vec<Fabric> {
         woven(
             "Chino twill",
             draft("2/1 twill"),
-            vec![yarn("Khaki", [0.40, 0.31, 0.18]), yarn("Shade", [0.33, 0.25, 0.14])],
+            vec![
+                yarn("Khaki", [0.40, 0.31, 0.18]),
+                yarn("Shade", [0.33, 0.25, 0.14]),
+            ],
             vec![0],
             vec![1],
             [40.0, 24.0],
@@ -147,7 +181,10 @@ pub fn presets() -> Vec<Fabric> {
         woven(
             "Flannel check",
             draft("2/2 twill"),
-            vec![yarn("Red", [0.40, 0.03, 0.03]), yarn("Black", [0.02, 0.02, 0.025])],
+            vec![
+                yarn("Red", [0.40, 0.03, 0.03]),
+                yarn("Black", [0.02, 0.02, 0.025]),
+            ],
             [vec![0u8; 24], vec![1u8; 24]].concat(),
             [vec![0u8; 24], vec![1u8; 24]].concat(),
             [18.0, 17.0],
@@ -158,7 +195,10 @@ pub fn presets() -> Vec<Fabric> {
         woven(
             "Herringbone tweed",
             draft("Herringbone"),
-            vec![yarn("Grey", [0.20, 0.19, 0.17]), yarn("Charcoal", [0.05, 0.05, 0.05])],
+            vec![
+                yarn("Grey", [0.20, 0.19, 0.17]),
+                yarn("Charcoal", [0.05, 0.05, 0.05]),
+            ],
             vec![0, 1],
             vec![1, 0],
             [12.0, 12.0],
@@ -197,14 +237,22 @@ mod tests {
                     assert!((i as usize) < weave.yarns.len(), "{}", fabric.name);
                 }
                 let t = weave.texture(8);
-                assert_eq!(t.albedo.len(), (t.width * t.height) as usize, "{}", fabric.name);
+                assert_eq!(
+                    t.albedo.len(),
+                    (t.width * t.height) as usize,
+                    "{}",
+                    fabric.name
+                );
             }
         }
     }
 
     #[test]
     fn denim_shows_little_of_its_white_weft() {
-        let fabric = presets().into_iter().find(|f| f.name == "Raw denim").unwrap();
+        let fabric = presets()
+            .into_iter()
+            .find(|f| f.name == "Raw denim")
+            .unwrap();
         let t = fabric.weave.unwrap().texture(8);
         let weft = t.albedo.iter().filter(|p| p[3] == 0).count();
         assert!(

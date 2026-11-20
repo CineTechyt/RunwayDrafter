@@ -15,7 +15,11 @@ fn main() -> std::io::Result<()> {
         for y in 0..2 * h {
             for x in 0..2 * w {
                 let i = (y % h) * w + x % w;
-                let p = if pick == 0 { t.albedo[i] } else { [t.surface[i][3]; 4] };
+                let p = if pick == 0 {
+                    t.albedo[i]
+                } else {
+                    [t.surface[i][3]; 4]
+                };
                 bytes.extend([p[0], p[1], p[2]]);
             }
         }

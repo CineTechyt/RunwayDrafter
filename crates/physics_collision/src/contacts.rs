@@ -57,7 +57,6 @@ const MAX_NEAR_PER_EDGE: f32 = 0.6;
 /// angle, the crotch, cloth still collides.)
 const OWN_REACH: f32 = 2.0;
 
-
 /// A vertex against a point of another triangle: the vertex is to keep
 /// `normal · (x − Σ weights · triangle) ≥ target`. The plane of
 /// [`ClothContacts::planes`] is this pair with the triangle held where it
@@ -209,8 +208,7 @@ impl ClothContacts {
         } else {
             0.0
         };
-        let (near_start, near) =
-            neighbourhoods(layers.len(), &triangles, rest, OWN_REACH * mean);
+        let (near_start, near) = neighbourhoods(layers.len(), &triangles, rest, OWN_REACH * mean);
         let mean_edge = if count > 0 {
             (total / count as f64) as f32
         } else {

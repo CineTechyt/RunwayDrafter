@@ -45,7 +45,10 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
             );
             // A small draft on the button, and its name.
             let rect = response.rect.shrink(4.0);
-            let icon = Rect::from_min_size(rect.min + vec2((rect.width() - 30.0) / 2.0, 0.0), vec2(30.0, 30.0));
+            let icon = Rect::from_min_size(
+                rect.min + vec2((rect.width() - 30.0) / 2.0, 0.0),
+                vec2(30.0, 30.0),
+            );
             draw_draft(ui, icon, &entry, true, 6);
             ui.painter().text(
                 rect.center_bottom(),
@@ -84,13 +87,22 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
     let cell = ((ui.available_width() - 8.0) / weave.ends.max(1) as f32).clamp(4.0, 28.0);
     let size = vec2(cell * weave.ends as f32, cell * weave.picks as f32);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
-    draw_draft(ui, rect, weave, !state.weave_only, weave.ends.max(weave.picks));
+    draw_draft(
+        ui,
+        rect,
+        weave,
+        !state.weave_only,
+        weave.ends.max(weave.picks),
+    );
     // Click a crossing to swap which thread is on top; drag to paint.
     if let Some(pointer) = response.interact_pointer_pos() {
         let end = ((pointer.x - rect.left()) / cell).floor();
         let pick_from_top = ((pointer.y - rect.top()) / cell).floor();
         if end >= 0.0 && pick_from_top >= 0.0 {
-            let (end, pick) = (end as u32, weave.picks.saturating_sub(1 + pick_from_top as u32));
+            let (end, pick) = (
+                end as u32,
+                weave.picks.saturating_sub(1 + pick_from_top as u32),
+            );
             if end < weave.ends && pick < weave.picks {
                 let current = weave.up(end, pick);
                 let target = *state.painting.get_or_insert(!current);
@@ -116,11 +128,19 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
             weave.resize(ends, picks);
             changed = true;
         }
-        if ui.button("Invert").on_hover_text("Warp and weft swap places").clicked() {
+        if ui
+            .button("Invert")
+            .on_hover_text("Warp and weft swap places")
+            .clicked()
+        {
             weave.lift.iter_mut().for_each(|b| *b = !*b);
             changed = true;
         }
-        if ui.button("Shift right").on_hover_text("Shift the draft one end right").clicked() {
+        if ui
+            .button("Shift right")
+            .on_hover_text("Shift the draft one end right")
+            .clicked()
+        {
             let old = weave.clone();
             for p in 0..weave.picks {
                 for e in 0..weave.ends {
@@ -130,7 +150,11 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
             }
             changed = true;
         }
-        if ui.button("Shift up").on_hover_text("Shift the draft one pick up").clicked() {
+        if ui
+            .button("Shift up")
+            .on_hover_text("Shift the draft one pick up")
+            .clicked()
+        {
             let old = weave.clone();
             for p in 0..weave.picks {
                 for e in 0..weave.ends {
@@ -140,7 +164,11 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
             }
             changed = true;
         }
-        if ui.button("Mirror").on_hover_text("Mirror left to right").clicked() {
+        if ui
+            .button("Mirror")
+            .on_hover_text("Mirror left to right")
+            .clicked()
+        {
             let old = weave.clone();
             for p in 0..weave.picks {
                 for e in 0..weave.ends {
@@ -165,7 +193,12 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
                 state.weft_text = None;
                 changed = true;
             }
-            if index >= 2 && ui.small_button("✖").on_hover_text("Remove this yarn").clicked() {
+            if index >= 2
+                && ui
+                    .small_button("✖")
+                    .on_hover_text("Remove this yarn")
+                    .clicked()
+            {
                 remove = Some(index);
             }
         });
@@ -174,7 +207,10 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
         weave.yarns.remove(index);
         for order in [&mut weave.warp_order, &mut weave.weft_order] {
             order.retain(|&i| usize::from(i) != index);
-            order.iter_mut().filter(|i| usize::from(**i) > index).for_each(|i| *i -= 1);
+            order
+                .iter_mut()
+                .filter(|i| usize::from(**i) > index)
+                .for_each(|i| *i -= 1);
             if order.is_empty() {
                 order.push(0);
             }
@@ -196,8 +232,16 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
         for (label, warp, weft) in [
             ("Solid", vec![0u8], vec![1u8]),
             ("Stripes", [vec![0u8; 8], vec![1u8; 8]].concat(), vec![1u8]),
-            ("Check", [vec![0u8; 6], vec![1u8; 6]].concat(), [vec![0u8; 6], vec![1u8; 6]].concat()),
-            ("Pinstripe", [vec![0u8; 15], vec![1u8; 1]].concat(), vec![0u8]),
+            (
+                "Check",
+                [vec![0u8; 6], vec![1u8; 6]].concat(),
+                [vec![0u8; 6], vec![1u8; 6]].concat(),
+            ),
+            (
+                "Pinstripe",
+                [vec![0u8; 15], vec![1u8; 1]].concat(),
+                vec![0u8],
+            ),
         ] {
             if ui.button(label).clicked() {
                 if weave.yarns.len() < 2 {
@@ -215,8 +259,16 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
         }
     });
     for (label, order, text) in [
-        ("Warp colour order", &mut weave.warp_order, &mut state.warp_text),
-        ("Weft colour order", &mut weave.weft_order, &mut state.weft_text),
+        (
+            "Warp colour order",
+            &mut weave.warp_order,
+            &mut state.warp_text,
+        ),
+        (
+            "Weft colour order",
+            &mut weave.weft_order,
+            &mut state.weft_text,
+        ),
     ] {
         ui.horizontal(|ui| {
             ui.label(label);
@@ -241,12 +293,20 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
     super::property_grid(ui, "weave density", |ui| {
         ui.label("Ends per cm");
         changed |= ui
-            .add(egui::DragValue::new(&mut weave.ends_per_cm).range(2.0..=80.0).speed(0.2))
+            .add(
+                egui::DragValue::new(&mut weave.ends_per_cm)
+                    .range(2.0..=80.0)
+                    .speed(0.2),
+            )
             .changed();
         ui.end_row();
         ui.label("Picks per cm");
         changed |= ui
-            .add(egui::DragValue::new(&mut weave.picks_per_cm).range(2.0..=80.0).speed(0.2))
+            .add(
+                egui::DragValue::new(&mut weave.picks_per_cm)
+                    .range(2.0..=80.0)
+                    .speed(0.2),
+            )
             .changed();
         ui.end_row();
         ui.label("Irregularity");
@@ -296,7 +356,9 @@ pub fn show(ui: &mut Ui, weave: &mut Weave, state: &mut WeaveEditorState) -> boo
             [texture.width as usize, texture.height as usize],
             bytemuck_free(&texture.albedo),
         );
-        let handle = ui.ctx().load_texture("weave preview", image, egui::TextureOptions::LINEAR);
+        let handle = ui
+            .ctx()
+            .load_texture("weave preview", image, egui::TextureOptions::LINEAR);
         state.preview = Some((key, handle));
     }
     if let Some((_, handle)) = &state.preview {
@@ -322,8 +384,14 @@ fn draw_draft(ui: &Ui, rect: Rect, weave: &Weave, in_colour: bool, cells: u32) {
     let (ends, picks) = (weave.ends.min(cells), weave.picks.min(cells));
     let cell = (rect.width() / ends.max(1) as f32).min(rect.height() / picks.max(1) as f32);
     let yarn = |order: &[u8], thread: u32| {
-        let index = order.get(thread as usize % order.len().max(1)).copied().unwrap_or(0);
-        weave.yarns.get(usize::from(index)).map_or([0.5; 3], |y| y.color)
+        let index = order
+            .get(thread as usize % order.len().max(1))
+            .copied()
+            .unwrap_or(0);
+        weave
+            .yarns
+            .get(usize::from(index))
+            .map_or([0.5; 3], |y| y.color)
     };
     for p in 0..picks {
         for e in 0..ends {
@@ -367,7 +435,9 @@ fn order_text(order: &[u8], yarns: &[Yarn]) -> String {
     parts
         .iter()
         .map(|&(yarn, count)| {
-            let name = yarns.get(usize::from(yarn)).map_or("?", |y| y.name.as_str());
+            let name = yarns
+                .get(usize::from(yarn))
+                .map_or("?", |y| y.name.as_str());
             format!("{count} {name}")
         })
         .collect::<Vec<_>>()

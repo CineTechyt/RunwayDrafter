@@ -140,6 +140,9 @@ impl Model {
             let Some(piece) = document.piece(span.piece) else {
                 continue;
             };
+            if !piece.drape_enabled {
+                continue;
+            }
             let fabric = document
                 .fabric(piece.fabric)
                 .map(|f| f.physics)

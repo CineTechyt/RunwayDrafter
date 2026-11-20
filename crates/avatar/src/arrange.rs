@@ -47,7 +47,11 @@ fn limb_arrangement(
     let width = (high.x - low.x) * 1e-3;
     let girth = |measure: Measure, fallback: f32| {
         let g = measurements.get(measure);
-        if g > 0.0 { g / std::f32::consts::TAU } else { fallback }
+        if g > 0.0 {
+            g / std::f32::consts::TAU
+        } else {
+            fallback
+        }
     };
     let (centre, along, outward, limb_radius, anchor) = match piece.placement.part {
         BodyPart::Torso => return None,
@@ -88,7 +92,9 @@ fn limb_arrangement(
             let centre_x = if lower.is_empty() {
                 0.5 * (low.x + high.x)
             } else {
-                let (a, b) = lower.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+                let (a, b) = lower
+                    .iter()
+                    .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
                 0.5 * (a + b)
             };
             let radius = (width / std::f32::consts::PI).max(thigh);
@@ -106,7 +112,8 @@ fn limb_arrangement(
             // Waistbands: half round the waist, centred on `angle`.
             let facing = piece.placement.angle.to_radians();
             let outward = Vec3::new(facing.sin(), 0.0, facing.cos());
-            let radius = (width / std::f32::consts::PI).max(girth(Measure::Waist, 0.14) + WAIST_CLEARANCE);
+            let radius =
+                (width / std::f32::consts::PI).max(girth(Measure::Waist, 0.14) + WAIST_CLEARANCE);
             let across = Vec3::Y.cross(outward);
             let mut arrangement = piece.arrangement;
             arrangement.anchor = 0.5 * (low + high);
@@ -136,8 +143,7 @@ fn limb_arrangement(
     arrangement.anchor = anchor;
     arrangement.curvature = 1.0 / radius;
     arrangement.rotation = Quat::from_mat3(&Mat3::from_cols(across, along, outward));
-    arrangement.translation =
-        centre + outward * radius + along * (piece.placement.height * 1e-3);
+    arrangement.translation = centre + outward * radius + along * (piece.placement.height * 1e-3);
     Some(arrangement)
 }
 
@@ -234,7 +240,10 @@ pub fn arrange_around(
         // Two front halves sit on the same cylinder; where they overlap at
         // the button stand they would start inside each other, and nothing
         // would say which belongs on top.
-        let layer = lapped.iter().find(|&&(h, _)| h == id).map_or(piece.layer, |&(_, l)| l);
+        let layer = lapped
+            .iter()
+            .find(|&&(h, _)| h == id)
+            .map_or(piece.layer, |&(_, l)| l);
         let outset = layer.saturating_sub(1) as f32 * LAYER_SPACING
             + if over { OVERLAP_OUTSET } else { 0.0 };
         let angle = piece.placement.angle.to_radians();
@@ -375,7 +384,9 @@ pub fn arrange_around(
 
 /// Whether two pieces are sewn into one garment, directly or through
 /// other pieces.
-fn same_garment(document: &PatternDocument) -> impl Fn(cad_core::PieceId, cad_core::PieceId) -> bool + use<> {
+fn same_garment(
+    document: &PatternDocument,
+) -> impl Fn(cad_core::PieceId, cad_core::PieceId) -> bool + use<> {
     let ids: Vec<_> = document.pieces().iter().map(|p| p.id).collect();
     let mut group: Vec<usize> = (0..ids.len()).collect();
     fn root(group: &mut [usize], mut i: usize) -> usize {

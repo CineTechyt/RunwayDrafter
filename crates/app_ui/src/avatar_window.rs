@@ -293,9 +293,17 @@ fn characters(ui: &mut egui::Ui, avatar: &mut crate::state::AvatarState, output:
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
             let [r, g, b] = character.appearance.skin;
-            ui.painter().circle_filled(rect.center(), 6.0, egui::Color32::from(egui::Rgba::from_rgb(r, g, b)));
+            ui.painter().circle_filled(
+                rect.center(),
+                6.0,
+                egui::Color32::from(egui::Rgba::from_rgb(r, g, b)),
+            );
             let [r, g, b] = character.appearance.hair.color;
-            ui.painter().circle_stroke(rect.center(), 6.0, egui::Stroke::new(2.0, egui::Color32::from(egui::Rgba::from_rgb(r, g, b))));
+            ui.painter().circle_stroke(
+                rect.center(),
+                6.0,
+                egui::Stroke::new(2.0, egui::Color32::from(egui::Rgba::from_rgb(r, g, b))),
+            );
             let mut label = character.name.clone();
             if current && !worn {
                 label.push_str(" (changed)");
@@ -305,15 +313,22 @@ fn characters(ui: &mut egui::Ui, avatar: &mut crate::state::AvatarState, output:
                 g if g >= 0.75 => "man",
                 _ => "in between",
             };
-            let response = ui
-                .selectable_label(worn, label)
-                .on_hover_text(format!("{:.0} cm, {gender}. Click to put this character on (the pose stays).", character.height * 100.0));
+            let response = ui.selectable_label(worn, label).on_hover_text(format!(
+                "{:.0} cm, {gender}. Click to put this character on (the pose stays).",
+                character.height * 100.0
+            ));
             if response.clicked() {
                 put_on = Some(index);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("🗑").on_hover_text("Delete this character from the library").clicked() {
-                    output.commands.push(UiCommand::DeleteCharacter(character.name.clone()));
+                if ui
+                    .small_button("🗑")
+                    .on_hover_text("Delete this character from the library")
+                    .clicked()
+                {
+                    output
+                        .commands
+                        .push(UiCommand::DeleteCharacter(character.name.clone()));
                 }
                 ui.weak(format!("{:.0} cm", character.height * 100.0));
             });
@@ -325,10 +340,15 @@ fn characters(ui: &mut egui::Ui, avatar: &mut crate::state::AvatarState, output:
     }
 
     ui.horizontal(|ui| {
-        let field = egui::TextEdit::singleline(&mut avatar.character_name).hint_text("Name").desired_width(150.0);
+        let field = egui::TextEdit::singleline(&mut avatar.character_name)
+            .hint_text("Name")
+            .desired_width(150.0);
         let typed = ui.add(field);
         let name = avatar.character_name.trim().to_owned();
-        let exists = avatar.characters.iter().any(|c| c.name.eq_ignore_ascii_case(&name));
+        let exists = avatar
+            .characters
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(&name));
         let label = if exists { "Update" } else { "Save character" };
         let hint = if exists {
             "Replace the saved character of this name with the avatar as it is now"
@@ -336,7 +356,13 @@ fn characters(ui: &mut egui::Ui, avatar: &mut crate::state::AvatarState, output:
             "Keep this build, these measurements and looks in the library, for every project"
         };
         let enter = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (ui.add_enabled(!name.is_empty(), egui::Button::new(label)).on_hover_text(hint).clicked() || enter) && !name.is_empty() {
+        if (ui
+            .add_enabled(!name.is_empty(), egui::Button::new(label))
+            .on_hover_text(hint)
+            .clicked()
+            || enter)
+            && !name.is_empty()
+        {
             output.commands.push(UiCommand::SaveCharacter(name));
         }
     });
@@ -377,7 +403,7 @@ pub fn show(ctx: &egui::Context, editor: &mut EditorState, output: &mut UiOutput
     editor.avatar.window_open = open;
 }
 
-fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) {
+pub fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) {
     let avatar = &mut editor.avatar;
     let mut dragging = false;
     // Sliders report whether they are mid-drag, so the costly solve can
@@ -518,6 +544,7 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
     ui.horizontal_wrapped(|ui| {
         for (name, preset) in avatar::PoseParams::PRESETS {
             if ui.selectable_label(avatar.pose == preset, name).clicked() {
+                avatar.animation = crate::state::AnimationState::default();
                 avatar.pose = preset;
             }
         }
@@ -554,16 +581,21 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
                 5.0..=120.0,
                 "Angle between arm and body: 90° is a T-pose.",
             ) {
+                avatar.animation = crate::state::AnimationState::default();
                 pose.arm_angle = Some(arm);
             }
-            angle(
+            if angle(
                 ui,
                 "Arms forward",
                 &mut pose.arm_forward,
                 -30.0..=90.0,
                 "Swings the arms to the front (or back).",
-            );
-            angle(ui, "Elbows bent", &mut pose.elbow_bend, 0.0..=130.0, "");
+            ) {
+                avatar.animation = crate::state::AnimationState::default();
+            }
+            if angle(ui, "Elbows bent", &mut pose.elbow_bend, 0.0..=130.0, "") {
+                avatar.animation = crate::state::AnimationState::default();
+            }
             let mut leg = pose.leg_angle.unwrap_or(modelled_leg);
             if angle(
                 ui,
@@ -572,9 +604,12 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
                 0.0..=35.0,
                 "Angle between each leg and the vertical.",
             ) {
+                avatar.animation = crate::state::AnimationState::default();
                 pose.leg_angle = Some(leg);
             }
-            angle(ui, "Knees bent", &mut pose.knee_bend, 0.0..=120.0, "");
+            if angle(ui, "Knees bent", &mut pose.knee_bend, 0.0..=120.0, "") {
+                avatar.animation = crate::state::AnimationState::default();
+            }
         });
 
     // --- animation -----------------------------------------------------------------------
@@ -587,7 +622,20 @@ fn contents(ui: &mut egui::Ui, editor: &mut EditorState, output: &mut UiOutput) 
     ui.add_space(8.0);
     egui::CollapsingHeader::new("Appearance")
         .default_open(true)
-        .show(ui, |ui| appearance(ui, &mut avatar.appearance));
+        .show(ui, |ui| {
+            if ui
+                .checkbox(&mut avatar.modest, "Modest mode")
+                .on_hover_text(
+                    "Use a neutral colour instead of realistic skin tones — \
+                     safe for working in public.",
+                )
+                .changed()
+            {
+                avatar::config::set_modest(avatar.modest);
+            }
+            ui.add_space(4.0);
+            appearance(ui, &mut avatar.appearance);
+        });
 
     // --- details -----------------------------------------------------------------------
     ui.add_space(8.0);

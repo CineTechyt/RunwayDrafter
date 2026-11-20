@@ -67,9 +67,22 @@ fn file_name(name: &str) -> String {
     let stem: String = name
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c.to_lowercase().next().unwrap_or(c) } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                '_'
+            }
+        })
         .collect();
-    format!("{}.json", if stem.is_empty() { "character".into() } else { stem })
+    format!(
+        "{}.json",
+        if stem.is_empty() {
+            "character".into()
+        } else {
+            stem
+        }
+    )
 }
 
 /// Every character in `folder`, sorted by name. Unreadable files are skipped.
@@ -96,12 +109,14 @@ pub fn list(folder: &Path) -> Vec<Character> {
 /// Saves (or replaces) the character with this name.
 pub fn save(folder: &Path, character: &Character) -> anyhow::Result<()> {
     anyhow::ensure!(!character.name.is_empty(), "a character needs a name");
-    std::fs::create_dir_all(folder).with_context(|| format!("cannot create {}", folder.display()))?;
+    std::fs::create_dir_all(folder)
+        .with_context(|| format!("cannot create {}", folder.display()))?;
     let path = folder.join(file_name(&character.name));
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, serde_json::to_string_pretty(character)?)
         .with_context(|| format!("cannot write {}", temporary.display()))?;
-    std::fs::rename(&temporary, &path).with_context(|| format!("cannot write {}", path.display()))?;
+    std::fs::rename(&temporary, &path)
+        .with_context(|| format!("cannot write {}", path.display()))?;
     Ok(())
 }
 
@@ -129,11 +144,31 @@ mod tests {
         let mut looks = Appearance::default();
         looks.hair.style = HairStyle::Ponytail;
         let avatar = AvatarFile::new(&params, &PoseParams::default(), &targets, &looks);
-        save(&folder, &Character::new("  Tom / tall ", 1.87, avatar.clone())).unwrap();
-        save(&folder, &Character::new("Anna", 1.64, AvatarFile::new(&BodyParams::female(), &PoseParams::default(), &[None; Measure::ALL.len()], &Appearance::default()))).unwrap();
+        save(
+            &folder,
+            &Character::new("  Tom / tall ", 1.87, avatar.clone()),
+        )
+        .unwrap();
+        save(
+            &folder,
+            &Character::new(
+                "Anna",
+                1.64,
+                AvatarFile::new(
+                    &BodyParams::female(),
+                    &PoseParams::default(),
+                    &[None; Measure::ALL.len()],
+                    &Appearance::default(),
+                ),
+            ),
+        )
+        .unwrap();
 
         let all = list(&folder);
-        assert_eq!(all.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Anna", "Tom / tall"]);
+        assert_eq!(
+            all.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["Anna", "Tom / tall"]
+        );
         let tom = all[1].entry();
         assert_eq!(tom.params, params);
         assert_eq!(tom.targets, targets);

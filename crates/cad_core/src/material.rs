@@ -156,9 +156,14 @@ impl FabricMaps {
                 h = h.wrapping_mul(0x0100_0000_01b3);
             }
         };
-        for path in [Some(&self.color), self.normal.as_ref(), self.roughness.as_ref(), self.height.as_ref()]
-            .into_iter()
-            .flatten()
+        for path in [
+            Some(&self.color),
+            self.normal.as_ref(),
+            self.roughness.as_ref(),
+            self.height.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
         {
             eat(path.to_string_lossy().as_bytes());
             eat(&[0]);

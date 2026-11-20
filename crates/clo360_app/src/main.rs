@@ -21,6 +21,11 @@ fn main() -> anyhow::Result<()> {
     .init();
 
     let args: Vec<String> = std::env::args().collect();
+
+    // `--modest` renders avatars with a neutral colour (safe for public use).
+    if args.iter().any(|arg| arg == "--modest") {
+        avatar::config::set_modest(true);
+    }
     // `--screenshot out.ppm` renders the editor without a window.
     if args.iter().any(|arg| arg == "--screenshot") {
         return screenshot::run(&args);

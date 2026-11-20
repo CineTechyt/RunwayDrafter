@@ -47,7 +47,9 @@ fn best_line(
         .lines()
         .into_iter()
         .max_by(|a, b| {
-            let s = |span: &EdgeSpan| score(&outline.span_points(*span, 1.0), outline.span_length(*span));
+            let s = |span: &EdgeSpan| {
+                score(&outline.span_points(*span, 1.0), outline.span_length(*span))
+            };
             s(a).total_cmp(&s(b))
         })
         .unwrap()
@@ -65,7 +67,10 @@ fn middle(points: &[Vec2]) -> Vec2 {
 fn line_of_length(document: &PatternDocument, piece: PieceId, mm: f32) -> EdgeSpan {
     let span = best_line(document, piece, |_, l| -(l - mm).abs());
     let found = length(document, piece, span);
-    assert!((found - mm).abs() < 3.0, "no line of about {mm} mm (closest {found:.1})");
+    assert!(
+        (found - mm).abs() < 3.0,
+        "no line of about {mm} mm (closest {found:.1})"
+    );
     span
 }
 
@@ -86,7 +91,11 @@ fn split_at(document: &mut PatternDocument, piece: PieceId, span: EdgeSpan, from
     let points = outline.span_points(span, 1.0);
     let total = outline.span_length(span);
     let from_start = points[0].distance(from) < points[points.len() - 1].distance(from);
-    let fraction = if from_start { mm / total } else { 1.0 - mm / total };
+    let fraction = if from_start {
+        mm / total
+    } else {
+        1.0 - mm / total
+    };
     let (edge, t) = outline.span_location(span, fraction);
     document
         .insert_point(piece, edge, t)
@@ -118,7 +127,12 @@ fn sew(document: &mut PatternDocument, a: (PieceId, EdgeSpan), b: (PieceId, Edge
 }
 
 /// Of `candidates` on `piece`, the line placed nearest to `to`.
-fn nearest(document: &PatternDocument, piece: PieceId, candidates: &[EdgeSpan], to: Vec3) -> EdgeSpan {
+fn nearest(
+    document: &PatternDocument,
+    piece: PieceId,
+    candidates: &[EdgeSpan],
+    to: Vec3,
+) -> EdgeSpan {
     *candidates
         .iter()
         .min_by(|a, b| {
@@ -134,15 +148,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let usage = "usage: sew_tshirt <tshirt.pdf> <out.clo360> [height_m] [weight_kg]";
     let pdf = args.get(1).ok_or(usage)?;
     let out = args.get(2).ok_or(usage)?;
-    let height: f32 = args.get(3).map_or(Ok(1.87), |s| s.replace(',', ".").parse())?;
-    let weight_kg: f32 = args.get(4).map_or(Ok(92.0), |s| s.replace(',', ".").parse())?;
+    let height: f32 = args
+        .get(3)
+        .map_or(Ok(1.87), |s| s.replace(',', ".").parse())?;
+    let weight_kg: f32 = args
+        .get(4)
+        .map_or(Ok(92.0), |s| s.replace(',', ".").parse())?;
 
     // --- 1. import ---------------------------------------------------------------
-    let pattern =
-        io_cad::import_pattern_pdf(
-            &std::fs::read(pdf).map_err(|e| format!("cannot read {pdf}: {e}"))?,
-            &io_cad::PdfOptions::default(),
-        )?;
+    let pattern = io_cad::import_pattern_pdf(
+        &std::fs::read(pdf).map_err(|e| format!("cannot read {pdf}: {e}"))?,
+        &io_cad::PdfOptions::default(),
+    )?;
     if let Some(layout) = &pattern.pages {
         println!("{}", layout.summary());
     }
@@ -169,17 +186,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The fold: a body's longest straight line; the band's short end
     // marked "Symmetry" (the left one).
     for id in [front, back] {
-        let fold = best_line(&document, id, |points, l| if is_straight(points) { l } else { 0.0 });
+        let fold = best_line(
+            &document,
+            id,
+            |points, l| if is_straight(points) { l } else { 0.0 },
+        );
         assert!(document.unfold_piece(id, fold.first), "unfold {id:?}");
     }
     let band_fold = best_line(&document, neck, |points, l| {
-        if l < 100.0 { -middle(points).x } else { f32::MIN }
+        if l < 100.0 {
+            -middle(points).x
+        } else {
+            f32::MIN
+        }
     });
     assert!(document.unfold_piece(neck, band_fold.first));
     for id in [front, back, neck] {
         let p = document.piece(id).unwrap();
         let (lo, hi) = p.outline.bounds();
-        println!("{}: unfolded to {:.0} × {:.0} mm", p.name, hi.x - lo.x, hi.y - lo.y);
+        println!(
+            "{}: unfolded to {:.0} × {:.0} mm",
+            p.name,
+            hi.x - lo.x,
+            hi.y - lo.y
+        );
     }
 
     // --- 3. sleeves -------------------------------------------------------------------
@@ -198,21 +228,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- 4. split caps and band where the armholes and necklines meet ---------------
     let front_armhole = lines_of_length(&document, front, 268.8);
     let back_armhole = lines_of_length(&document, back, 259.7);
-    assert_eq!((front_armhole.len(), back_armhole.len()), (2, 2), "armholes");
+    assert_eq!(
+        (front_armhole.len(), back_armhole.len()),
+        (2, 2),
+        "armholes"
+    );
     let front_armhole_mm = length(&document, front, front_armhole[0]);
     for (id, front_side_x) in [(sleeve, f32::MAX), (sleeve_left, f32::MIN)] {
         let cap = line_of_length(&document, id, 527.8);
         // The cap's front end: on the +x side of the right sleeve.
         let points = document.piece(id).unwrap().outline.span_points(cap, 1.0);
         let (a, b) = (points[0], points[points.len() - 1]);
-        let front_end = if (a.x - b.x) * front_side_x.signum() > 0.0 { a } else { b };
+        let front_end = if (a.x - b.x) * front_side_x.signum() > 0.0 {
+            a
+        } else {
+            b
+        };
         split_at(&mut document, id, cap, front_end, front_armhole_mm);
     }
     let front_neckline = best_line(&document, front, |points, l| {
-        if is_straight(points) { f32::MIN } else { middle(points).y - (l - 349.0).abs() * 10.0 }
+        if is_straight(points) {
+            f32::MIN
+        } else {
+            middle(points).y - (l - 349.0).abs() * 10.0
+        }
     });
     let back_neckline = best_line(&document, back, |points, l| {
-        if is_straight(points) { f32::MIN } else { middle(points).y - (l - 299.0).abs() * 10.0 }
+        if is_straight(points) {
+            f32::MIN
+        } else {
+            middle(points).y - (l - 299.0).abs() * 10.0
+        }
     });
     let (front_neck_mm, back_neck_mm) = (
         length(&document, front, front_neckline),
@@ -226,11 +272,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         document.insert_point(back, edge, t).unwrap();
     }
     // The band's lower edge: back half | front | back half.
-    let band_edge = best_line(&document, neck, |points, l| if l > 100.0 { -middle(points).y } else { f32::MIN });
+    let band_edge = best_line(&document, neck, |points, l| {
+        if l > 100.0 {
+            -middle(points).y
+        } else {
+            f32::MIN
+        }
+    });
     let band_mm = length(&document, neck, band_edge);
-    let band_start = document.piece(neck).unwrap().outline.span_points(band_edge, 1.0)[0];
+    let band_start = document
+        .piece(neck)
+        .unwrap()
+        .outline
+        .span_points(band_edge, 1.0)[0];
     let back_share = band_mm * (back_neck_mm * 0.5) / (front_neck_mm + back_neck_mm);
-    split_at(&mut document, neck, band_edge, band_start, band_mm - back_share);
+    split_at(
+        &mut document,
+        neck,
+        band_edge,
+        band_start,
+        band_mm - back_share,
+    );
     let rest_of_edge = line_of_length(&document, neck, band_mm - back_share);
     split_at(&mut document, neck, rest_of_edge, band_start, back_share);
 
@@ -330,14 +392,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let back_halves = lines_of_length(&document, back, back_neck_mm * 0.5);
     assert_eq!((band_backs.len(), back_halves.len()), (2, 2), "neck band");
     for b in band_backs {
-        let half = nearest(&document, back, &back_halves, placed_middle(&document, neck, b));
+        let half = nearest(
+            &document,
+            back,
+            &back_halves,
+            placed_middle(&document, neck, b),
+        );
         sew(&mut document, (neck, b), (back, half));
     }
     let ends = lines_of_length(&document, neck, 40.0);
     assert_eq!(ends.len(), 2, "band ends");
     sew(&mut document, (neck, ends[0]), (neck, ends[1]));
 
-    println!("{} pieces, {} seams:", document.pieces().len(), document.seams().len());
+    println!(
+        "{} pieces, {} seams:",
+        document.pieces().len(),
+        document.seams().len()
+    );
     for seam in document.seams() {
         let name = |id| document.piece(id).unwrap().name.clone();
         println!(

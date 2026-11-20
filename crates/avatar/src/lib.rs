@@ -8,6 +8,8 @@
 //! the cloth solver collides with ([`field`]).
 
 pub mod arrange;
+pub mod config;
+pub mod drawing;
 pub mod field;
 pub mod fit;
 pub mod look;

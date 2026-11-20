@@ -17,19 +17,23 @@ use crate::viewport;
 pub enum Tab {
     Canvas2d,
     Viewport3d,
+    Avatar,
     PatternProperties,
     Materials,
     Simulation,
+    Variables,
     Timeline,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Canvas2d,
         Tab::Viewport3d,
+        Tab::Avatar,
         Tab::PatternProperties,
         Tab::Materials,
         Tab::Simulation,
+        Tab::Variables,
         Tab::Timeline,
     ];
 }
@@ -68,7 +72,10 @@ fn stitch_options(ui: &mut egui::Ui, editor: &mut EditorState) {
     use crate::panels::stitch_editor;
     use crate::state::CanvasTool;
     let tool = editor.canvas_tool;
-    if !matches!(tool, CanvasTool::Stitch | CanvasTool::FlatFell | CanvasTool::Zipper) {
+    if !matches!(
+        tool,
+        CanvasTool::Stitch | CanvasTool::FlatFell | CanvasTool::Zipper
+    ) {
         return;
     }
     egui::Frame::new()
@@ -138,6 +145,7 @@ fn canvas_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
                     (CanvasTool::Button, Icon::Button),
                     (CanvasTool::Buttonhole, Icon::Buttonhole),
                     (CanvasTool::Pull, Icon::Pull),
+                    (CanvasTool::Guide, Icon::Guide),
                 ] {
                     if icons::button(ui, icon, editor.canvas_tool == tool, true, tool.label())
                         .clicked()
@@ -184,8 +192,14 @@ fn canvas_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
                 command(
                     ui,
                     Icon::MirrorCopy,
-                    "Add a mirrored copy for the other side of the body",
+                    "Add an independent mirrored copy for the other side of the body",
                     UiCommand::MirrorCopy,
+                );
+                command(
+                    ui,
+                    Icon::MirrorClone,
+                    "Add a linked mirrored clone (changes to either piece update both symmetrically)",
+                    UiCommand::MirrorClone,
                 );
                 command(
                     ui,
@@ -248,13 +262,163 @@ impl Panel for ScenePanel {
         if surface_toolbar(ui, cx.editor) {
             cx.output.commands.push(UiCommand::ResetDrape);
         }
-        let hint =
-            "Drag to orbit · middle/right-drag to pan · scroll to zoom · click a piece to select";
-        cx.output.scene = Some(viewport::show(ui, cx.textures.scene, hint));
+        pen_toolbar(ui, cx);
+        use crate::state::SceneTool;
+        let pen = &cx.editor.pen;
+        let hint = match pen.tool {
+            SceneTool::Orbit => {
+                "Drag to orbit · middle/right-drag to pan · scroll to zoom · click a piece to select"
+            }
+            SceneTool::Place => {
+                "Drag a piece around the body · left/right moves around the body · up/down raises or lowers it"
+            }
+            SceneTool::Pen if pen.drawing.is_empty() => {
+                "3D pen: click on or beside the avatar to start a line · start on a line or its point to join it · drag to orbit"
+            }
+            SceneTool::Pen => {
+                "Click to add points · click the first point to close the line · click another line to end on it · double-click or Enter ends it · Esc drops it"
+            }
+            SceneTool::EditLines => {
+                "Drag a point along the body · click a line to select it · double-click a line to add a point, a point to remove it · Del deletes"
+            }
+            SceneTool::Flatten => {
+                "Point into an area closed by lines (its outline lights up) and click: it becomes a pattern piece in the 2D view"
+            }
+        };
+        let view = ui.available_rect_before_wrap();
+        let input = viewport::show(ui, cx.textures.scene, hint);
+        pen_guide(ui, view, cx.editor, cx.document.drawing().lines.len());
+        let pen = &cx.editor.pen;
+        if pen.tool != SceneTool::Orbit && input.hovered {
+            ui.input(|i| {
+                if i.key_pressed(egui::Key::Enter) {
+                    cx.editor.pen.finish = true;
+                }
+                if i.key_pressed(egui::Key::Escape) {
+                    cx.editor.pen.cancel = true;
+                }
+            });
+        }
+        cx.output.scene = Some(input);
     }
     fn fills_tab(&self) -> bool {
         true
     }
+}
+
+/// The 3D view's tools: select, draw on the avatar, edit the lines,
+/// flatten areas into pattern pieces.
+fn pen_toolbar(ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
+    use crate::icons::{self, Icon};
+    use crate::state::SceneTool;
+    let pen = &mut cx.editor.pen;
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let before = pen.tool;
+                for (tool, icon) in [
+                    (SceneTool::Orbit, Icon::Select),
+                    (SceneTool::Place, Icon::Pull),
+                    (SceneTool::Pen, Icon::Pen3d),
+                    (SceneTool::EditLines, Icon::EditLines3d),
+                    (SceneTool::Flatten, Icon::Flatten),
+                ] {
+                    if icons::button(ui, icon, pen.tool == tool, true, tool.label()).clicked() {
+                        pen.tool = tool;
+                    }
+                }
+                if pen.tool != before {
+                    pen.drawing.clear();
+                    pen.status = None;
+                }
+                icons::separator(ui);
+                ui.checkbox(&mut pen.mirror, "Mirror")
+                    .on_hover_text("Draw every line on the other side of the body too; moving a point moves its mirror image");
+                let lines = !cx.document.drawing().lines.is_empty();
+                if ui
+                    .add_enabled(lines, egui::Button::new("Flatten all to 2D"))
+                    .on_hover_text(
+                        "Every area closed by drawn lines becomes a pattern piece in the 2D view \
+                         (areas already flattened are left), sewn together where they share a line",
+                    )
+                    .clicked()
+                {
+                    cx.output.commands.push(UiCommand::FlattenAll);
+                }
+                match &pen.status {
+                    Some(Ok(message)) => {
+                        ui.weak(message);
+                    }
+                    Some(Err(message)) => {
+                        ui.colored_label(ui.visuals().warn_fg_color, message);
+                    }
+                    None => {}
+                }
+            });
+            if pen.tool == SceneTool::EditLines
+                && let Some(id) = pen.selected_line
+                && let Some(line) = cx.document.drawing().line(id)
+            {
+                ui.horizontal(|ui| {
+                    ui.label(match pen.selected_point {
+                        Some(k) => format!("Line {id}, point {}", k + 1),
+                        None => format!("Line {id}"),
+                    });
+                    let mut straight = line.straight;
+                    if ui
+                        .checkbox(&mut straight, "Straight when flattened")
+                        .on_hover_text("A centre front or back: its piece line is a straight line")
+                        .changed()
+                    {
+                        cx.output.commands.push(UiCommand::SetAvatarLineStraight { line: id, straight });
+                    }
+                    if ui.button("🗑 Delete line").clicked() {
+                        cx.output.commands.push(UiCommand::DeleteAvatarLine(id));
+                    }
+                });
+            }
+        });
+}
+
+/// While drawing on the avatar: the three steps from lines to pieces, the
+/// current one bright.
+fn pen_guide(ui: &egui::Ui, rect: egui::Rect, editor: &EditorState, lines: usize) {
+    use crate::state::SceneTool;
+    let pen = &editor.pen;
+    if matches!(pen.tool, SceneTool::Orbit | SceneTool::Place) {
+        return;
+    }
+    let step = match pen.tool {
+        _ if !pen.drawing.is_empty() => 1,
+        SceneTool::Flatten => 3,
+        _ if lines == 0 => 1,
+        _ => 2,
+    };
+    let steps = [
+        "1  Draw lines with the 3D pen: click on (or beside) the avatar",
+        "2  Close areas: let the lines meet all round, at their points",
+        "3  Flatten (tool or \"Flatten all to 2D\"): the areas become pieces in the 2D view",
+    ];
+    egui::Area::new(egui::Id::new("pen guide"))
+        .fixed_pos(rect.left_top() + egui::vec2(10.0, 10.0))
+        .order(egui::Order::Middle)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(egui::Color32::from_black_alpha(150))
+                .show(ui, |ui| {
+                    for (k, text) in steps.iter().enumerate() {
+                        let text = egui::RichText::new(*text).size(11.5);
+                        if k + 1 == step {
+                            ui.label(text.strong().color(egui::Color32::from_rgb(255, 210, 110)));
+                        } else {
+                            ui.label(text.color(egui::Color32::from_white_alpha(150)));
+                        }
+                    }
+                });
+        });
 }
 
 /// The colour of the heatmaps at `t` in `0..=1` (blue to red). The same
@@ -278,7 +442,12 @@ fn heat_color(t: f32) -> egui::Color32 {
 /// of the heatmap and its legend.
 fn surface_toolbar(ui: &mut egui::Ui, editor: &mut EditorState) -> bool {
     let mut reset = false;
-    let EditorState { render, view, timeline, .. } = editor;
+    let EditorState {
+        render,
+        view,
+        timeline,
+        ..
+    } = editor;
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(8, 4))
         .show(ui, |ui| {
@@ -297,7 +466,9 @@ fn surface_toolbar(ui: &mut egui::Ui, editor: &mut EditorState) -> bool {
                 }
                 if ui
                     .button("⏮ Reset")
-                    .on_hover_text("Take the garment off: the pieces go back around the avatar, unsewn")
+                    .on_hover_text(
+                        "Take the garment off: the pieces go back around the avatar, unsewn",
+                    )
                     .clicked()
                 {
                     timeline.stop();
@@ -381,13 +552,41 @@ fn surface_toolbar(ui: &mut egui::Ui, editor: &mut EditorState) -> bool {
     reset
 }
 
+#[derive(Debug, Default)]
+struct AvatarPanel;
+
+impl Panel for AvatarPanel {
+    fn title(&self) -> &'static str {
+        "Avatar"
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, cx: &mut PanelContext<'_>) {
+        editor_avatar_dragging_reset(cx.editor);
+        if !cx.editor.avatar.available {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Body model not found (assets/avatar/body.bin).",
+            );
+            ui.label("Run tools/bake_avatar.py to download it. A placeholder mannequin is shown instead.");
+            return;
+        }
+        crate::avatar_window::contents(ui, cx.editor, cx.output);
+    }
+}
+
+fn editor_avatar_dragging_reset(editor: &mut EditorState) {
+    editor.avatar.dragging = false;
+}
+
 #[derive(Default)]
 struct Panels {
     canvas: CanvasPanel,
     scene: ScenePanel,
+    avatar: AvatarPanel,
     pattern: PatternPropertiesPanel,
     materials: MaterialPanel,
     simulation: SimulationPanel,
+    variables: crate::panels::variables::VariablesPanel,
     timeline: TimelinePanel,
 }
 
@@ -396,9 +595,11 @@ impl Panels {
         match tab {
             Tab::Canvas2d => &mut self.canvas,
             Tab::Viewport3d => &mut self.scene,
+            Tab::Avatar => &mut self.avatar,
             Tab::PatternProperties => &mut self.pattern,
             Tab::Materials => &mut self.materials,
             Tab::Simulation => &mut self.simulation,
+            Tab::Variables => &mut self.variables,
             Tab::Timeline => &mut self.timeline,
         }
     }
@@ -475,7 +676,13 @@ impl AppUi {
         let [work, _properties] = surface.split_right(
             NodeIndex::root(),
             0.76,
-            vec![Tab::PatternProperties, Tab::Materials, Tab::Simulation],
+            vec![
+                Tab::PatternProperties,
+                Tab::Avatar,
+                Tab::Materials,
+                Tab::Simulation,
+                Tab::Variables,
+            ],
         );
         // No timeline: draping is started from the 3D view's bar and stops
         // by itself when the cloth has settled.
@@ -520,7 +727,6 @@ impl AppUi {
             .show_leaf_close_all_buttons(false)
             .show_leaf_collapse_buttons(false)
             .show_inside(ui, &mut viewer);
-        crate::avatar_window::show(ui.ctx(), editor, &mut output);
         crate::io_window::show(ui.ctx(), editor, &mut output);
         crate::pattern_window::show(ui.ctx(), editor, &mut output);
         crate::file_browser::show(ui.ctx(), &mut editor.file_browser);
@@ -594,6 +800,7 @@ impl AppUi {
                     (Key::U, CanvasTool::Button),
                     (Key::H, CanvasTool::Buttonhole),
                     (Key::G, CanvasTool::Pull),
+                    (Key::R, CanvasTool::Guide),
                 ] {
                     if input.consume_key(Modifiers::NONE, key) {
                         editor.canvas_tool = tool;
@@ -711,7 +918,10 @@ impl AppUi {
                     }
                 });
                 ui.menu_button("Avatar", |ui| {
-                    ui.checkbox(&mut editor.avatar.window_open, "Avatar editor");
+                    if ui.button("Avatar editor").clicked() {
+                        self.dock.push_to_focused_leaf(Tab::Avatar);
+                        self.focus(Tab::Avatar);
+                    }
                     if ui.button("Arrange garment around avatar").clicked() {
                         editor.timeline.stop();
                         output.commands.push(UiCommand::ArrangePieces);

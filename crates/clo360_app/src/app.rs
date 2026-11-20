@@ -539,6 +539,7 @@ impl Running {
 /// eyes and hair.
 fn upload_avatar(gpu: &GpuContext, scene: &mut SceneRenderer, session: &mut Session) {
     let appearance = session.editor.avatar.appearance;
+    let modest = session.editor.avatar.modest;
     let white = [1.0; 3];
     let skin_material = SurfaceMaterial {
         base_color: white,
@@ -567,7 +568,7 @@ fn upload_avatar(gpu: &GpuContext, scene: &mut SceneRenderer, session: &mut Sess
     // The parametric body: looks built once, carried along with the head.
     if session.imported.is_none()
         && let Some(body) = &mut session.body
-        && body.looks(&appearance).is_some()
+        && body.looks(&appearance, modest).is_some()
         && let Some(looks) = body.cached_looks()
     {
         let head = body.head_transform(looks);
@@ -619,7 +620,13 @@ fn upload_avatar(gpu: &GpuContext, scene: &mut SceneRenderer, session: &mut Sess
     }
     // An imported avatar (or a body without eyes): skin colour only.
     if let Some((body, _)) = session.avatar() {
-        let skin = skin_mesh(body, &|_| appearance.skin);
+        let skin = skin_mesh(body, &|_| {
+            if modest {
+                [0.72, 0.72, 0.70]
+            } else {
+                appearance.skin
+            }
+        });
         scene.set_avatar(gpu, &skin, skin_material);
     }
 }
@@ -644,10 +651,15 @@ pub(crate) fn draw_viewports(
     }
     scene.overlay = session.surface_overlay().0;
     if session.take_garment_dirty() {
-        let (_, values) = session.surface_overlay();
-        scene.sync_garment(gpu, session.topology.mesh(), values, |piece| {
-            session.fabric_thickness(piece)
-        });
+        if session.garment_hidden() {
+            // Drawing on the avatar: no garment in the way.
+            scene.sync_garment(gpu, &topology_sync::GarmentMesh::default(), &[], |_| 0.0);
+        } else {
+            let (_, values) = session.surface_overlay();
+            scene.sync_garment(gpu, session.topology.mesh(), values, |piece| {
+                session.fabric_thickness(piece)
+            });
+        }
     }
     if let Some(input) = canvas_input {
         Running::fit_target(
@@ -673,11 +685,18 @@ pub(crate) fn draw_viewports(
         Running::fit_target(gpu, egui_renderer, scene, textures.scene, &input, max_side);
         // Buttons ride on the cloth, so they follow it every frame; the
         // chair of the sitting animation rises out of the floor.
-        let mut props = gfx_render::garment_props(&session.document, &session.topology);
+        let mut props = if session.garment_hidden() {
+            gfx_render::MeshData::default()
+        } else {
+            gfx_render::garment_props(&session.document, &session.topology)
+        };
+        session.pen_props(&mut props);
         if let Some((min, max)) = session.chair() {
             gfx_render::scene3d::props::chair(&mut props, min, max);
         }
-        session.stitch_props(&mut props);
+        if !session.garment_hidden() {
+            session.stitch_props(&mut props);
+        }
         scene.set_props(gpu, &props);
         let session = &*session;
         session.load_weaves(gpu, scene);
@@ -686,7 +705,13 @@ pub(crate) fn draw_viewports(
         });
         scene.render(gpu, encoder);
     }
-    studio_render(gpu, session, scene, egui_renderer, scene_input.map(|input| input.size));
+    studio_render(
+        gpu,
+        session,
+        scene,
+        egui_renderer,
+        scene_input.map(|input| input.size),
+    );
 }
 
 /// Samples of the studio render per frame: enough to finish in seconds,

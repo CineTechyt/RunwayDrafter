@@ -48,6 +48,25 @@ impl Measure {
         Measure::Wrist,
     ];
 
+    /// The measurement's name in pattern formulas.
+    pub fn key(self) -> &'static str {
+        match self {
+            Measure::Height => "height",
+            Measure::Neck => "neck",
+            Measure::Shoulders => "shoulders",
+            Measure::Bust => "bust",
+            Measure::Waist => "waist",
+            Measure::Hips => "hips",
+            Measure::Inseam => "inseam",
+            Measure::Thigh => "thigh",
+            Measure::Calf => "calf",
+            Measure::Ankle => "ankle",
+            Measure::ArmLength => "arm_length",
+            Measure::UpperArm => "upper_arm",
+            Measure::Wrist => "wrist",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Measure::Height => "Height",
@@ -104,6 +123,56 @@ pub struct Measurements {
 }
 
 impl Measurements {
+    /// The tape measurements and body levels under their names in pattern
+    /// formulas, in millimetres. Left out when not measured (imported
+    /// avatars), so formulas using them say so instead of shrinking the
+    /// pattern to nothing.
+    pub fn for_formulas(&self) -> Vec<cad_core::Measured> {
+        let mm = |v: f32| (v * 10_000.0).round() / 10.0;
+        let mut out: Vec<cad_core::Measured> = Measure::ALL
+            .iter()
+            .filter(|&&m| self.get(m) > 0.0)
+            .map(|&m| cad_core::Measured {
+                name: m.key().to_owned(),
+                value: mm(self.get(m)),
+                label: m.label().to_owned(),
+            })
+            .collect();
+        if self.get(Measure::Inseam) > 0.0 && self.waist_level > 0.0 {
+            for (name, value, label) in [
+                ("waist_height", self.waist_level, "Floor to the waist"),
+                (
+                    "hip_height",
+                    self.hip_level,
+                    "Floor to the fullest part of the seat",
+                ),
+                (
+                    "bust_height",
+                    self.bust_level,
+                    "Floor to the bust / chest line",
+                ),
+                ("armpit_height", self.armpit_level, "Floor to the armpits"),
+                (
+                    "crotch_depth",
+                    self.waist_level - self.get(Measure::Inseam),
+                    "Waist down to the crotch (the rise)",
+                ),
+                (
+                    "waist_to_hip",
+                    self.waist_level - self.hip_level,
+                    "Waist down to the fullest part of the seat",
+                ),
+            ] {
+                out.push(cad_core::Measured {
+                    name: name.to_owned(),
+                    value: mm(value),
+                    label: label.to_owned(),
+                });
+            }
+        }
+        out
+    }
+
     /// What garment arrangement needs, estimated from proportions alone,
     /// for bodies without the landmarks real measuring relies on
     /// (imported avatars). The tape measurements stay zero.

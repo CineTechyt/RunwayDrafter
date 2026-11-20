@@ -68,7 +68,12 @@ impl MoveHandle {
             return Err(EditError::MissingHandle(self.handle));
         }
         doc.touch();
-        Ok(DocumentChange::PieceGeometry(self.handle.piece))
+        let change = if doc.sync_mirrored_clone(self.handle.piece).is_some() {
+            DocumentChange::Everything
+        } else {
+            DocumentChange::PieceGeometry(self.handle.piece)
+        };
+        Ok(change)
     }
 }
 

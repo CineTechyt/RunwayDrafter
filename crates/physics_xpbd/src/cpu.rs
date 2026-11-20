@@ -685,17 +685,35 @@ mod tests {
             max_speed: 50.0,
             surface_collision: false,
         };
-        println!("{} particles, {} elements, {} colours", state.positions.len(), model.elements.len(), model.colours.len());
+        println!(
+            "{} particles, {} elements, {} colours",
+            state.positions.len(),
+            model.elements.len(),
+            model.colours.len()
+        );
         let mut scratch = Vec::new();
         let t = std::time::Instant::now();
         for _ in 0..300 {
             for colour in &model.colours {
-                solve_colour(&model.elements[colour.start as usize..colour.end as usize], &model, &mut state, None, &params, &mut scratch);
+                solve_colour(
+                    &model.elements[colour.start as usize..colour.end as usize],
+                    &model,
+                    &mut state,
+                    None,
+                    &params,
+                    &mut scratch,
+                );
             }
         }
-        println!("serial: {:.3} ms per substep", t.elapsed().as_secs_f64() * 1000.0 / 300.0);
+        println!(
+            "serial: {:.3} ms per substep",
+            t.elapsed().as_secs_f64() * 1000.0 / 300.0
+        );
         for threads in [2, 4, 8] {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             let t = std::time::Instant::now();
             for _ in 0..300 {
                 pool.install(|| solve_colours_together(&model, &mut state, None, &params));
@@ -712,11 +730,15 @@ mod tests {
         let mut topology = GarmentTopology::default();
         topology.rebuild(&document);
         let model = Model::build(topology.mesh(), &document);
-        assert!(model.elements.len() >= TOGETHER_THRESHOLD, "big enough to share out");
+        assert!(
+            model.elements.len() >= TOGETHER_THRESHOLD,
+            "big enough to share out"
+        );
         // Every particle off its rest position, so every row has work.
-        let mut state = State::at_rest(topology.mesh().positions.iter().enumerate().map(|(i, p)| {
-            Vec3A::from(*p) + Vec3A::new((i % 7) as f32, (i % 5) as f32, (i % 3) as f32) * 0.002
-        }));
+        let mut state =
+            State::at_rest(topology.mesh().positions.iter().enumerate().map(|(i, p)| {
+                Vec3A::from(*p) + Vec3A::new((i % 7) as f32, (i % 5) as f32, (i % 3) as f32) * 0.002
+            }));
         let params = SubstepParams {
             h: 1.0 / 900.0,
             gravity: Vec3A::ZERO,
@@ -740,7 +762,10 @@ mod tests {
                 &mut scratch,
             );
         }
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
         pool.install(|| solve_colours_together(&model, &mut state, None, &params));
         assert_eq!(serial.positions, state.positions);
     }

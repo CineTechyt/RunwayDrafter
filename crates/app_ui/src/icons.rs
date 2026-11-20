@@ -18,11 +18,16 @@ pub enum Icon {
     Button,
     Buttonhole,
     Pull,
+    Guide,
+    Pen3d,
+    EditLines3d,
+    Flatten,
     RotateCcw,
     RotateCw,
     FlipHorizontal,
     FlipVertical,
     MirrorCopy,
+    MirrorClone,
     Delete,
     FitView,
     Tidy,
@@ -179,7 +184,14 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Stitch => {
             // A zigzag and a row of stitches: a stitch being chosen.
             painter.add(Shape::line(
-                vec![p(1.5, 5.0), p(4.0, 2.0), p(6.5, 5.0), p(9.0, 2.0), p(11.5, 5.0), p(14.0, 2.0)],
+                vec![
+                    p(1.5, 5.0),
+                    p(4.0, 2.0),
+                    p(6.5, 5.0),
+                    p(9.0, 2.0),
+                    p(11.5, 5.0),
+                    p(14.0, 2.0),
+                ],
                 thin,
             ));
             for k in 0..4 {
@@ -188,7 +200,10 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             }
             for k in 0..3 {
                 let x = 2.5 + 4.5 * k as f32;
-                painter.add(Shape::line(vec![p(x, 15.0), p(x + 2.0, 12.5), p(x + 4.0, 15.0)], thin));
+                painter.add(Shape::line(
+                    vec![p(x, 15.0), p(x + 2.0, 12.5), p(x + 4.0, 15.0)],
+                    thin,
+                ));
             }
         }
         Icon::FlatFell => {
@@ -293,6 +308,67 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             );
             line(p(5.5, 8.0), p(10.5, 8.0));
         }
+        Icon::Pen3d => {
+            // A pen drawing a curve over a body's round.
+            painter.add(Shape::line(
+                (0..=12)
+                    .map(|i| {
+                        let t = i as f32 / 12.0;
+                        p(1.5 + 9.0 * t, 14.0 - 5.0 * (t * std::f32::consts::PI).sin())
+                    })
+                    .collect(),
+                thin,
+            ));
+            line(p(10.5, 9.5), p(14.5, 2.0));
+            line(p(10.5, 9.5), p(11.5, 6.0));
+            line(p(10.5, 9.5), p(13.2, 7.4));
+            line(p(11.5, 6.0), p(13.2, 7.4));
+        }
+        Icon::EditLines3d => {
+            let curve: Vec<Pos2> = (0..=12)
+                .map(|i| {
+                    let t = i as f32 / 12.0;
+                    p(
+                        2.0 + 12.0 * t,
+                        12.0 - 8.0 * (t * std::f32::consts::PI).sin(),
+                    )
+                })
+                .collect();
+            polyline(curve);
+            for (x, y) in [(2.0, 12.0), (8.0, 4.0), (14.0, 12.0)] {
+                painter.rect_filled(
+                    Rect::from_center_size(p(x, y), vec2(3.4 * s, 3.4 * s)),
+                    0.5,
+                    color,
+                );
+            }
+        }
+        Icon::Flatten => {
+            // A rounded shape laid out flat.
+            painter.add(Shape::line(
+                (0..=12)
+                    .map(|i| {
+                        let t = i as f32 / 12.0;
+                        p(2.0 + 12.0 * t, 6.0 - 4.0 * (t * std::f32::consts::PI).sin())
+                    })
+                    .collect(),
+                thin,
+            ));
+            line(p(8.0, 6.5), p(8.0, 11.0));
+            line(p(6.3, 9.3), p(8.0, 11.0));
+            line(p(9.7, 9.3), p(8.0, 11.0));
+            line(p(2.0, 14.0), p(14.0, 14.0));
+        }
+        Icon::Guide => {
+            // Two helplines with a measured gap between them.
+            dashed(p(1.5, 4.0), p(14.5, 4.0));
+            dashed(p(1.5, 12.0), p(14.5, 12.0));
+            line(p(8.0, 5.0), p(8.0, 11.0));
+            line(p(6.5, 6.5), p(8.0, 5.0));
+            line(p(9.5, 6.5), p(8.0, 5.0));
+            line(p(6.5, 9.5), p(8.0, 11.0));
+            line(p(9.5, 9.5), p(8.0, 11.0));
+        }
         Icon::Pull => {
             line(p(2.0, 8.0), p(13.0, 8.0));
             painter.add(Shape::convex_polygon(
@@ -350,6 +426,22 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             ));
             line(p(12.0, 6.0), p(12.0, 10.0));
             line(p(10.0, 8.0), p(14.0, 8.0));
+        }
+        Icon::MirrorClone => {
+            // Two mirrored pieces with a link / connector between them.
+            painter.add(Shape::closed_line(
+                vec![p(1.5, 3.0), p(5.5, 3.0), p(5.5, 14.0), p(1.5, 11.0)],
+                stroke,
+            ));
+            painter.add(Shape::closed_line(
+                vec![p(14.5, 3.0), p(10.5, 3.0), p(10.5, 14.0), p(14.5, 11.0)],
+                stroke,
+            ));
+            line(p(5.5, 8.5), p(10.5, 8.5));
+            line(p(7.0, 7.0), p(5.5, 8.5));
+            line(p(7.0, 10.0), p(5.5, 8.5));
+            line(p(9.0, 7.0), p(10.5, 8.5));
+            line(p(9.0, 10.0), p(10.5, 8.5));
         }
         Icon::Delete => {
             // A bin.

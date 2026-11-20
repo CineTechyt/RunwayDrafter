@@ -10,6 +10,7 @@ pub mod avatar_window;
 mod canvas_overlay;
 pub mod dock;
 pub mod file_browser;
+pub mod formula;
 pub mod icons;
 pub mod io_window;
 pub mod panels;
@@ -22,9 +23,10 @@ pub use dock::{AppUi, Tab};
 pub use file_browser::{FileBrowserMode, FileBrowserState, FileFilter};
 pub use panels::{Panel, PanelContext};
 pub use state::{
-    AnimationState, AvatarState, CanvasTool, CharacterEntry, CanvasView, EditorState, ExportFormat, GarmentStatus, IoState,
-    PatternImportState, PointMarker, Sample, RenderState, ScaleMode, SceneStats, SewPick, SimulationState, SurfaceView,
-    Timeline, UiCommand, UiOutput, ViewOptions, ViewportTextures,
+    AnimationState, AvatarState, CanvasTool, CanvasView, CharacterEntry, EditorState, ExportFormat,
+    GarmentStatus, IoState, PatternImportState, PenState, PointMarker, RenderState, Sample,
+    ScaleMode, SceneStats, SceneTool, SewPick, SimulationState, SurfaceView, Timeline, UiCommand,
+    UiOutput, ViewOptions, ViewportTextures,
 };
 pub use viewport::{ButtonDrag, ViewportInput};
 

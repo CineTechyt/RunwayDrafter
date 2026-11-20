@@ -729,12 +729,19 @@ pub struct PatternPiece {
     /// Where the piece goes around the body before sewing.
     #[serde(default)]
     pub placement: Placement,
+    /// Whether this piece participates in the live cloth simulation.
+    #[serde(default = "PatternPiece::default_drape_enabled")]
+    pub drape_enabled: bool,
     /// Free edges sewn on their own (hems, necklines).
     #[serde(default)]
     pub edge_stitches: Vec<crate::stitch::EdgeStitching>,
     /// Lines the cloth is folded or pressed along (pleats, creases).
     #[serde(default)]
     pub folds: Vec<FoldLine>,
+    /// If this piece is a mirrored clone of another piece, their outlines and
+    /// geometry stay in sync (changes to one are mirrored to the other).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirrored_clone: Option<PieceId>,
 }
 
 /// A line across a piece that the cloth is folded along: a pressed crease
@@ -814,9 +821,24 @@ impl BodyPart {
             Self::RightLeg => "Right leg",
         }
     }
+
+    /// The opposite side of the body for a mirrored piece.
+    pub fn mirrored(self) -> Self {
+        match self {
+            Self::LeftArm => Self::RightArm,
+            Self::RightArm => Self::LeftArm,
+            Self::LeftLeg => Self::RightLeg,
+            Self::RightLeg => Self::LeftLeg,
+            other => other,
+        }
+    }
 }
 
 impl PatternPiece {
+    pub const fn default_drape_enabled() -> bool {
+        true
+    }
+
     /// Moves what lies on the piece (buttons, buttonholes, fold lines)
     /// along with its outline: every point through `map`.
     pub fn map_details(&mut self, map: impl Fn(Vec2) -> Vec2) {
@@ -861,8 +883,10 @@ impl PatternPiece {
             },
             layer: Self::default_layer(),
             placement: Placement::default(),
+            drape_enabled: Self::default_drape_enabled(),
             edge_stitches: Vec::new(),
             folds: Vec::new(),
+            mirrored_clone: None,
         }
     }
 
@@ -929,10 +953,20 @@ mod tests {
             Vec2::new(200.0, 400.0),
             Vec2::new(0.0, 400.0),
         ]);
-        let hole = Buttonhole { position: Vec2::new(180.0, 200.0), length: 20.0, angle: 0.0 };
-        assert!(hole.button_end(&front).abs_diff_eq(Vec2::new(190.0, 200.0), 1e-3));
+        let hole = Buttonhole {
+            position: Vec2::new(180.0, 200.0),
+            length: 20.0,
+            angle: 0.0,
+        };
+        assert!(
+            hole.button_end(&front)
+                .abs_diff_eq(Vec2::new(190.0, 200.0), 1e-3)
+        );
         // Down a placket both ends are as far from the edge: the middle.
-        let vertical = Buttonhole { angle: std::f32::consts::FRAC_PI_2, ..hole };
+        let vertical = Buttonhole {
+            angle: std::f32::consts::FRAC_PI_2,
+            ..hole
+        };
         assert!(vertical.button_end(&front).abs_diff_eq(hole.position, 1e-3));
     }
 

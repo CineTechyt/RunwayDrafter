@@ -11,7 +11,9 @@ fn main() -> std::io::Result<()> {
     let presets = cad_core::fabric_library::presets()
         .into_iter()
         .filter_map(|f| Some((f.name.clone(), f.weave?)));
-    let library = cad_core::Weave::library().into_iter().map(|(n, w)| (n.to_owned(), w));
+    let library = cad_core::Weave::library()
+        .into_iter()
+        .map(|(n, w)| (n.to_owned(), w));
     for (name, weave) in library.chain(presets) {
         let texture = weave.preview(10);
         let mut bytes = format!("P6\n{} {}\n255\n", texture.width, texture.height).into_bytes();

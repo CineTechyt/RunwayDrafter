@@ -160,28 +160,29 @@ pub(crate) fn clip_subpath(
             out.push(done);
         }
     };
-    let line = |from: Vec2, to: Vec2, current: &mut Option<RawSubpath>, out: &mut Vec<RawSubpath>| {
-        let Some((t0, t1)) = clip_line(from, to, rect) else {
-            finish(current, out);
-            return;
+    let line =
+        |from: Vec2, to: Vec2, current: &mut Option<RawSubpath>, out: &mut Vec<RawSubpath>| {
+            let Some((t0, t1)) = clip_line(from, to, rect) else {
+                finish(current, out);
+                return;
+            };
+            let a = from.lerp(to, t0);
+            let b = from.lerp(to, t1);
+            if a.distance(b) < 1e-4 || (drop_edges && rect.on_one_edge(a, b)) {
+                finish(current, out);
+                return;
+            }
+            if t0 > 1e-6 || current.is_none() {
+                finish(current, out);
+                *current = Some(RawSubpath::new(a));
+            }
+            if let Some(sub) = current.as_mut() {
+                sub.segments.push(RawSegment::Line { to: b });
+            }
+            if t1 < 1.0 - 1e-6 {
+                finish(current, out);
+            }
         };
-        let a = from.lerp(to, t0);
-        let b = from.lerp(to, t1);
-        if a.distance(b) < 1e-4 || (drop_edges && rect.on_one_edge(a, b)) {
-            finish(current, out);
-            return;
-        }
-        if t0 > 1e-6 || current.is_none() {
-            finish(current, out);
-            *current = Some(RawSubpath::new(a));
-        }
-        if let Some(sub) = current.as_mut() {
-            sub.segments.push(RawSegment::Line { to: b });
-        }
-        if t1 < 1.0 - 1e-6 {
-            finish(current, out);
-        }
-    };
 
     let mut from = path.start;
     for segment in &path.segments {
@@ -298,9 +299,10 @@ pub(crate) fn side_by_side(pages: Vec<Page>) -> RawVectorDrawing {
     let mut x = 0.0;
     for page in pages {
         let delta = Vec2::new(x, 0.0);
-        let width = page.size.map(|s| s.x).unwrap_or_else(|| {
-            page_bounds(&page.drawing).map_or(0.0, |b| b.max.x)
-        });
+        let width = page
+            .size
+            .map(|s| s.x)
+            .unwrap_or_else(|| page_bounds(&page.drawing).map_or(0.0, |b| b.max.x));
         place(&mut drawing, page.drawing, delta);
         x += width + PAGE_GAP_MM;
     }
@@ -382,7 +384,10 @@ pub(crate) fn join(pages: Vec<Page>) -> (RawVectorDrawing, Option<PageLayout>) {
         return (side_by_side(pages), None);
     };
     let tiles: Vec<usize> = (0..count)
-        .filter(|&i| size_of(&pages[i]).is_some_and(|s| (s.0 - paper.0).abs() <= 1 && (s.1 - paper.1).abs() <= 1))
+        .filter(|&i| {
+            size_of(&pages[i])
+                .is_some_and(|s| (s.0 - paper.0).abs() <= 1 && (s.1 - paper.1).abs() <= 1)
+        })
         .collect();
     if tiles.len() < 2 {
         return (side_by_side(pages), None);
@@ -392,11 +397,18 @@ pub(crate) fn join(pages: Vec<Page>) -> (RawVectorDrawing, Option<PageLayout>) {
     // The trim frame: guide lines across most of the page, at the same
     // place on most pages. They are furniture, not pattern: drop them.
     let mut pages = pages;
-    let guides = find_guides(&tiles.iter().map(|&i| &pages[i]).collect::<Vec<_>>(), page_size);
+    let guides = find_guides(
+        &tiles.iter().map(|&i| &pages[i]).collect::<Vec<_>>(),
+        page_size,
+    );
     for &i in &tiles {
         remove_guides(&mut pages[i].drawing, &guides, page_size);
     }
-    let frame = find_frame(&tiles.iter().map(|&i| &pages[i]).collect::<Vec<_>>(), page_size, &guides);
+    let frame = find_frame(
+        &tiles.iter().map(|&i| &pages[i]).collect::<Vec<_>>(),
+        page_size,
+        &guides,
+    );
 
     // Each page's content inside its frame.
     let framed: Vec<RawVectorDrawing> = tiles
@@ -417,7 +429,10 @@ pub(crate) fn join(pages: Vec<Page>) -> (RawVectorDrawing, Option<PageLayout>) {
     for (t, e) in edges.iter().enumerate() {
         for (&side, texts) in &e.labels {
             for text in texts {
-                label_pages.entry(text.as_str()).or_default().push((t, side));
+                label_pages
+                    .entry(text.as_str())
+                    .or_default()
+                    .push((t, side));
             }
         }
     }
@@ -556,8 +571,11 @@ pub(crate) fn join(pages: Vec<Page>) -> (RawVectorDrawing, Option<PageLayout>) {
                 a,
                 b,
                 right,
-                score: if by_lines { (best.1.0 - best.1.1) as f32 } else { 0.0 }
-                    + if by_label { 10.0 } else { 0.0 },
+                score: if by_lines {
+                    (best.1.0 - best.1.1) as f32
+                } else {
+                    0.0
+                } + if by_label { 10.0 } else { 0.0 },
             });
         }
     }
@@ -606,7 +624,11 @@ pub(crate) fn join(pages: Vec<Page>) -> (RawVectorDrawing, Option<PageLayout>) {
         }
         let ca = cell[join.a].unwrap_or((0, 0));
         let cb = cell[join.b].unwrap_or((0, 0));
-        let target = if join.right { (ca.0 + 1, ca.1) } else { (ca.0, ca.1 + 1) };
+        let target = if join.right {
+            (ca.0 + 1, ca.1)
+        } else {
+            (ca.0, ca.1 + 1)
+        };
         let shift = (target.0 - cb.0, target.1 - cb.1);
         let moved: Vec<(usize, (i32, i32))> = (0..tiles.len())
             .filter(|&t| group[t] == gb)
@@ -649,8 +671,12 @@ pub(crate) fn join(pages: Vec<Page>) -> (RawVectorDrawing, Option<PageLayout>) {
         .iter()
         .map(|&t| (cell[t].unwrap_or((0, 0)), t))
         .collect();
-    let (c0, c1) = cells.keys().fold((i32::MAX, i32::MIN), |(lo, hi), c| (lo.min(c.0), hi.max(c.0)));
-    let (r0, r1) = cells.keys().fold((i32::MAX, i32::MIN), |(lo, hi), c| (lo.min(c.1), hi.max(c.1)));
+    let (c0, c1) = cells.keys().fold((i32::MAX, i32::MIN), |(lo, hi), c| {
+        (lo.min(c.0), hi.max(c.0))
+    });
+    let (r0, r1) = cells.keys().fold((i32::MAX, i32::MIN), |(lo, hi), c| {
+        (lo.min(c.1), hi.max(c.1))
+    });
     let rows = r1 - r0 + 1;
 
     // Furniture labels: edge labels that paired pages, and text printed on
@@ -665,8 +691,12 @@ pub(crate) fn join(pages: Vec<Page>) -> (RawVectorDrawing, Option<PageLayout>) {
         }
     }
     let furniture = |label: &RawLabel| {
-        label_pages.get(label.text.as_str()).is_some_and(|p| p.len() == 2)
-            || seen.get(label.text.as_str()).is_some_and(|&n| n * 2 > framed.len() && n > 2)
+        label_pages
+            .get(label.text.as_str())
+            .is_some_and(|p| p.len() == 2)
+            || seen
+                .get(label.text.as_str())
+                .is_some_and(|&n| n * 2 > framed.len() && n > 2)
             || is_page_label(&label.text)
     };
 
@@ -1012,9 +1042,9 @@ fn find_frame(pages: &[&Page], size: Vec2, guides: &(Vec<f32>, Vec<f32>)) -> Rec
             }
             bin.1.push(v);
         }
-        let (_, (on, best)) = bins.into_iter().max_by_key(|(k, (on, _))| {
-            (on.len(), if outer_high { *k } else { -*k })
-        })?;
+        let (_, (on, best)) = bins
+            .into_iter()
+            .max_by_key(|(k, (on, _))| (on.len(), if outer_high { *k } else { -*k }))?;
         (on.len() >= 2 && on.len() * 4 >= pages.len())
             .then(|| best.iter().sum::<f32>() / best.len() as f32)
     };
@@ -1029,22 +1059,42 @@ fn find_frame(pages: &[&Page], size: Vec2, guides: &(Vec<f32>, Vec<f32>)) -> Rec
             .collect()
     };
     let left = side(
-        guides.0.iter().copied().filter(|&x| x < size.x * 0.3).reduce(f32::min),
+        guides
+            .0
+            .iter()
+            .copied()
+            .filter(|&x| x < size.x * 0.3)
+            .reduce(f32::min),
         cluster(pick(0, -1.0, &|x| x < size.x * 0.25), false),
         0.0,
     );
     let right = side(
-        guides.0.iter().copied().filter(|&x| x > size.x * 0.7).reduce(f32::max),
+        guides
+            .0
+            .iter()
+            .copied()
+            .filter(|&x| x > size.x * 0.7)
+            .reduce(f32::max),
         cluster(pick(0, 1.0, &|x| x > size.x * 0.75), true),
         size.x,
     );
     let bottom = side(
-        guides.1.iter().copied().filter(|&y| y < size.y * 0.3).reduce(f32::min),
+        guides
+            .1
+            .iter()
+            .copied()
+            .filter(|&y| y < size.y * 0.3)
+            .reduce(f32::min),
         cluster(pick(1, -1.0, &|y| y < size.y * 0.25), false),
         0.0,
     );
     let top = side(
-        guides.1.iter().copied().filter(|&y| y > size.y * 0.7).reduce(f32::max),
+        guides
+            .1
+            .iter()
+            .copied()
+            .filter(|&y| y > size.y * 0.7)
+            .reduce(f32::max),
         cluster(pick(1, 1.0, &|y| y > size.y * 0.75), true),
         size.y,
     );
@@ -1140,7 +1190,10 @@ fn page_edges(drawing: &RawVectorDrawing, frame: Rect) -> Edges {
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .expect("sides");
         if d < LABEL_BAND_MM {
-            labels.entry(side).or_default().push(label.text.trim().to_owned());
+            labels
+                .entry(side)
+                .or_default()
+                .push(label.text.trim().to_owned());
         }
     }
     Edges {
@@ -1187,7 +1240,9 @@ fn is_page_label(text: &str) -> bool {
     };
     match words.as_slice() {
         [w] => number(w) || tile(w),
-        [p, n] => ["page", "seite", "p."].contains(&p.as_str()) && number(n) || number(p) && number(n),
+        [p, n] => {
+            ["page", "seite", "p."].contains(&p.as_str()) && number(n) || number(p) && number(n)
+        }
         [p, n, of, m] => {
             ["page", "seite"].contains(&p.as_str())
                 && number(n)
@@ -1227,7 +1282,10 @@ pub(crate) fn disable_page_marks(pattern: &mut ImportedPattern, layout: &PageLay
         }
         let on_seam = layout.seams.iter().any(|&(a, b)| {
             let seam = Rect::new(a, b);
-            bounds.overlaps(&Rect::new(seam.min - Vec2::splat(0.5), seam.max + Vec2::splat(0.5)))
+            bounds.overlaps(&Rect::new(
+                seam.min - Vec2::splat(0.5),
+                seam.max + Vec2::splat(0.5),
+            ))
         });
         if on_seam {
             piece.enabled = false;
@@ -1259,7 +1317,12 @@ mod tests {
         // open path, start and end on the edge.
         let path = square(Vec2::new(0.0, 0.0), 20.0);
         let mut out = Vec::new();
-        clip_subpath(&path, Rect::new(Vec2::new(-5.0, -5.0), Vec2::new(10.0, 30.0)), false, &mut out);
+        clip_subpath(
+            &path,
+            Rect::new(Vec2::new(-5.0, -5.0), Vec2::new(10.0, 30.0)),
+            false,
+            &mut out,
+        );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!((out[0].start.x - 10.0).abs() < 1e-4 && (out[0].end().x - 10.0).abs() < 1e-4);
     }
@@ -1267,14 +1330,21 @@ mod tests {
     #[test]
     fn a_curve_crossing_the_edge_is_cut_there() {
         let mut path = RawSubpath::new(Vec2::new(72.0, 151.0));
-        path.segments.push(RawSegment::Line { to: Vec2::new(70.0, 140.0) });
+        path.segments.push(RawSegment::Line {
+            to: Vec2::new(70.0, 140.0),
+        });
         path.segments.push(RawSegment::Cubic {
             ctrl1: Vec2::new(90.0, 212.0),
             ctrl2: Vec2::new(96.0, 277.0),
             to: Vec2::new(95.0, 296.9),
         });
         let mut out = Vec::new();
-        clip_subpath(&path, Rect::new(Vec2::splat(7.0), Vec2::new(203.0, 288.5)), true, &mut out);
+        clip_subpath(
+            &path,
+            Rect::new(Vec2::splat(7.0), Vec2::new(203.0, 288.5)),
+            true,
+            &mut out,
+        );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!((out[0].end().y - 288.5).abs() < 0.01, "{:?}", out[0].end());
     }
@@ -1337,9 +1407,10 @@ mod tests {
                 border.segments.push(RawSegment::Line { to: corner });
             }
             drawing.subpaths.push(border);
-            drawing
-                .labels
-                .push(RawLabel::new(format!("{}", column + 1), Vec2::new(80.0, 2.0)));
+            drawing.labels.push(RawLabel::new(
+                format!("{}", column + 1),
+                Vec2::new(80.0, 2.0),
+            ));
             pages.push(Page {
                 size: Some(size),
                 drawing,
@@ -1354,12 +1425,22 @@ mod tests {
             let (drawing, layout) = join(tiled(overlap));
             let layout = layout.expect("joined");
             assert_eq!((layout.columns, layout.rows, layout.joined), (2, 1, 2));
-            assert!((layout.overlap_mm.x - overlap).abs() < 0.6, "{overlap}: {layout:?}");
+            assert!(
+                (layout.overlap_mm.x - overlap).abs() < 0.6,
+                "{overlap}: {layout:?}"
+            );
             let pattern = drawing.assemble_pattern(10.0);
-            let pieces: Vec<_> = pattern.pieces.iter().filter(|p| p.loops.len() == 2).collect();
+            let pieces: Vec<_> = pattern
+                .pieces
+                .iter()
+                .filter(|p| p.loops.len() == 2)
+                .collect();
             assert_eq!(pieces.len(), 1, "{overlap}: {pattern:#?}");
             let (lo, hi) = pieces[0].loops[0].bounds;
-            assert!(((hi - lo) - Vec2::new(240.0, 150.0)).abs().max_element() < 0.5, "{lo} {hi}");
+            assert!(
+                ((hi - lo) - Vec2::new(240.0, 150.0)).abs().max_element() < 0.5,
+                "{lo} {hi}"
+            );
         }
     }
 }

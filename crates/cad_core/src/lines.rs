@@ -494,7 +494,11 @@ impl Outline {
             Segment::Quadratic { ctrl } => {
                 let (a, b) = (lerp(p0, ctrl), lerp(ctrl, p3));
                 let m = lerp(a, b);
-                (m, Segment::Quadratic { ctrl: a }, Segment::Quadratic { ctrl: b })
+                (
+                    m,
+                    Segment::Quadratic { ctrl: a },
+                    Segment::Quadratic { ctrl: b },
+                )
             }
             Segment::Cubic { ctrl1, ctrl2 } => {
                 let (a, b, c) = (lerp(p0, ctrl1), lerp(ctrl1, ctrl2), lerp(ctrl2, p3));
@@ -642,11 +646,10 @@ impl Outline {
         // The kept half runs from the fold's end round to its start.
         let k = n - fold.count;
         let kept: Vec<u32> = (0..k).map(|i| (fold.first + fold.count + i) % n).collect();
-        let mut points: Vec<ControlPoint> = kept
-            .iter()
-            .map(|&e| self.points()[e as usize])
-            .collect();
-        let mut segments: Vec<Segment> = kept.iter().map(|&e| self.segments()[e as usize]).collect();
+        let mut points: Vec<ControlPoint> =
+            kept.iter().map(|&e| self.points()[e as usize]).collect();
+        let mut segments: Vec<Segment> =
+            kept.iter().map(|&e| self.segments()[e as usize]).collect();
         // The fold's start, then the mirrored half backwards.
         points.push(ControlPoint {
             position: start,

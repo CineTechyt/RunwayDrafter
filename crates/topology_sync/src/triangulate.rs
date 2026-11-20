@@ -121,7 +121,8 @@ pub fn mesh_piece(piece: &PatternPiece, subdivisions: &[u32], params: &MeshingPa
             {
                 chain.push(mesh.pattern_positions.len() as u32);
                 mesh.pattern_positions.push(p);
-                mesh.origins.push(VertexOrigin::Interior { piece: piece.id });
+                mesh.origins
+                    .push(VertexOrigin::Interior { piece: piece.id });
             } else if !chain.is_empty() {
                 fold_chains.push((std::mem::take(&mut chain), fold.angle));
             }

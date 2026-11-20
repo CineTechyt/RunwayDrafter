@@ -339,7 +339,14 @@ fn annotations(batch: &mut CanvasBatch, piece: &PatternPiece, overlay: &CanvasOv
     // Fold lines: dash-dot, as on paper patterns.
     let fold = srgba(140, 200, 255, 0.9);
     for line in &piece.folds {
-        batch.dashed_polyline(&[line.a, line.b], false, 1.5 * px, 10.0 * px, 4.0 * px, fold);
+        batch.dashed_polyline(
+            &[line.a, line.b],
+            false,
+            1.5 * px,
+            10.0 * px,
+            4.0 * px,
+            fold,
+        );
     }
 
     // Topstitching: fine dashes along the rows, in the thread's colour.
@@ -365,7 +372,10 @@ fn stitch_marks(
     let edges = piece.outline.edge_count();
     let mut points: Vec<glam::Vec2> = Vec::new();
     for k in 0..span.count.max(1) {
-        let flat = piece.outline.curve((span.first + k) % edges.max(1)).flatten(0.5);
+        let flat = piece
+            .outline
+            .curve((span.first + k) % edges.max(1))
+            .flatten(0.5);
         let skip = usize::from(!points.is_empty());
         points.extend(flat.into_iter().skip(skip));
     }
@@ -373,12 +383,16 @@ fn stitch_marks(
         return;
     }
     let sign = if piece.outline.is_ccw() { 1.0 } else { -1.0 };
-    let [r, g, b] = stitching.thread.map(|c| (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
+    let [r, g, b] = stitching
+        .thread
+        .map(|c| (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
     let color = srgba(r, g, b, 0.95);
     let mut rows = vec![stitching.offset.max(0.6)];
     if matches!(
         stitching.kind,
-        cad_core::StitchKind::DoubleTopstitch | cad_core::StitchKind::FlatFelled | cad_core::StitchKind::Coverstitch
+        cad_core::StitchKind::DoubleTopstitch
+            | cad_core::StitchKind::FlatFelled
+            | cad_core::StitchKind::Coverstitch
     ) {
         rows.push(stitching.offset + stitching.width);
     }
@@ -391,7 +405,14 @@ fn stitch_marks(
                 points[i] + (b - a).perp().normalize_or_zero() * sign * offset
             })
             .collect();
-        batch.dashed_polyline(&row, false, 1.2 * px, stitching.length.max(1.0) * 0.7, stitching.length.max(1.0) * 0.3, color);
+        batch.dashed_polyline(
+            &row,
+            false,
+            1.2 * px,
+            stitching.length.max(1.0) * 0.7,
+            stitching.length.max(1.0) * 0.3,
+            color,
+        );
     }
 }
 

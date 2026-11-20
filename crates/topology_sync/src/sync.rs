@@ -363,11 +363,12 @@ impl GarmentTopology {
                 let count = a.len().min(b.len());
                 let open = seam.zipper.map_or(0.0, |z| z.open.clamp(0.0, 1.0));
                 let first_held = (open * count as f32).round() as usize;
-                mesh.stitches.extend(pairs.skip(first_held).map(|(&a, &b)| Stitch {
-                    seam: seam.id,
-                    a,
-                    b,
-                }));
+                mesh.stitches
+                    .extend(pairs.skip(first_held).map(|(&a, &b)| Stitch {
+                        seam: seam.id,
+                        a,
+                        b,
+                    }));
             }
             // A done-up button holds its buttonhole on itself: one stitch
             // between the mesh vertices nearest to the button and to the

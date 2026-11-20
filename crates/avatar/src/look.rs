@@ -481,7 +481,16 @@ fn hash(n: i32) -> f32 {
 }
 
 /// Per-vertex skin colour: the skin tone with brows and lips painted on.
-pub fn skin_colors(body: &BodyMesh, head: Option<&Head>, look: &Appearance) -> Vec<[f32; 3]> {
+pub fn skin_colors(
+    body: &BodyMesh,
+    head: Option<&Head>,
+    look: &Appearance,
+    modest: bool,
+) -> Vec<[f32; 3]> {
+    // Modest mode: use a uniform neutral colour to hide skin details.
+    if modest {
+        return vec![[0.72, 0.72, 0.70]; body.positions.len()];
+    }
     let skin = look.skin;
     let Some(head) = head else {
         return vec![skin; body.positions.len()];
@@ -538,7 +547,7 @@ pub fn skin_colors(body: &BodyMesh, head: Option<&Head>, look: &Appearance) -> V
 
 /// Eyeballs that look straight ahead: sclera, iris and pupil, sized and
 /// placed where the body's own eyes are.
-pub fn eyeballs(head: &Head, look: &Appearance) -> LookMesh {
+pub fn eyeballs(head: &Head, look: &Appearance, modest: bool) -> LookMesh {
     const PUPIL: f32 = 0.14;
     const IRIS: f32 = 0.40;
     // Rings by angle from the line of sight, dense around the iris so its
@@ -564,8 +573,16 @@ pub fn eyeballs(head: &Head, look: &Appearance) -> LookMesh {
     ]
     .to_vec();
     let sectors = 36u32;
-    let iris = look.eyes;
-    let sclera = [0.80, 0.77, 0.72];
+    let iris = if modest {
+        [0.18, 0.18, 0.17]
+    } else {
+        look.eyes
+    };
+    let sclera = if modest {
+        [0.55, 0.55, 0.54]
+    } else {
+        [0.80, 0.77, 0.72]
+    };
     let mut mesh = LookMesh::default();
     for &(centre, radius) in &head.eyes {
         let base = mesh.positions.len() as u32;
@@ -700,9 +717,12 @@ impl Outline {
 }
 
 /// The hair, or an empty mesh when bald.
-pub fn hair(body: &BodyMesh, head: &Head, look: &Appearance) -> LookMesh {
+pub fn hair(body: &BodyMesh, head: &Head, look: &Appearance, modest: bool) -> LookMesh {
     let hair = &look.hair;
     let mut mesh = LookMesh::default();
+    if modest {
+        return mesh;
+    }
     if hair.style == HairStyle::Bald {
         return mesh;
     }

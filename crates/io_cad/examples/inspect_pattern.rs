@@ -23,7 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(out) = std::env::var("SVG") {
         let mut body = String::new();
         let mut path = |points: Vec<glam::Vec2>, colour: &str, width: f32| {
-            let d: Vec<String> = points.iter().map(|p| format!("{:.2},{:.2}", p.x, -p.y)).collect();
+            let d: Vec<String> = points
+                .iter()
+                .map(|p| format!("{:.2},{:.2}", p.x, -p.y))
+                .collect();
             body.push_str(&format!(
                 "<polyline points=\"{}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"{width}\"/>\n",
                 d.join(" ")
@@ -46,7 +49,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         std::fs::write(
             &out,
-            format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-20 -1000 1300 1050\" width=\"1300\" height=\"1050\"><rect x=\"-20\" y=\"-1000\" width=\"1300\" height=\"1050\" fill=\"white\"/>{body}</svg>"),
+            format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-20 -1000 1300 1050\" width=\"1300\" height=\"1050\"><rect x=\"-20\" y=\"-1000\" width=\"1300\" height=\"1050\" fill=\"white\"/>{body}</svg>"
+            ),
         )?;
     }
     if let Some(layout) = &pattern.pages {

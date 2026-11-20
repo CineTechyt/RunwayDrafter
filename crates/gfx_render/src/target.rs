@@ -49,18 +49,34 @@ impl RenderTarget {
         // Sampled by the UI; COPY_SRC allows read-back for snapshots/export.
         let resolve_usage =
             attachment | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
-        let resolve_texture = texture(Self::COLOR_FORMAT, 1, resolve_usage, &[Self::DISPLAY_FORMAT]);
+        let resolve_texture = texture(
+            Self::COLOR_FORMAT,
+            1,
+            resolve_usage,
+            &[Self::DISPLAY_FORMAT],
+        );
         let display_view = display_view(&resolve_texture);
         Self {
             label,
             size,
             with_depth,
-            msaa_view: view(&texture(Self::COLOR_FORMAT, Self::SAMPLE_COUNT, attachment, &[])),
+            msaa_view: view(&texture(
+                Self::COLOR_FORMAT,
+                Self::SAMPLE_COUNT,
+                attachment,
+                &[],
+            )),
             resolve_view: view(&resolve_texture),
             display_view,
             resolve_texture,
-            depth_view: with_depth
-                .then(|| view(&texture(Self::DEPTH_FORMAT, Self::SAMPLE_COUNT, attachment, &[]))),
+            depth_view: with_depth.then(|| {
+                view(&texture(
+                    Self::DEPTH_FORMAT,
+                    Self::SAMPLE_COUNT,
+                    attachment,
+                    &[],
+                ))
+            }),
         }
     }
 
@@ -131,7 +147,11 @@ impl RenderTarget {
 
 /// Reads an RGBA8 texture (with `COPY_SRC`) back as tightly packed rows,
 /// top row first. Blocks until the GPU is done.
-pub fn read_texture(gpu: &GpuContext, texture: &wgpu::Texture, [width, height]: [u32; 2]) -> Vec<u8> {
+pub fn read_texture(
+    gpu: &GpuContext,
+    texture: &wgpu::Texture,
+    [width, height]: [u32; 2],
+) -> Vec<u8> {
     let row = width * 4;
     let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {

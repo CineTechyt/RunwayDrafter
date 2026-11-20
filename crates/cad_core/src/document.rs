@@ -3,10 +3,12 @@
 use glam::{Quat, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
+use crate::drawing::Drawing;
 use crate::geometry;
 use crate::ids::{EdgeRef, FabricId, HandleRef, PieceId, SeamId};
 use crate::lines::EdgeSpan;
 use crate::material::Fabric;
+use crate::params::{self, ApplyReport, Axis, FormulaError, Guide, Measured, Parameters, Stretch};
 use crate::pattern::{
     Button, Buttonhole, ButtonholeRef, ControlPoint, Notch, NotchKind, Outline, PatternPiece,
     Segment,
@@ -70,6 +72,12 @@ pub struct PatternDocument {
     next_id: u32,
     /// Bumped on every mutation; lets consumers detect staleness cheaply.
     revision: u64,
+    /// Variables, guide lines and lengths held to formulas.
+    #[serde(default, skip_serializing_if = "Parameters::is_empty")]
+    parameters: Parameters,
+    /// Lines drawn on the avatar, and the piece lines flattened from them.
+    #[serde(default, skip_serializing_if = "Drawing::is_empty")]
+    drawing: Drawing,
 }
 
 impl PatternDocument {
@@ -90,6 +98,120 @@ impl PatternDocument {
     /// [`Self::piece_mut`] or [`Self::fabric_mut`].
     pub fn touch(&mut self) {
         self.revision += 1;
+    }
+
+    // --- drawing on the avatar ----------------------------------------------
+
+    pub fn drawing(&self) -> &Drawing {
+        &self.drawing
+    }
+
+    pub fn drawing_mut(&mut self) -> &mut Drawing {
+        self.touch();
+        &mut self.drawing
+    }
+
+    // --- parameters --------------------------------------------------------
+
+    pub fn parameters(&self) -> &Parameters {
+        &self.parameters
+    }
+
+    /// Call [`Self::apply_parameters`] after changing formulas.
+    pub fn parameters_mut(&mut self) -> &mut Parameters {
+        self.touch();
+        &mut self.parameters
+    }
+
+    /// Puts every guide where its formula says, stretching the pieces they
+    /// cross along, then gives every held line its length. `measurements`
+    /// are the avatar's, in mm.
+    pub fn apply_parameters(&mut self, measurements: &[Measured]) -> ApplyReport {
+        let params = params::resolve(&self.parameters, measurements);
+        let mut report = ApplyReport::default();
+        for param in &params {
+            if let Err(error) = &param.value {
+                report.errors.push((param.name.clone(), error.clone()));
+            }
+        }
+        let positions = params::guide_positions(&self.parameters, &params);
+        let old = self.parameters.guides.clone();
+        let new_at = |g: &Guide| match positions.get(&g.id) {
+            Some(Ok(at)) => *at,
+            _ => g.at,
+        };
+        for guide in &old {
+            if let Some(Err(error)) = positions.get(&guide.id) {
+                report
+                    .errors
+                    .push((format!("guide {}", guide.name), error.clone()));
+            }
+        }
+        // The stretch along one axis for something reaching over
+        // `[low, high]` the other way.
+        let stretch = |axis: Axis, low: f32, high: f32| {
+            Stretch::new(
+                old.iter()
+                    .filter(|g| g.axis == axis && g.reaches(low, high))
+                    .map(|g| (g.at, new_at(g)))
+                    .collect(),
+            )
+        };
+        if old.iter().any(|g| (new_at(g) - g.at).abs() > 1e-3) {
+            for piece in &mut self.pieces {
+                let (low, high) = piece.outline.bounds();
+                let ys = stretch(Axis::Horizontal, low.x, high.x);
+                let xs = stretch(Axis::Vertical, low.y, high.y);
+                if !ys.moves() && !xs.moves() {
+                    continue;
+                }
+                let map = |p: Vec2| Vec2::new(xs.map(p.x), ys.map(p.y));
+                piece.outline.map_points(map);
+                piece.map_details(map);
+                piece.grainline.origin = map(piece.grainline.origin);
+                piece.uv.origin = map(piece.uv.origin);
+                report.pieces.push(piece.id);
+            }
+            for guide in &mut self.parameters.guides {
+                // A guide's ends follow the guides across it.
+                let across = stretch(guide.axis.other(), guide.at, guide.at);
+                guide.start = across.map(guide.start);
+                guide.end = across.map(guide.end);
+                guide.at = new_at(guide);
+            }
+            report.guides_moved = true;
+        }
+        let names = params::lookup(&params);
+        for rule in &self.parameters.lengths {
+            let Some(piece) = self.pieces.iter_mut().find(|p| p.id == rule.piece) else {
+                continue;
+            };
+            if rule.edge >= piece.outline.edge_count() {
+                continue;
+            }
+            match params::evaluate(&rule.formula, &names) {
+                Ok(length) if length >= 1.0 => {
+                    let span = piece.outline.line_span(rule.edge);
+                    if (piece.outline.span_length(span) - length).abs() > 0.05
+                        && piece.outline.set_span_length(span, length)
+                        && !report.pieces.contains(&piece.id)
+                    {
+                        report.pieces.push(piece.id);
+                    }
+                }
+                Ok(length) => report.errors.push((
+                    format!("length of a line of {}", piece.name),
+                    FormulaError(format!("{length:.1} mm is too short")),
+                )),
+                Err(error) => report
+                    .errors
+                    .push((format!("length of a line of {}", piece.name), error)),
+            }
+        }
+        if report.changed() {
+            self.touch();
+        }
+        report
     }
 
     // --- fabrics -----------------------------------------------------------
@@ -139,8 +261,10 @@ impl PatternDocument {
         if mirrored {
             copy.apply_transform(crate::transform::PieceTransform::FlipHorizontal);
             copy.placement.angle = -copy.placement.angle;
+            copy.placement.part = copy.placement.part.mirrored();
         }
         copy.id = new_id;
+        copy.mirrored_clone = None;
         copy.name = if mirrored {
             format!("{} mirrored", copy.name)
         } else {
@@ -156,6 +280,114 @@ impl PatternDocument {
         Some(new_id)
     }
 
+    /// Creates a linked mirrored clone of `source_id`: changes made to either piece
+    /// are automatically mirrored to the other.
+    pub fn clone_piece_mirrored(&mut self, source_id: PieceId) -> Option<PieceId> {
+        let source = self.piece(source_id)?.clone();
+        let new_id = PieceId(self.alloc_id());
+        let (min, max) = source.outline.bounds();
+        let offset = Vec2::new((max.x - min.x).max(100.0) + 30.0, 0.0);
+
+        let mut clone = source.clone();
+        clone.id = new_id;
+        clone.name = format!("{} (mirrored clone)", source.name);
+        clone.mirrored_clone = Some(source_id);
+        clone.apply_transform(crate::transform::PieceTransform::FlipHorizontal);
+        clone.placement.angle = -clone.placement.angle;
+        clone.placement.part = clone.placement.part.mirrored();
+
+        clone.outline.translate(offset);
+        clone.map_details(|p| p + offset);
+        clone.grainline.origin += offset;
+        clone.uv.origin += offset;
+        clone.arrangement.anchor += offset;
+
+        // Set the clone link on the source piece as well.
+        if let Some(src) = self.piece_mut(source_id) {
+            src.mirrored_clone = Some(new_id);
+        }
+
+        self.pieces.push(clone);
+        self.touch();
+        Some(new_id)
+    }
+
+    /// Breaks the mirrored clone link on `id` (and on its partner piece, if present).
+    pub fn unlink_mirrored_clone(&mut self, id: PieceId) -> bool {
+        let Some(other_id) = self.piece(id).and_then(|p| p.mirrored_clone) else {
+            return false;
+        };
+        if let Some(p) = self.piece_mut(id) {
+            p.mirrored_clone = None;
+        }
+        if let Some(other) = self.piece_mut(other_id) {
+            other.mirrored_clone = None;
+        }
+        self.touch();
+        true
+    }
+
+    /// If `source_id` has a linked mirrored clone, updates the clone's geometry,
+    /// outline, notches, seam allowance, etc. to be the horizontal mirror of `source_id`,
+    /// keeping the clone at its current position in the 2D layout.
+    pub fn sync_mirrored_clone(&mut self, source_id: PieceId) -> Option<PieceId> {
+        let source = self.piece(source_id)?.clone();
+        let clone_id = source.mirrored_clone?;
+        let clone_idx = self.pieces.iter().position(|p| p.id == clone_id)?;
+        let clone = &self.pieces[clone_idx];
+
+        // Bounds centers
+        let (src_lo, src_hi) = source.outline.bounds();
+        let src_centre = (src_lo + src_hi) * 0.5;
+        let (cln_lo, cln_hi) = clone.outline.bounds();
+        let cln_centre = (cln_lo + cln_hi) * 0.5;
+
+        // Create mirrored copy of source
+        let mut mirrored = source.clone();
+        mirrored.id = clone_id;
+        mirrored.name = clone.name.clone();
+        mirrored.mirrored_clone = Some(source_id);
+        mirrored.placement.angle = -source.placement.angle;
+        mirrored.placement.height = source.placement.height;
+        mirrored.placement.depth = source.placement.depth;
+        mirrored.placement.part = source.placement.part.mirrored();
+        mirrored.layer = source.layer;
+        mirrored.fabric = source.fabric;
+
+        // Flip horizontally about src_centre
+        mirrored.apply_transform(crate::transform::PieceTransform::FlipHorizontal);
+
+        // Translate from src_centre to cln_centre so it stays in its 2D position
+        let delta = cln_centre - src_centre;
+        mirrored.outline.translate(delta);
+        mirrored.map_details(|p| p + delta);
+        mirrored.grainline.origin += delta;
+        mirrored.uv.origin += delta;
+        mirrored.arrangement.anchor += delta;
+
+        self.pieces[clone_idx] = mirrored;
+        self.touch();
+        Some(clone_id)
+    }
+
+    /// Checks if any piece with a mirrored clone changed compared to `before`,
+    /// and synchronizes its partner.
+    pub fn sync_all_mirrored_clones_against(&mut self, before: &PatternDocument) {
+        let mut to_sync = Vec::new();
+        for piece in &self.pieces {
+            if let Some(partner_id) = piece.mirrored_clone {
+                if let Some(before_piece) = before.piece(piece.id) {
+                    if before_piece != piece {
+                        to_sync.push((piece.id, partner_id));
+                    }
+                }
+            }
+        }
+        for (src, _partner) in to_sync {
+            self.sync_mirrored_clone(src);
+        }
+    }
+
     /// Moves a piece in the 2D layout; its 3D placement stays.
     pub fn move_piece(&mut self, id: PieceId, delta: Vec2) -> bool {
         let Some(piece) = self.piece_mut(id) else {
@@ -167,6 +399,39 @@ impl PatternDocument {
         piece.uv.origin += delta;
         piece.arrangement.anchor += delta;
         self.touch();
+        true
+    }
+
+    /// Moves a piece in the 2D layout and mirrors that layout movement across
+    /// the pair's vertical axis onto its linked partner.
+    pub fn move_piece_linked(&mut self, id: PieceId, delta: Vec2) -> bool {
+        if !self.move_piece(id, delta) {
+            return false;
+        }
+        let partner_id = match self.piece(id).and_then(|piece| piece.mirrored_clone) {
+            Some(partner_id) => partner_id,
+            None => return true,
+        };
+
+        let (source_lo, source_hi) = self
+            .piece(id)
+            .expect("moved piece was removed")
+            .outline
+            .bounds();
+        let (partner_lo, partner_hi) = match self.piece(partner_id) {
+            Some(piece) => piece.outline.bounds(),
+            None => return true,
+        };
+        let source_centre = (source_lo + source_hi) * 0.5;
+        let partner_centre = (partner_lo + partner_hi) * 0.5;
+        let source_before_x = source_centre.x - delta.x;
+        let axis_x = (source_before_x + partner_centre.x) * 0.5;
+        let target_partner_centre =
+            Vec2::new(axis_x * 2.0 - source_centre.x, partner_centre.y + delta.y);
+        let partner_delta = target_partner_centre - partner_centre;
+        if partner_delta != Vec2::ZERO {
+            self.move_piece(partner_id, partner_delta);
+        }
         true
     }
 
@@ -213,9 +478,16 @@ impl PatternDocument {
     pub fn remove_piece(&mut self, id: PieceId) -> Option<PatternPiece> {
         let index = self.pieces.iter().position(|p| p.id == id)?;
         self.seams.retain(|s| s.a.piece != id && s.b.piece != id);
+        self.parameters.lengths.retain(|rule| rule.piece != id);
+        self.drawing.flat_edges.retain(|e| e.piece != id);
         for button in self.pieces.iter_mut().flat_map(|p| &mut p.buttons) {
             if button.fastened_to.is_some_and(|hole| hole.piece == id) {
                 button.fastened_to = None;
+            }
+        }
+        for p in &mut self.pieces {
+            if p.mirrored_clone == Some(id) {
+                p.mirrored_clone = None;
             }
         }
         self.touch();
@@ -401,8 +673,14 @@ impl PatternDocument {
         p.outline = whole;
         let (lo, hi) = p.outline.bounds();
         p.grainline.origin = (lo + hi) * 0.5;
+        // Its lines are new: lengths held before do not apply.
+        self.parameters.lengths.retain(|rule| rule.piece != piece);
+        self.drawing.flat_edges.retain(|e| e.piece != piece);
         self.seams.retain_mut(|seam| {
-            for (side, count) in [(&mut seam.a, &mut seam.a_count), (&mut seam.b, &mut seam.b_count)] {
+            for (side, count) in [
+                (&mut seam.a, &mut seam.a_count),
+                (&mut seam.b, &mut seam.b_count),
+            ] {
                 if side.piece != piece {
                     continue;
                 }
@@ -429,7 +707,10 @@ impl PatternDocument {
         // On an existing point: make it a turn point.
         if !(0.001..=0.999).contains(&t) {
             let anchor = if t < 0.5 { edge } else { (edge + 1) % n };
-            if !p.outline.set_point_kind(anchor, crate::pattern::PointKind::Corner) {
+            if !p
+                .outline
+                .set_point_kind(anchor, crate::pattern::PointKind::Corner)
+            {
                 return None;
             }
             self.touch();
@@ -461,7 +742,10 @@ impl PatternDocument {
             }
         }
         for seam in &mut self.seams {
-            for (side, count) in [(&mut seam.a, &mut seam.a_count), (&mut seam.b, &mut seam.b_count)] {
+            for (side, count) in [
+                (&mut seam.a, &mut seam.a_count),
+                (&mut seam.b, &mut seam.b_count),
+            ] {
                 if side.piece != piece {
                     continue;
                 }
@@ -481,6 +765,16 @@ impl PatternDocument {
                     stitched.span.count += 1;
                 }
                 stitched.span.first = shift(stitched.span.first);
+            }
+        }
+        for rule in &mut self.parameters.lengths {
+            if rule.piece == piece {
+                rule.edge = shift(rule.edge);
+            }
+        }
+        for flat in &mut self.drawing.flat_edges {
+            if flat.piece == piece {
+                flat.edge = shift(flat.edge);
             }
         }
         self.touch();
@@ -508,7 +802,8 @@ impl PatternDocument {
         let p = self.piece(piece)?;
         let curve = p.outline.curve(edge);
         let at = curve.eval(t);
-        let tangent = (curve.eval((t + 0.01).min(1.0)) - curve.eval((t - 0.01).max(0.0))).normalize_or_zero();
+        let tangent =
+            (curve.eval((t + 0.01).min(1.0)) - curve.eval((t - 0.01).max(0.0))).normalize_or_zero();
         let inward = tangent.perp() * if p.outline.is_ccw() { 1.0 } else { -1.0 };
         Some((at, inward, curve.length(0.2)))
     }
@@ -516,8 +811,16 @@ impl PatternDocument {
     /// Cuts a dart into `piece` at fraction `t` of `edge`: `width` mm wide
     /// at the edge, its point `length` mm in, and sews its legs together.
     /// Returns the dart's seam.
-    pub fn add_dart(&mut self, piece: PieceId, edge: u32, t: f32, width: f32, length: f32) -> Option<SeamId> {
-        self.add_dart_points(piece, edge, t, width, length).map(|(id, _)| id)
+    pub fn add_dart(
+        &mut self,
+        piece: PieceId,
+        edge: u32,
+        t: f32,
+        width: f32,
+        length: f32,
+    ) -> Option<SeamId> {
+        self.add_dart_points(piece, edge, t, width, length)
+            .map(|(id, _)| id)
     }
 
     /// [`Self::add_dart`], also returning the dart's two ends on the line
@@ -535,7 +838,8 @@ impl PatternDocument {
         let [l1, apex, _l2] = self.insert_three(piece, edge, [t - half, t, t + half])?;
         let p = self.piece_mut(piece)?;
         let tip = centre + inward * length;
-        p.outline.set_handle_position(crate::ids::HandleKind::Anchor(apex), tip);
+        p.outline
+            .set_handle_position(crate::ids::HandleKind::Anchor(apex), tip);
         for e in [l1, apex] {
             p.outline.set_segment(e, Segment::Line);
         }
@@ -573,9 +877,21 @@ impl PatternDocument {
             return None;
         }
         Some(if forward <= backward {
-            (EdgeSpan { first: a, count: forward }, true)
+            (
+                EdgeSpan {
+                    first: a,
+                    count: forward,
+                },
+                true,
+            )
         } else {
-            (EdgeSpan { first: b, count: backward }, false)
+            (
+                EdgeSpan {
+                    first: b,
+                    count: backward,
+                },
+                false,
+            )
         })
     }
 
@@ -597,8 +913,16 @@ impl PatternDocument {
     /// Lays a knife pleat into `piece` at fraction `t` of `edge`: `intake`
     /// mm of cloth folded away, tacked at the edge, pressed along fold
     /// lines `length` mm long. Returns the tacking seam.
-    pub fn add_pleat(&mut self, piece: PieceId, edge: u32, t: f32, intake: f32, length: f32) -> Option<SeamId> {
-        self.add_pleat_points(piece, edge, t, intake, length).map(|(id, _)| id)
+    pub fn add_pleat(
+        &mut self,
+        piece: PieceId,
+        edge: u32,
+        t: f32,
+        intake: f32,
+        length: f32,
+    ) -> Option<SeamId> {
+        self.add_pleat_points(piece, edge, t, intake, length)
+            .map(|(id, _)| id)
     }
 
     /// [`Self::add_pleat`], also returning the pleat's three points on the
@@ -630,7 +954,11 @@ impl PatternDocument {
             });
         }
         // Tacked at the edge: a's side of the pleat sewn to b's.
-        let id = self.add_seam_spans((piece, EdgeSpan::single(a)), (piece, EdgeSpan::single(m)), true);
+        let id = self.add_seam_spans(
+            (piece, EdgeSpan::single(a)),
+            (piece, EdgeSpan::single(m)),
+            true,
+        );
         self.touch();
         Some((id, [pa, pm, pb]))
     }
@@ -720,7 +1048,8 @@ impl PatternDocument {
         };
         p.edge_stitches.retain(|e| e.span.first != span.first);
         if let Some(stitching) = stitching.filter(crate::stitch::Stitching::visible) {
-            p.edge_stitches.push(crate::stitch::EdgeStitching { span, stitching });
+            p.edge_stitches
+                .push(crate::stitch::EdgeStitching { span, stitching });
         }
         self.touch();
         true
@@ -1222,7 +1551,11 @@ mod tests {
         let b = doc.add_piece("B", square(), fabric);
         doc.add_seam(EdgeRef::new(a, 1), EdgeRef::new(b, 3), true);
         doc.add_seam(EdgeRef::new(a, 2), EdgeRef::new(b, 0), true);
-        doc.piece_mut(a).unwrap().seam_allowance.per_edge.insert(1, 30.0);
+        doc.piece_mut(a)
+            .unwrap()
+            .seam_allowance
+            .per_edge
+            .insert(1, 30.0);
 
         assert_eq!(doc.insert_point(a, 1, 0.5), Some(2));
         let piece = doc.piece(a).unwrap();
@@ -1230,9 +1563,17 @@ mod tests {
         assert_eq!(piece.seam_allowance.width(1), 30.0);
         assert_eq!(piece.seam_allowance.width(2), 30.0);
         let seams = doc.seams();
-        assert_eq!((seams[0].a.edge, seams[0].a_count), (1, 2), "both halves stay sewn");
+        assert_eq!(
+            (seams[0].a.edge, seams[0].a_count),
+            (1, 2),
+            "both halves stay sewn"
+        );
         assert_eq!(seams[1].a.edge, 3, "the next line moved up");
-        assert_eq!((seams[0].b.edge, seams[1].b.edge), (3, 0), "the other piece is untouched");
+        assert_eq!(
+            (seams[0].b.edge, seams[1].b.edge),
+            (3, 0),
+            "the other piece is untouched"
+        );
     }
 
     #[test]
@@ -1344,5 +1685,108 @@ mod tests {
         );
         assert!(doc.pick_handle(Vec2::new(-320.0, 300.0), 5.0).is_none());
         assert_eq!(doc.pick_piece(Vec2::new(-320.0, 300.0)), Some(front));
+    }
+
+    #[test]
+    fn mirrored_clone_syncs_changes_both_ways() {
+        let mut doc = PatternDocument::demo_top();
+        let source_id = doc.pieces()[0].id;
+
+        // 1. Create a mirrored clone
+        let clone_id = doc.clone_piece_mirrored(source_id).expect("cloned");
+        assert_eq!(doc.piece(source_id).unwrap().mirrored_clone, Some(clone_id));
+        assert_eq!(doc.piece(clone_id).unwrap().mirrored_clone, Some(source_id));
+
+        let src_width_before = {
+            let (lo, hi) = doc.piece(source_id).unwrap().outline.bounds();
+            hi.x - lo.x
+        };
+        let cln_width_before = {
+            let (lo, hi) = doc.piece(clone_id).unwrap().outline.bounds();
+            hi.x - lo.x
+        };
+        assert!((src_width_before - cln_width_before).abs() < 1e-2);
+
+        // 2. Modify source piece: move anchor 0
+        let new_pos =
+            doc.piece(source_id).unwrap().outline.points()[0].position + Vec2::new(25.0, 10.0);
+        doc.piece_mut(source_id)
+            .unwrap()
+            .outline
+            .set_handle_position(crate::HandleKind::Anchor(0), new_pos);
+        doc.sync_mirrored_clone(source_id);
+
+        let src_width_after = {
+            let (lo, hi) = doc.piece(source_id).unwrap().outline.bounds();
+            hi.x - lo.x
+        };
+        let cln_width_after = {
+            let (lo, hi) = doc.piece(clone_id).unwrap().outline.bounds();
+            hi.x - lo.x
+        };
+        assert!(
+            (src_width_after - cln_width_after).abs() < 1e-2,
+            "clone width matches source width"
+        );
+
+        // 3. Modify clone piece: move anchor
+        let cln_new_pos =
+            doc.piece(clone_id).unwrap().outline.points()[0].position + Vec2::new(-30.0, -15.0);
+        doc.piece_mut(clone_id)
+            .unwrap()
+            .outline
+            .set_handle_position(crate::HandleKind::Anchor(0), cln_new_pos);
+        doc.sync_mirrored_clone(clone_id);
+
+        let src_width_after_cln_edit = {
+            let (lo, hi) = doc.piece(source_id).unwrap().outline.bounds();
+            hi.x - lo.x
+        };
+        let cln_width_after_cln_edit = {
+            let (lo, hi) = doc.piece(clone_id).unwrap().outline.bounds();
+            hi.x - lo.x
+        };
+        assert!(
+            (src_width_after_cln_edit - cln_width_after_cln_edit).abs() < 1e-2,
+            "source width matches clone edit"
+        );
+
+        // 4. Unlink mirrored clone
+        assert!(doc.unlink_mirrored_clone(source_id));
+        assert_eq!(doc.piece(source_id).unwrap().mirrored_clone, None);
+        assert_eq!(doc.piece(clone_id).unwrap().mirrored_clone, None);
+
+        // 5. Test removal unlinks partner
+        let clone2_id = doc.clone_piece_mirrored(source_id).expect("cloned again");
+        assert_eq!(
+            doc.piece(source_id).unwrap().mirrored_clone,
+            Some(clone2_id)
+        );
+        doc.remove_piece(clone2_id);
+        assert_eq!(doc.piece(source_id).unwrap().mirrored_clone, None);
+    }
+
+    #[test]
+    fn moving_a_mirrored_clone_moves_its_partner_across_the_layout_midpoint() {
+        let mut doc = PatternDocument::demo_top();
+        let source_id = doc.pieces()[0].id;
+        let clone_id = doc.clone_piece_mirrored(source_id).expect("cloned");
+
+        let (source_lo_before, source_hi_before) = doc.piece(source_id).unwrap().outline.bounds();
+        let (clone_lo_before, clone_hi_before) = doc.piece(clone_id).unwrap().outline.bounds();
+        let source_centre_before = (source_lo_before + source_hi_before) * 0.5;
+        let clone_centre_before = (clone_lo_before + clone_hi_before) * 0.5;
+        let axis_x = (source_centre_before.x + clone_centre_before.x) * 0.5;
+
+        let delta = Vec2::new(35.0, 12.0);
+        assert!(doc.move_piece_linked(source_id, delta));
+
+        let (source_lo_after, source_hi_after) = doc.piece(source_id).unwrap().outline.bounds();
+        let (clone_lo_after, clone_hi_after) = doc.piece(clone_id).unwrap().outline.bounds();
+        let source_centre_after = (source_lo_after + source_hi_after) * 0.5;
+        let clone_centre_after = (clone_lo_after + clone_hi_after) * 0.5;
+
+        assert!((clone_centre_after.x - (axis_x * 2.0 - source_centre_after.x)).abs() < 1e-3);
+        assert!((clone_centre_after.y - (clone_centre_before.y + delta.y)).abs() < 1e-3);
     }
 }

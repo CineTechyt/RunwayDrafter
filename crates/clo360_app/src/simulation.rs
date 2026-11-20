@@ -234,7 +234,11 @@ impl Simulation {
     pub fn rebind(&mut self, mesh: &GarmentMesh, scene: Scene) {
         self.epoch += 1;
         let epoch = self.epoch;
-        self.send(Command::Rebind(Box::new(mesh.clone()), Box::new(scene), epoch));
+        self.send(Command::Rebind(
+            Box::new(mesh.clone()),
+            Box::new(scene),
+            epoch,
+        ));
     }
 
     pub fn refresh_materials(&mut self, scene: Scene) {

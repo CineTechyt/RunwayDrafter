@@ -92,7 +92,12 @@ impl ObjectUniform {
                 m.weave_strength,
                 m.pattern + m.wash.clamp(0.0, 1.0) * 0.1,
             ],
-            fabric: [m.pattern_scale.max(0.1), m.relief.clamp(0.0, 2.0), 0.0, m.wear.clamp(0.0, 1.0)],
+            fabric: [
+                m.pattern_scale.max(0.1),
+                m.relief.clamp(0.0, 2.0),
+                0.0,
+                m.wear.clamp(0.0, 1.0),
+            ],
             emissive: [er, eg, eb, 0.0],
             overlay: [0.0; 4],
             shading: m.shading.uniform(),
@@ -427,8 +432,13 @@ impl SceneRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let globals_bind_group =
-            globals_group(device, &globals_layout, &globals, &shadows, &shadow_kit.sampler);
+        let globals_bind_group = globals_group(
+            device,
+            &globals_layout,
+            &globals,
+            &shadows,
+            &shadow_kit.sampler,
+        );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene3d pipeline layout"),
@@ -647,12 +657,7 @@ impl SceneRenderer {
     /// The sphere the shadow maps cover: the avatar and the garment.
     fn focus(&self) -> (Vec3, f32) {
         let boxes = [self.avatar_bounds, self.garment_bounds];
-        let Some((lo, hi)) = bounds(
-            boxes
-                .iter()
-                .flatten()
-                .flat_map(|&(lo, hi)| [lo, hi]),
-        ) else {
+        let Some((lo, hi)) = bounds(boxes.iter().flatten().flat_map(|&(lo, hi)| [lo, hi])) else {
             return (Vec3::new(0.0, 0.9, 0.0), 1.1);
         };
         // A little more, for the shadow on the floor around the feet.
@@ -812,10 +817,18 @@ impl SceneRenderer {
                     usage,
                 })
             };
-            let vertices = buffer(bytemuck::cast_slice(&refined_vertices), wgpu::BufferUsages::VERTEX);
-            let indices = buffer(bytemuck::cast_slice(&refined_indices), wgpu::BufferUsages::INDEX);
-            for ((draw, piece), (range, displaced)) in
-                draws[piece_draws..].iter_mut().zip(&self.pieces).zip(refined)
+            let vertices = buffer(
+                bytemuck::cast_slice(&refined_vertices),
+                wgpu::BufferUsages::VERTEX,
+            );
+            let indices = buffer(
+                bytemuck::cast_slice(&refined_indices),
+                wgpu::BufferUsages::INDEX,
+            );
+            for ((draw, piece), (range, displaced)) in draws[piece_draws..]
+                .iter_mut()
+                .zip(&self.pieces)
+                .zip(refined)
             {
                 let mut uniform = piece.uniform;
                 if displaced {
@@ -865,10 +878,12 @@ impl SceneRenderer {
             let edge = metres / outside.max(1) as f32;
             let metres_per_uv = metres / uv.max(1e-9);
             let u = &piece.uniform;
-            let corduroy = u.weave[2] < 0.5
-                && (u.params[3] + 0.001).floor() == 3.0
-                && u.params[2] > 0.0;
-            let mut refinement = refine::Refinement { levels: 2, relief: None };
+            let corduroy =
+                u.weave[2] < 0.5 && (u.params[3] + 0.001).floor() == 3.0 && u.params[2] > 0.0;
+            let mut refinement = refine::Refinement {
+                levels: 2,
+                relief: None,
+            };
             if corduroy {
                 let ribs = 18.0 * u.fabric[0];
                 let depth = 0.0012 * u.fabric[1] * u.params[2];
@@ -1159,15 +1174,16 @@ impl Shell {
         }
         let (bend, edge_distance, normals) = (&self.bend, &self.edge_distance, &self.normals);
         let vertex = |i: usize, offset: f32, normal: Vec3| {
-            let mut v = MeshVertex::new(
-                mesh.positions[i] + normals[i] * offset,
-                normal,
-                mesh.uvs[i],
-            )
-            .with_value(values.get(i).copied().unwrap_or(0.0));
+            let mut v =
+                MeshVertex::new(mesh.positions[i] + normals[i] * offset, normal, mesh.uvs[i])
+                    .with_value(values.get(i).copied().unwrap_or(0.0));
             let side = if offset > 0.0 { 1.0 } else { -1.0 };
             let b = bend.get(i).copied().unwrap_or(0.0) * side;
-            let edge = edge_distance.get(i).copied().filter(|d| d.is_finite()).unwrap_or(1.0);
+            let edge = edge_distance
+                .get(i)
+                .copied()
+                .filter(|d| d.is_finite())
+                .unwrap_or(1.0);
             v.wear = [edge, b.max(0.0), (-b).max(0.0), side];
             v
         };

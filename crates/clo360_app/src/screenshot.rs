@@ -38,6 +38,14 @@
 //! `CLO360_OVERLAP_DEBUG=1` prints, for every buttoned pair of pieces, how
 //! many vertices of the under piece ended up in front of the top piece
 //! (fronts passed through each other); `CLO360_OVERLAP_WHERE=1` lists them.
+//! `--pen-line "x,y;x,y;…[;closed]"` (repeatable) draws on the avatar
+//! through points seen from the front (metres, mirrored as in the editor),
+//! `--flatten x,y` flattens the area there, `--scene-tool pen|edit|flatten`
+//! shows that 3D tool; `CLO360_FLAT_DEBUG=1` prints the flattening's
+//! stretch.
+//! `CLO360_FORMULA_DEBUG=1` prints the formula names with their values,
+//! the helplines, held lengths and piece extents (`--tab variables` shows
+//! the Variables tab).
 //! `CLO360_DRIFT_DEBUG=1` prints every 50 frames where each piece's centre
 //! and the button row are (a garment creeping round the body);
 //! `CLO360_BUTTON_DEBUG=1` adds each button and the hole end it rests in.
@@ -310,6 +318,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     {
         Some("materials") => ui.focus(app_ui::dock::Tab::Materials),
         Some("simulation") => ui.focus(app_ui::dock::Tab::Simulation),
+        Some("variables") => ui.focus(app_ui::dock::Tab::Variables),
         Some("pattern") => ui.focus(app_ui::dock::Tab::PatternProperties),
         _ => {}
     }
@@ -342,13 +351,63 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 
     let render_window = args.iter().any(|a| a == "--render-window");
     let mut render_pressed = false;
+    // `--pen-line "x,y;x,y;…[;closed]"` (repeatable) draws on the avatar
+    // through points seen from the front (metres); `--flatten x,y` then
+    // flattens the area there; `--scene-tool pen|edit|flatten` shows that
+    // 3D tool.
+    let mut pen_script: Vec<UiCommand> = Vec::new();
+    for (k, arg) in args.iter().enumerate() {
+        let Some(value) = args.get(k + 1) else {
+            continue;
+        };
+        let pair = |text: &str| -> Option<glam::Vec2> {
+            let (x, y) = text.split_once(',')?;
+            Some(glam::Vec2::new(
+                x.trim().parse().ok()?,
+                y.trim().parse().ok()?,
+            ))
+        };
+        match arg.as_str() {
+            "--pen-line" => {
+                let closed = value.ends_with(";closed");
+                let points = value
+                    .trim_end_matches(";closed")
+                    .split(';')
+                    .filter_map(pair)
+                    .collect();
+                pen_script.push(UiCommand::PenLineFromFront { points, closed });
+            }
+            "--flatten-all" => pen_script.push(UiCommand::FlattenAll),
+            "--flatten" => {
+                if let Some(at) = pair(value) {
+                    pen_script.push(UiCommand::FlattenFromFront(at));
+                }
+            }
+            _ => {}
+        }
+    }
+    let scene_tool = match args
+        .iter()
+        .position(|a| a == "--scene-tool")
+        .and_then(|k| args.get(k + 1))
+        .map(String::as_str)
+    {
+        Some("pen") => Some(app_ui::SceneTool::Pen),
+        Some("place") => Some(app_ui::SceneTool::Place),
+        Some("edit") => Some(app_ui::SceneTool::EditLines),
+        Some("flatten") => Some(app_ui::SceneTool::Flatten),
+        _ => None,
+    };
     let mut frame = 0;
     let mut play_started = false;
     let mut shot_index = 0;
     let (mut jitter, mut jitter_previous): (Vec<f32>, Option<Vec<glam::Vec3>>) = (Vec::new(), None);
     let mut jitter_where = String::new();
     let mut ready_since: Option<u32> = None;
-    let mut fabric_applied = options.fabric.is_none() && !args.iter().any(|a| a == "--weave" || a == "--preset" || a == "--maps" || a == "--stitch");
+    let mut fabric_applied = options.fabric.is_none()
+        && !args
+            .iter()
+            .any(|a| a == "--weave" || a == "--preset" || a == "--maps" || a == "--stitch");
     loop {
         // Once the import has run (and its piece names are in), make it the
         // project, then set up the requested state.
@@ -366,6 +425,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             pattern_applied = true;
         }
         session.editor.canvas_tool = options.tool;
+        if let Some(tool) = scene_tool {
+            session.editor.pen.tool = tool;
+        }
+        if !pen_script.is_empty() && frame > 1 && !session.busy() {
+            pending.append(&mut pen_script);
+        }
         if let Some(index) = options.piece {
             session.editor.selected_piece = session.document.pieces().get(index).map(|p| p.id);
         }
@@ -448,7 +513,10 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 let ids: Vec<_> = session.document.fabrics().iter().map(|f| f.id).collect();
                 for id in ids {
                     if let Some(fabric) = session.document.fabric_mut(id) {
-                        *fabric = cad_core::Fabric { id, ..preset.clone() };
+                        *fabric = cad_core::Fabric {
+                            id,
+                            ..preset.clone()
+                        };
                     }
                 }
                 session.document.touch();
@@ -478,7 +546,11 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             {
                 let kind = cad_core::StitchKind::ALL
                     .into_iter()
-                    .find(|k| k.label().replace([' ', '-'], "").eq_ignore_ascii_case(&name.replace([' ', '-'], "")))
+                    .find(|k| {
+                        k.label()
+                            .replace([' ', '-'], "")
+                            .eq_ignore_ascii_case(&name.replace([' ', '-'], ""))
+                    })
                     .with_context(|| format!("no stitch {name:?}"))?;
                 let ids: Vec<_> = session.document.seams().iter().map(|s| s.id).collect();
                 for id in ids {
@@ -594,7 +666,11 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                         .and_then(|s| session.document.piece(s.piece))
                         .map_or("?".to_owned(), |p| p.name.clone());
                     if d * 1000.0 > 0.5 {
-                        jitter_where = format!("{piece} at {:.2?}, {:.2} mm", positions[i].to_array(), d * 1000.0);
+                        jitter_where = format!(
+                            "{piece} at {:.2?}, {:.2} mm",
+                            positions[i].to_array(),
+                            d * 1000.0
+                        );
                     }
                 }
             }
@@ -748,6 +824,43 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     if std::env::var_os("CLO360_OVERLAP_DEBUG").is_some() {
         overlap_report(&session);
     }
+    if let Some(status) = &session.editor.pen.status {
+        println!("pen: {status:?}");
+    }
+    if std::env::var_os("CLO360_FORMULA_DEBUG").is_some() {
+        let parameters = session.document.parameters();
+        for param in &session.editor.parameters {
+            println!("param {} = {:?}", param.name, param.value);
+        }
+        for guide in &parameters.guides {
+            println!(
+                "guide {} at {:.1} ({} from {:?})",
+                guide.name, guide.at, guide.formula, guide.from
+            );
+        }
+        for rule in &parameters.lengths {
+            if let Some(piece) = session.document.piece(rule.piece) {
+                let span = piece.outline.line_span(rule.edge);
+                println!(
+                    "length {} line {} = {:.1} ({})",
+                    piece.name,
+                    rule.edge,
+                    piece.outline.span_length(span),
+                    rule.formula
+                );
+            }
+        }
+        for piece in session.document.pieces() {
+            let (lo, hi) = piece.outline.bounds();
+            println!(
+                "piece {} y {:.1}..{:.1} x {:.1}..{:.1}",
+                piece.name, lo.y, hi.y, lo.x, hi.x
+            );
+        }
+        for (what, error) in &session.editor.parameter_errors {
+            println!("error {what}: {error}");
+        }
+    }
     if !jitter.is_empty() {
         println!("moving most: {jitter_where}");
         let tail = &jitter[jitter.len().saturating_sub(30)..];
@@ -865,12 +978,17 @@ fn overlap_report(session: &Session) {
     let mesh = session.topology.mesh();
     let n = mesh.positions.len().max(1) as f32;
     let centre = mesh.positions.iter().fold(Vec3::ZERO, |a, &p| a + p) / n;
-    let mut pairs: Vec<(cad_core::PieceId, cad_core::PieceId)> =
-        session.document.fastenings().map(|(b, _, h, _)| (b, h)).collect();
+    let mut pairs: Vec<(cad_core::PieceId, cad_core::PieceId)> = session
+        .document
+        .fastenings()
+        .map(|(b, _, h, _)| (b, h))
+        .collect();
     pairs.sort();
     pairs.dedup();
     for (under, top) in pairs {
-        let (Some(us), Some(ts)) = (mesh.span(under), mesh.span(top)) else { continue };
+        let (Some(us), Some(ts)) = (mesh.span(under), mesh.span(top)) else {
+            continue;
+        };
         let triangles: Vec<[Vec3; 3]> = ts
             .indices
             .clone()
@@ -929,19 +1047,29 @@ fn closest_on_triangle(p: Vec3, [a, b, c]: &[Vec3; 3]) -> Vec3 {
     let ap = p - a;
     let d1 = ab.dot(ap);
     let d2 = ac.dot(ap);
-    if d1 <= 0.0 && d2 <= 0.0 { return a; }
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
     let bp = p - b;
     let d3 = ab.dot(bp);
     let d4 = ac.dot(bp);
-    if d3 >= 0.0 && d4 <= d3 { return b; }
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
     let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 { return a + ab * (d1 / (d1 - d3)); }
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
     let cp = p - c;
     let d5 = ab.dot(cp);
     let d6 = ac.dot(cp);
-    if d6 >= 0.0 && d5 <= d6 { return c; }
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
     let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 { return a + ac * (d2 / (d2 - d6)); }
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
     let va = d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
         return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
@@ -958,7 +1086,10 @@ fn drift_report(session: &Session) {
     for span in &mesh.pieces {
         let points = &mesh.positions[span.vertices.start as usize..span.vertices.end as usize];
         let c = points.iter().fold(Vec3::ZERO, |a, &p| a + p) / points.len().max(1) as f32;
-        let name = session.document.piece(span.piece).map_or("?", |p| p.name.as_str());
+        let name = session
+            .document
+            .piece(span.piece)
+            .map_or("?", |p| p.name.as_str());
         line += &format!("  {name} x {:+.0} z {:+.0}", c.x * 1000.0, c.z * 1000.0);
     }
     // The button row: the under-piece vertices nearest each button.
@@ -972,15 +1103,29 @@ fn drift_report(session: &Session) {
     }
     if std::env::var_os("CLO360_BUTTON_DEBUG").is_some() {
         for (bp, button, hp, hole) in session.document.fastenings() {
-            let Some(outline) = session.document.piece(hp).map(|p| &p.outline) else { continue };
-            if let (Some(a), Some(b)) = (mesh.nearest_vertex(bp, button.position), mesh.nearest_vertex(hp, hole.button_end(outline))) {
+            let Some(outline) = session.document.piece(hp).map(|p| &p.outline) else {
+                continue;
+            };
+            if let (Some(a), Some(b)) = (
+                mesh.nearest_vertex(bp, button.position),
+                mesh.nearest_vertex(hp, hole.button_end(outline)),
+            ) {
                 let (pa, pb) = (mesh.positions[a as usize], mesh.positions[b as usize]);
-                println!("  button at {:+.0?} mm, hole end at {:+.0?} mm, {:.1} mm apart", pa * 1000.0, pb * 1000.0, pa.distance(pb) * 1000.0);
+                println!(
+                    "  button at {:+.0?} mm, hole end at {:+.0?} mm, {:.1} mm apart",
+                    pa * 1000.0,
+                    pb * 1000.0,
+                    pa.distance(pb) * 1000.0
+                );
             }
         }
     }
     if !xs.is_empty() {
-        line += &format!("  buttons x {:+.0}..{:+.0}", xs.iter().cloned().fold(f32::MAX, f32::min), xs.iter().cloned().fold(f32::MIN, f32::max));
+        line += &format!(
+            "  buttons x {:+.0}..{:+.0}",
+            xs.iter().cloned().fold(f32::MAX, f32::min),
+            xs.iter().cloned().fold(f32::MIN, f32::max)
+        );
     }
     println!("{line}");
 }

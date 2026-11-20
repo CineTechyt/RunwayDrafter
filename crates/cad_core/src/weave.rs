@@ -175,7 +175,12 @@ impl Weave {
                 eat(u64::from(c.to_bits()));
             }
         }
-        for &o in self.warp_order.iter().chain([&255u8]).chain(&self.weft_order) {
+        for &o in self
+            .warp_order
+            .iter()
+            .chain([&255u8])
+            .chain(&self.weft_order)
+        {
             eat(u64::from(o));
         }
         for v in [
@@ -199,7 +204,9 @@ impl Weave {
         let span = |repeat: u32, order: usize| {
             let base = lcm(repeat.max(1), order.max(1) as u32);
             let times = 96u32.div_ceil(base).max(1);
-            (base * times).min(1024 / pixels).max(base.min(1024 / pixels))
+            (base * times)
+                .min(1024 / pixels)
+                .max(base.min(1024 / pixels))
         };
         (
             span(self.ends, self.warp_order.len()),
@@ -233,8 +240,10 @@ impl Weave {
         // Shade and slubs are left to the renderer, which varies them per
         // thread of the whole garment (see `yarn_variation` in pbr.wgsl);
         // only a trace of thickness stays here.
-        let thickness = |seed: u32, thread: u32| 1.0 + (hash(seed, thread) - 0.5) * 0.06 * irregular;
-        let shade = |seed: u32, thread: u32| 1.0 + (hash(seed ^ 0x9e37, thread) - 0.5) * 0.02 * irregular;
+        let thickness =
+            |seed: u32, thread: u32| 1.0 + (hash(seed, thread) - 0.5) * 0.06 * irregular;
+        let shade =
+            |seed: u32, thread: u32| 1.0 + (hash(seed ^ 0x9e37, thread) - 0.5) * 0.02 * irregular;
         // Along a thread: slubs, smooth over a few crossings.
         let slubs = self.slubs.clamp(0.0, 1.0);
         // The texture repeats: noise along a thread must come round to
@@ -263,7 +272,11 @@ impl Weave {
         let weft_spill = ((weft_cover - 1.0) * 0.5).max(0.0);
         let fullest = warp_cover.max(weft_cover);
         let half = |warp: bool, thread: u32, along: f32| {
-            let (cover, seed, length) = if warp { (warp_cover, 1, picks) } else { (weft_cover, 2, ends) };
+            let (cover, seed, length) = if warp {
+                (warp_cover, 1, picks)
+            } else {
+                (weft_cover, 2, ends)
+            };
             0.5 * cover * thickness(seed, thread) * slub(seed + 2, thread, along, length)
         };
         let profile = |a: f32| (1.0 - a * a).max(0.0).sqrt();
@@ -323,11 +336,15 @@ impl Weave {
                     candidates.push((true, end, (fx - 0.5).abs(), 0.35));
                 }
 
-                let seen = candidates.iter().enumerate().find_map(|(k, &(warp, thread, d, arch))| {
-                    let along = if warp { along_warp } else { along_weft };
-                    let a = d / half(warp, thread, along).min(0.75);
-                    (a < 1.0).then_some((k < top_count, warp, thread, a, arch))
-                });
+                let seen =
+                    candidates
+                        .iter()
+                        .enumerate()
+                        .find_map(|(k, &(warp, thread, d, arch))| {
+                            let along = if warp { along_warp } else { along_weft };
+                            let a = d / half(warp, thread, along).min(0.75);
+                            (a < 1.0).then_some((k < top_count, warp, thread, a, arch))
+                        });
                 let yarn_color = |warp: bool, thread: u32| {
                     if warp {
                         scale(self.warp_yarn(thread), shade(1, thread))
@@ -367,7 +384,14 @@ impl Weave {
                         let h = profile(a) * 0.35;
                         (h, scale(yarn_color(warp, thread), 0.55 + 0.2 * h), warp)
                     }
-                    None => (0.0, scale(yarn_color(warp_on_top, if warp_on_top { end } else { pick }), 0.3), warp_on_top),
+                    None => (
+                        0.0,
+                        scale(
+                            yarn_color(warp_on_top, if warp_on_top { end } else { pick }),
+                            0.3,
+                        ),
+                        warp_on_top,
+                    ),
                 };
                 let i = (y * width + x) as usize;
                 heights[i] = h;
@@ -387,7 +411,12 @@ impl Weave {
         let fuzz = self.fuzz.clamp(0.0, 1.0);
         if fuzz > 0.0 {
             let radius = ((0.7 * pixels as f32 * fuzz).round() as i64).max(1);
-            let blurred = box_blur(&box_blur(&colors, width, height, radius), width, height, radius);
+            let blurred = box_blur(
+                &box_blur(&colors, width, height, radius),
+                width,
+                height,
+                radius,
+            );
             let amount = 0.75 * fuzz;
             for (c, b) in colors.iter_mut().zip(&blurred) {
                 for k in 0..3 {
@@ -452,13 +481,17 @@ impl Weave {
         for y in 0..texture.height {
             for x in 0..texture.width {
                 let (end, pick) = (x / pixels, y / pixels);
-                let (along_warp, along_weft) =
-                    ((y as f32 + 0.5) / pixels as f32, (x as f32 + 0.5) / pixels as f32);
+                let (along_warp, along_weft) = (
+                    (y as f32 + 0.5) / pixels as f32,
+                    (x as f32 + 0.5) / pixels as f32,
+                );
                 let mut shade = 1.0 + (hash(11, end) - 0.5) * 0.22 * irregular;
                 shade *= 1.0 + (hash(12, pick) - 0.5) * 0.12 * irregular;
-                let slub_warp = ((smooth(13 ^ end.wrapping_mul(7919), along_warp / 5.0) - 0.78) / 0.2)
+                let slub_warp = ((smooth(13 ^ end.wrapping_mul(7919), along_warp / 5.0) - 0.78)
+                    / 0.2)
                     .clamp(0.0, 1.0);
-                let slub_weft = ((smooth(14 ^ pick.wrapping_mul(7919), along_weft / 5.0) - 0.80) / 0.18)
+                let slub_weft = ((smooth(14 ^ pick.wrapping_mul(7919), along_weft / 5.0) - 0.80)
+                    / 0.18)
                     .clamp(0.0, 1.0);
                 shade *= 1.0 + slubs * 0.35 * slub_warp.max(slub_weft * 0.6);
                 shade *= 1.0 + (smooth(15, end as f32 * 0.21) - 0.5) * 0.14 * irregular;
@@ -531,12 +564,19 @@ impl Weave {
                 "Herringbone",
                 Weave::from_fn(8, 4, |e, p| {
                     let (e, p) = (e % 8, p % 4);
-                    if e < 4 { (e + 4 - p) % 4 < 2 } else { (e + p) % 4 < 2 }
+                    if e < 4 {
+                        (e + 4 - p) % 4 < 2
+                    } else {
+                        (e + p) % 4 < 2
+                    }
                 }),
             ),
             ("5-end satin", satin(5, 2)),
             ("8-end satin", satin(8, 3)),
-            ("2/2 basket", Weave::from_fn(4, 4, |e, p| (e / 2 + p / 2) % 2 == 0)),
+            (
+                "2/2 basket",
+                Weave::from_fn(4, 4, |e, p| (e / 2 + p / 2) % 2 == 0),
+            ),
             ("Gingham", check),
             (
                 "Diamond",
@@ -673,7 +713,11 @@ mod tests {
     fn the_texture_says_which_yarn_is_on_top() {
         // 3/1 twill (denim): most of the face is warp (the weft shows in
         // the gaps between the floats too).
-        let denim = Weave::library().into_iter().find(|(n, _)| *n == "Denim").unwrap().1;
+        let denim = Weave::library()
+            .into_iter()
+            .find(|(n, _)| *n == "Denim")
+            .unwrap()
+            .1;
         let t = denim.texture(8);
         let (warp, weft) = t.albedo.iter().fold((0, 0), |(w, f), p| match p[3] {
             255 => (w + 1, f),
@@ -692,7 +736,11 @@ mod tests {
         let twill = &library.iter().find(|(n, _)| *n == "2/2 twill").unwrap().1;
         for p in 0..4 {
             for e in 0..4 {
-                assert_eq!(twill.up(e, p), twill.up(e + 1, p + 1), "diagonal at {e},{p}");
+                assert_eq!(
+                    twill.up(e, p),
+                    twill.up(e + 1, p + 1),
+                    "diagonal at {e},{p}"
+                );
             }
         }
         // Half the crossings show warp.
@@ -705,10 +753,21 @@ mod tests {
         let texture = weave.texture(8);
         assert_eq!(texture.width, texture.ends * 8);
         assert!(texture.ends >= 96 && texture.ends % 2 == 0);
-        assert_eq!(texture.albedo.len(), (texture.width * texture.height) as usize);
+        assert_eq!(
+            texture.albedo.len(),
+            (texture.width * texture.height) as usize
+        );
         // Blue warp and cream weft both show up.
-        let blue = texture.albedo.iter().filter(|c| u16::from(c[2]) > u16::from(c[0]) + 40).count();
-        let cream = texture.albedo.iter().filter(|c| c[0] > 150 && c[1] > 140).count();
+        let blue = texture
+            .albedo
+            .iter()
+            .filter(|c| u16::from(c[2]) > u16::from(c[0]) + 40)
+            .count();
+        let cream = texture
+            .albedo
+            .iter()
+            .filter(|c| c[0] > 150 && c[1] > 140)
+            .count();
         assert!(blue > texture.albedo.len() / 6, "{blue}");
         assert!(cream > texture.albedo.len() / 6, "{cream}");
         // Heights: the floats are proud, the gaps deep.
@@ -734,7 +793,10 @@ mod tests {
             };
             let seam = step(w - 1, 0);
             let inside = (1..w).map(|x| step(x - 1, x)).sum::<f32>() / (w - 1) as f32;
-            assert!(seam < 3.0 * inside + 4.0, "{name}: seam {seam:.1} vs {inside:.1}");
+            assert!(
+                seam < 3.0 * inside + 4.0,
+                "{name}: seam {seam:.1} vs {inside:.1}"
+            );
         }
     }
 

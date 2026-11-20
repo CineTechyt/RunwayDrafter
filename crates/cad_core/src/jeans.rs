@@ -1,5 +1,5 @@
 //! A pair of straight-leg jeans drafted to a body's measurements: front and
-//! back legs, a two-part waistband, a fly shield, a dart in each front and each
+//! back legs, a two-part waistband, a zip fly, a dart in each front and each
 //! back, flat-felled inseams and back rise, overlocked outseams, and white
 //! topstitching on dark denim.
 
@@ -62,7 +62,8 @@ impl Draft {
                 .map(|j| {
                     let p = flip(self.points[n - 1 - j]);
                     let edge = (2 * n - 2 - j) % n;
-                    let segment = self.controls[edge].map_or(Segment::Line, |c| Segment::Quadratic { ctrl: flip(c) });
+                    let segment = self.controls[edge]
+                        .map_or(Segment::Line, |c| Segment::Quadratic { ctrl: flip(c) });
                     (ControlPoint::corner(p.x, p.y), segment)
                 })
                 .unzip()
@@ -177,10 +178,15 @@ fn leg_draft(size: &JeansSize, front: bool) -> Draft {
 pub fn jeans(size: JeansSize) -> PatternDocument {
     let mut doc = PatternDocument::new();
     let fabric = doc.add_fabric("Raw denim", [0.016, 0.032, 0.115]);
-    if let Some(preset) = crate::fabric_library::presets().into_iter().find(|f| f.name == "Raw denim")
+    if let Some(preset) = crate::fabric_library::presets()
+        .into_iter()
+        .find(|f| f.name == "Raw denim")
         && let Some(f) = doc.fabric_mut(fabric)
     {
-        *f = crate::material::Fabric { id: fabric, ..preset };
+        *f = crate::material::Fabric {
+            id: fabric,
+            ..preset
+        };
     }
     let thread = [0.78, 0.76, 0.70];
     let stitch = |kind: StitchKind| Stitching::of(kind).with_thread(thread);
@@ -190,25 +196,68 @@ pub fn jeans(size: JeansSize) -> PatternDocument {
         mirrored: bool,
         draft: Draft,
     }
-    let add = |doc: &mut PatternDocument, name: &str, draft: Draft, mirrored: bool, part: BodyPart, angle: f32| {
+    let add = |doc: &mut PatternDocument,
+               name: &str,
+               draft: Draft,
+               mirrored: bool,
+               part: BodyPart,
+               angle: f32| {
         let id = doc.add_piece(name, draft.outline(mirrored), fabric);
         if let Some(p) = doc.piece_mut(id) {
             p.placement.part = part;
             p.placement.angle = angle;
         }
-        Placed { id, mirrored, draft }
+        Placed {
+            id,
+            mirrored,
+            draft,
+        }
     };
     // The avatar's left leg is at +x: seen from the front its inside edge
     // is towards −x, as drafted; from behind the pattern is turned round.
-    let front_left = add(&mut doc, "Front left", leg_draft(&size, true), false, BodyPart::LeftLeg, 0.0);
-    let front_right = add(&mut doc, "Front right", leg_draft(&size, true), true, BodyPart::RightLeg, 0.0);
-    let back_left = add(&mut doc, "Back left", leg_draft(&size, false), true, BodyPart::LeftLeg, 180.0);
-    let back_right = add(&mut doc, "Back right", leg_draft(&size, false), false, BodyPart::RightLeg, 180.0);
+    let front_left = add(
+        &mut doc,
+        "Front left",
+        leg_draft(&size, true),
+        false,
+        BodyPart::LeftLeg,
+        0.0,
+    );
+    let front_right = add(
+        &mut doc,
+        "Front right",
+        leg_draft(&size, true),
+        true,
+        BodyPart::RightLeg,
+        0.0,
+    );
+    let back_left = add(
+        &mut doc,
+        "Back left",
+        leg_draft(&size, false),
+        true,
+        BodyPart::LeftLeg,
+        180.0,
+    );
+    let back_right = add(
+        &mut doc,
+        "Back right",
+        leg_draft(&size, false),
+        false,
+        BodyPart::RightLeg,
+        180.0,
+    );
 
     // The shaping first: a dart in each front over the crease, and in
     // each back. They cut points into the waist lines; the seams are then
     // sewn between points, which stay where they are.
-    let flip = |placed: &Placed, p: Vec2| if placed.mirrored { Vec2::new(-p.x, p.y) } else { p };
+    let flip = |placed: &Placed, p: Vec2| {
+        if placed.mirrored {
+            Vec2::new(-p.x, p.y)
+        } else {
+            p
+        }
+    };
     let corner = |placed: &Placed, k: usize| flip(placed, placed.draft.points[k]);
     let mut waist_parts = Vec::new();
     for placed in [&front_left, &front_right, &back_left, &back_right] {
@@ -270,12 +319,27 @@ pub fn jeans(size: JeansSize) -> PatternDocument {
             points,
         }
     };
-    let band_left = add(&mut doc, "Waistband left", band_draft(), false, BodyPart::Waist, 90.0);
-    let band_right = add(&mut doc, "Waistband right", band_draft(), true, BodyPart::Waist, -90.0);
+    let band_left = add(
+        &mut doc,
+        "Waistband left",
+        band_draft(),
+        false,
+        BodyPart::Waist,
+        90.0,
+    );
+    let band_right = add(
+        &mut doc,
+        "Waistband right",
+        band_draft(),
+        true,
+        BodyPart::Waist,
+        -90.0,
+    );
 
     let felled = stitch(StitchKind::FlatFelled);
     let overlock = Stitching::of(StitchKind::Overlock).with_thread([0.05, 0.07, 0.15]);
-    let line = |placed: &Placed, a: usize, b: usize| (placed.id, corner(placed, a), corner(placed, b));
+    let line =
+        |placed: &Placed, a: usize, b: usize| (placed.id, corner(placed, a), corner(placed, b));
     for (front, back) in [(&front_left, &back_left), (&front_right, &back_right)] {
         // Crotch to hem, and hem to waist.
         doc.sew_between(line(front, 0, 2), line(back, 0, 2), felled);
@@ -284,7 +348,11 @@ pub fn jeans(size: JeansSize) -> PatternDocument {
     // The fly: a metal zipper down the straight centre front, hidden under
     // the left front with its J of topstitching; below it the crotch is
     // sewn with a double row. The back rise is flat-felled.
-    if let Some(fly) = doc.sew_between(line(&front_left, 7, 8), line(&front_right, 7, 8), stitch(StitchKind::FlyJ)) {
+    if let Some(fly) = doc.sew_between(
+        line(&front_left, 7, 8),
+        line(&front_right, 7, 8),
+        stitch(StitchKind::FlyJ),
+    ) {
         doc.set_seam_zipper(
             fly,
             Some(crate::stitch::Zipper {
@@ -296,49 +364,37 @@ pub fn jeans(size: JeansSize) -> PatternDocument {
             }),
         );
     }
-    doc.sew_between(line(&front_left, 8, 0), line(&front_right, 8, 0), stitch(StitchKind::DoubleTopstitch));
-    // The fly shield: a strip behind the zipper, sewn to the right front's
-    // edge and lying under the left front, between the teeth and the body.
-    {
-        let (top, bottom) = (corner(&front_right, 7), corner(&front_right, 8));
-        let length = top.distance(bottom);
-        let width = 55.0;
-        let shield = Draft {
-            points: vec![
-                Vec2::new(0.0, 0.0),
-                Vec2::new(width, 0.0),
-                Vec2::new(width, length),
-                Vec2::new(0.0, length),
-            ],
-            controls: vec![None, None, None, None],
-        };
-        // It starts right behind the fly, under the right front it is sewn
-        // to (anywhere else it would have to pass through cloth to get
-        // there).
-        let shield = add(&mut doc, "Fly shield", shield, false, BodyPart::RightLeg, 0.0);
-        if let Some(p) = doc.piece_mut(shield.id) {
-            p.placement.under = Some(front_right.id);
-            p.placement.depth = -7.0;
-            // A layer below the jeans: the cloth collision keeps it inside.
-            p.layer = 0;
-        }
-        doc.sew_between(
-            (shield.id, Vec2::new(0.0, length), Vec2::ZERO),
-            (front_right.id, top, bottom),
-            Stitching::default(),
-        );
-        // Its free long edge is overlocked.
-        if let Some((span, _)) = doc.span_between(shield.id, Vec2::new(width, 0.0), Vec2::new(width, length)) {
-            doc.set_edge_stitching(shield.id, span, Some(overlock));
-        }
-    }
+    doc.sew_between(
+        line(&front_left, 8, 0),
+        line(&front_right, 8, 0),
+        stitch(StitchKind::DoubleTopstitch),
+    );
+    // No fly shield: hidden inside real jeans, and in the simulation it
+    // was squeezed between the tight fronts and the body, came through the
+    // cloth on one side or the other and tore the fly open.
     doc.sew_between(line(&back_left, 7, 0), line(&back_right, 7, 0), felled);
     // The waistband onto the waist, edgestitched on the band.
     let on_band = stitch(StitchKind::Edgestitch);
-    let band_points = |placed: &Placed| -> Vec<Vec2> { (0..placed.draft.points.len()).map(|k| corner(placed, k)).collect() };
+    let band_points = |placed: &Placed| -> Vec<Vec2> {
+        (0..placed.draft.points.len())
+            .map(|k| corner(placed, k))
+            .collect()
+    };
     for (band, front, back, front_parts, back_parts) in [
-        (&band_left, &front_left, &back_left, Some(waist_parts[0]), Some(waist_parts[2])),
-        (&band_right, &front_right, &back_right, waist_parts.get(1).copied(), waist_parts.get(3).copied()),
+        (
+            &band_left,
+            &front_left,
+            &back_left,
+            Some(waist_parts[0]),
+            Some(waist_parts[2]),
+        ),
+        (
+            &band_right,
+            &front_right,
+            &back_right,
+            waist_parts.get(1).copied(),
+            waist_parts.get(3).copied(),
+        ),
     ] {
         let (Some(fp), Some(bp)) = (front_parts, back_parts) else {
             continue;
@@ -351,8 +407,16 @@ pub fn jeans(size: JeansSize) -> PatternDocument {
         doc.sew_between((band.id, b[3], b[4]), (back.id, bp[1].0, bp[1].1), on_band);
     }
     let (bl, br) = (band_points(&band_left), band_points(&band_right));
-    doc.sew_between((band_left.id, bl[4], bl[5]), (band_right.id, br[4], br[5]), Stitching::default());
-    doc.sew_between((band_left.id, bl[6], bl[0]), (band_right.id, br[6], br[0]), Stitching::default());
+    doc.sew_between(
+        (band_left.id, bl[4], bl[5]),
+        (band_right.id, br[4], br[5]),
+        Stitching::default(),
+    );
+    doc.sew_between(
+        (band_left.id, bl[6], bl[0]),
+        (band_right.id, br[6], br[0]),
+        Stitching::default(),
+    );
 
     // The waistband's riveted tack button, just beside centre front (the
     // band's halves are sewn shut there: a fastening pulling across that
@@ -360,7 +424,8 @@ pub fn jeans(size: JeansSize) -> PatternDocument {
     {
         let left = band_points(&band_left);
         if let Some(p) = doc.piece_mut(band_left.id) {
-            let mut button = crate::pattern::Button::new(Vec2::new(left[0].x + 10.0, 0.5 * BAND_HEIGHT), 17.0);
+            let mut button =
+                crate::pattern::Button::new(Vec2::new(left[0].x + 10.0, 0.5 * BAND_HEIGHT), 17.0);
             button.style = crate::pattern::ButtonStyle::Tack;
             button.finish = crate::pattern::ButtonFinish::Metal;
             button.color = [0.50, 0.36, 0.16];
@@ -399,7 +464,10 @@ mod tests {
             let span = draft.span(leg::HEM.0, 1, mirrored);
             let p = outline.points();
             let n = p.len();
-            let (a, b) = (p[span.first as usize].position, p[(span.first as usize + 1) % n].position);
+            let (a, b) = (
+                p[span.first as usize].position,
+                p[(span.first as usize + 1) % n].position,
+            );
             assert!((a.y - b.y).abs() < 1e-3 && a.y < -800.0, "{a} {b}");
         }
     }
@@ -411,7 +479,12 @@ mod tests {
         let (mut buttons, mut folds) = (0, 0);
         for p in doc.pieces() {
             for b in &p.buttons {
-                assert!(p.contains(b.position), "{}: button at {}", p.name, b.position);
+                assert!(
+                    p.contains(b.position),
+                    "{}: button at {}",
+                    p.name,
+                    b.position
+                );
                 buttons += 1;
             }
             for f in &p.folds {
@@ -431,8 +504,13 @@ mod tests {
             let length = |piece, span| doc.piece(piece).unwrap().outline.span_length(span);
             println!(
                 "{:>16} {:?} {:6.1}  |  {:>16} {:?} {:6.1}  rev {}",
-                name(seam.a.piece), seam.a_span(), length(seam.a.piece, seam.a_span()),
-                name(seam.b.piece), seam.b_span(), length(seam.b.piece, seam.b_span()), seam.reversed
+                name(seam.a.piece),
+                seam.a_span(),
+                length(seam.a.piece, seam.a_span()),
+                name(seam.b.piece),
+                seam.b_span(),
+                length(seam.b.piece, seam.b_span()),
+                seam.reversed
             );
         }
     }
@@ -440,16 +518,23 @@ mod tests {
     #[test]
     fn the_jeans_have_their_pieces_seams_and_shaping() {
         let doc = jeans(JeansSize::default());
-        assert_eq!(doc.pieces().len(), 7);
+        assert_eq!(doc.pieces().len(), 6);
         // 2 inseams, 2 outseams, 2 rises, 8 band seams, 2 band ends, plus a
-        // dart per front and per back, and the fly shield.
-        assert_eq!(doc.seams().len(), 22);
+        // dart per front and per back.
+        assert_eq!(doc.seams().len(), 21);
         let folds: usize = doc.pieces().iter().map(|p| p.folds.len()).sum();
         assert_eq!(folds, 0);
         for seam in doc.seams() {
             let length = |piece, span| doc.piece(piece).unwrap().outline.span_length(span);
-            let (a, b) = (length(seam.a.piece, seam.a_span()), length(seam.b.piece, seam.b_span()));
-            assert!((a - b).abs() < 0.12 * a.max(b) + 6.0, "seam {:?}: {a:.0} vs {b:.0} mm", seam.id);
+            let (a, b) = (
+                length(seam.a.piece, seam.a_span()),
+                length(seam.b.piece, seam.b_span()),
+            );
+            assert!(
+                (a - b).abs() < 0.12 * a.max(b) + 6.0,
+                "seam {:?}: {a:.0} vs {b:.0} mm",
+                seam.id
+            );
         }
     }
 }

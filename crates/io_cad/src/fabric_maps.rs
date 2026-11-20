@@ -85,7 +85,9 @@ fn role(path: &Path) -> Role {
         .filter(|w| !w.is_empty())
         .collect();
     let has = |names: &[&str]| words.iter().any(|w| names.contains(w));
-    if has(&["normaldx", "nrmdx", "dx"]) && has(&["normaldx", "normal", "nrm", "nor", "nrmdx", "dx"]) {
+    if has(&["normaldx", "nrmdx", "dx"])
+        && has(&["normaldx", "normal", "nrm", "nor", "nrmdx", "dx"])
+    {
         if has(&["normaldx", "nrmdx"]) || has(&["normal", "nrm", "nor"]) {
             return Role::NormalDx;
         }
@@ -99,10 +101,36 @@ fn role(path: &Path) -> Role {
     if has(&["height", "displacement", "disp", "bump", "depth"]) {
         return Role::Height;
     }
-    if has(&["ao", "ambientocclusion", "occlusion", "metal", "metalness", "metallic", "opacity", "alpha", "specular", "spec", "gloss", "mask", "emission", "preview", "thumb", "sphere"]) {
+    if has(&[
+        "ao",
+        "ambientocclusion",
+        "occlusion",
+        "metal",
+        "metalness",
+        "metallic",
+        "opacity",
+        "alpha",
+        "specular",
+        "spec",
+        "gloss",
+        "mask",
+        "emission",
+        "preview",
+        "thumb",
+        "sphere",
+    ]) {
         return Role::Other;
     }
-    if has(&["basecolor", "albedo", "diffuse", "color", "colour", "col", "diff", "base"]) {
+    if has(&[
+        "basecolor",
+        "albedo",
+        "diffuse",
+        "color",
+        "colour",
+        "col",
+        "diff",
+        "base",
+    ]) {
         return Role::Colour;
     }
     Role::Other
@@ -110,7 +138,10 @@ fn role(path: &Path) -> Role {
 
 fn is_image(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
         Some("png" | "jpg" | "jpeg" | "exr")
     )
 }
@@ -134,10 +165,17 @@ fn guess(dir: &Path, hint: Option<&Path>) -> Result<FabricMaps, MapsError> {
         }
     }
     // Plain images before EXR where both exist; then by name.
-    files.sort_by_key(|p| (p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exr")), p.clone()));
+    files.sort_by_key(|p| {
+        (
+            p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exr")),
+            p.clone(),
+        )
+    });
     let pick = |wanted: Role| files.iter().find(|p| role(p) == wanted).cloned();
     let color = match hint {
-        Some(h) if is_image(h) && matches!(role(h), Role::Colour | Role::Other) => Some(h.to_owned()),
+        Some(h) if is_image(h) && matches!(role(h), Role::Colour | Role::Other) => {
+            Some(h.to_owned())
+        }
         _ => pick(Role::Colour),
     }
     .or_else(|| (files.len() == 1).then(|| files[0].clone()))
@@ -178,7 +216,8 @@ fn read_u3m(path: &Path) -> Result<FabricMaps, MapsError> {
     let color = file("basecolor").ok_or_else(|| MapsError::NoColour(path.to_owned()))?;
     // The physical size: the image's pixels at its dpi, else width and
     // height (taken as centimetres).
-    let number = |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
+    let number =
+        |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
     let basecolor = image("basecolor");
     let dpi = number(basecolor.and_then(|i| i.get("dpi")));
     let mut size_mm = [DEFAULT_SIZE_MM; 2];
@@ -214,7 +253,11 @@ fn find_file(dir: &Path, extension: &str) -> Option<PathBuf> {
             let p = entry.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(extension)) {
+            } else if p
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case(extension))
+            {
                 return Some(p);
             }
         }
@@ -233,12 +276,25 @@ fn unpack(path: &Path) -> Result<PathBuf, MapsError> {
         .join("clo360")
         .join("u3m");
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in path.to_string_lossy().as_bytes().iter().chain(&(bytes.len() as u64).to_le_bytes()) {
+    for &b in path
+        .to_string_lossy()
+        .as_bytes()
+        .iter()
+        .chain(&(bytes.len() as u64).to_le_bytes())
+    {
         h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
     }
     let dir = cache.join(format!("{h:016x}"));
-    let u16_at = |o: usize| bytes.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
-    let u32_at = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let u16_at = |o: usize| {
+        bytes
+            .get(o..o + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
+    };
+    let u32_at = |o: usize| {
+        bytes
+            .get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    };
     // End of central directory: the last "PK\5\6".
     let end = (0..bytes.len().saturating_sub(21))
         .rev()
@@ -258,21 +314,28 @@ fn unpack(path: &Path) -> Result<PathBuf, MapsError> {
             u16_at(at + 32).unwrap_or(0),
         );
         let local = u32_at(at + 42).unwrap_or(0);
-        let name = String::from_utf8_lossy(bytes.get(at + 46..at + 46 + name_len).unwrap_or(&[])).into_owned();
+        let name = String::from_utf8_lossy(bytes.get(at + 46..at + 46 + name_len).unwrap_or(&[]))
+            .into_owned();
         at += 46 + name_len + extra_len + comment_len;
         // Only plain relative names: nothing may land outside the folder.
         let relative = Path::new(&name);
         if name.ends_with('/')
             || relative.is_absolute()
-            || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+            || relative
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
         {
             continue;
         }
-        let data_at = local + 30 + u16_at(local + 26).unwrap_or(0) + u16_at(local + 28).unwrap_or(0);
-        let data = bytes.get(data_at..data_at + packed).ok_or_else(|| zip_error("truncated entry"))?;
+        let data_at =
+            local + 30 + u16_at(local + 26).unwrap_or(0) + u16_at(local + 28).unwrap_or(0);
+        let data = bytes
+            .get(data_at..data_at + packed)
+            .ok_or_else(|| zip_error("truncated entry"))?;
         let content = match method {
             0 => data.to_vec(),
-            8 => miniz_oxide::inflate::decompress_to_vec(data).map_err(|_| zip_error("bad deflate data"))?,
+            8 => miniz_oxide::inflate::decompress_to_vec(data)
+                .map_err(|_| zip_error("bad deflate data"))?,
             _ => return Err(zip_error("unsupported compression")),
         };
         let target = dir.join(relative);
@@ -288,14 +351,17 @@ fn unpack(path: &Path) -> Result<PathBuf, MapsError> {
 /// channel (Y, or any single one, as roughness maps often are).
 fn decode_exr(path: &Path) -> Result<image::DynamicImage, MapsError> {
     let error = |message: String| MapsError::Exr(path.to_owned(), message);
-    let file = exr::prelude::read_first_flat_layer_from_file(path).map_err(|e| error(e.to_string()))?;
+    let file =
+        exr::prelude::read_first_flat_layer_from_file(path).map_err(|e| error(e.to_string()))?;
     let layer = &file.layer_data;
     let (width, height) = (layer.size.0, layer.size.1);
     let channels = &layer.channel_data.list;
     let named = |names: &[&str]| {
-        channels
-            .iter()
-            .find(|c| names.iter().any(|n| c.name.to_string().eq_ignore_ascii_case(n)))
+        channels.iter().find(|c| {
+            names
+                .iter()
+                .any(|n| c.name.to_string().eq_ignore_ascii_case(n))
+        })
     };
     let grey = named(&["Y", "L", "V"]).or_else(|| (channels.len() == 1).then(|| &channels[0]));
     let (r, g, b) = match (named(&["R"]), named(&["G"]), named(&["B"])) {
@@ -306,9 +372,7 @@ fn decode_exr(path: &Path) -> Result<image::DynamicImage, MapsError> {
         }
     };
     let pixels: Vec<f32> = (0..width * height)
-        .flat_map(|i| {
-            [r, g, b].map(|c| c.sample_data.value_by_flat_index(i).to_f32())
-        })
+        .flat_map(|i| [r, g, b].map(|c| c.sample_data.value_by_flat_index(i).to_f32()))
         .collect();
     image::Rgb32FImage::from_raw(width as u32, height as u32, pixels)
         .map(image::DynamicImage::ImageRgb32F)
@@ -328,9 +392,13 @@ fn normal_rgb8(image: image::DynamicImage) -> image::RgbImage {
     }
     let rgb = image.to_rgb32f();
     let count = (rgb.width() * rgb.height()).max(1) as f32;
-    let mean = rgb.pixels().fold([0.0f32; 3], |m, p| [m[0] + p[0], m[1] + p[1], m[2] + p[2]]).map(|v| v / count);
+    let mean = rgb
+        .pixels()
+        .fold([0.0f32; 3], |m, p| [m[0] + p[0], m[1] + p[1], m[2] + p[2]])
+        .map(|v| v / count);
     let raw = mean[0].abs() < 0.25 && mean[1].abs() < 0.25;
-    let to_byte = |v: f32| ((if raw { v * 0.5 + 0.5 } else { v }).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let to_byte =
+        |v: f32| ((if raw { v * 0.5 + 0.5 } else { v }).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     image::RgbImage::from_fn(rgb.width(), rgb.height(), |x, y| {
         let p = rgb.get_pixel(x, y);
         image::Rgb([to_byte(p[0]), to_byte(p[1]), to_byte(p[2])])
@@ -343,7 +411,10 @@ fn normal_rgb8(image: image::DynamicImage) -> image::RgbImage {
 /// the image) with height in alpha.
 pub fn load(maps: &FabricMaps, max_side: u32) -> Result<WeaveTexture, MapsError> {
     let decode = |path: &Path| {
-        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("exr")) {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("exr"))
+        {
             decode_exr(path)
         } else {
             image::open(path).map_err(|e| MapsError::Image(path.to_owned(), e))
@@ -362,9 +433,24 @@ pub fn load(maps: &FabricMaps, max_side: u32) -> Result<WeaveTexture, MapsError>
         }
     };
     let color = fit(color).to_rgba8();
-    let roughness = maps.roughness.as_deref().map(decode).transpose()?.map(|i| fit(i).to_luma8());
-    let normal = maps.normal.as_deref().map(decode).transpose()?.map(|i| normal_rgb8(fit(i)));
-    let bump = maps.height.as_deref().map(decode).transpose()?.map(|i| fit(i).to_luma8());
+    let roughness = maps
+        .roughness
+        .as_deref()
+        .map(decode)
+        .transpose()?
+        .map(|i| fit(i).to_luma8());
+    let normal = maps
+        .normal
+        .as_deref()
+        .map(decode)
+        .transpose()?
+        .map(|i| normal_rgb8(fit(i)));
+    let bump = maps
+        .height
+        .as_deref()
+        .map(decode)
+        .transpose()?
+        .map(|i| fit(i).to_luma8());
     let count = (width * height) as usize;
     let mut albedo = Vec::with_capacity(count);
     let mut surface = Vec::with_capacity(count);
@@ -373,7 +459,9 @@ pub fn load(maps: &FabricMaps, max_side: u32) -> Result<WeaveTexture, MapsError>
             let c = color.get_pixel(x, y).0;
             let r = roughness.as_ref().map_or(255, |m| m.get_pixel(x, y).0[0]);
             albedo.push([c[0], c[1], c[2], r]);
-            let n = normal.as_ref().map_or([128, 128, 255], |m| m.get_pixel(x, y).0);
+            let n = normal
+                .as_ref()
+                .map_or([128, 128, 255], |m| m.get_pixel(x, y).0);
             // Green up in the image is −V here.
             let g = if maps.normal_y_up { 255 - n[1] } else { n[1] };
             let h = bump.as_ref().map_or(255, |m| m.get_pixel(x, y).0[0]);
@@ -411,8 +499,17 @@ mod tests {
         assert_eq!(r("ribbed_corduroy_nor_gl_4k.exr"), Role::NormalGl);
         assert_eq!(r("ribbed_corduroy_rough_4k.exr"), Role::Roughness);
         assert_eq!(r("ribbed_corduroy_disp_4k.png"), Role::Height);
-        for other in ["anisotropy_rotation", "anisotropy_strength", "spec_ior", "metal"] {
-            assert_eq!(r(&format!("ribbed_corduroy_{other}_4k.png")), Role::Other, "{other}");
+        for other in [
+            "anisotropy_rotation",
+            "anisotropy_strength",
+            "spec_ior",
+            "metal",
+        ] {
+            assert_eq!(
+                r(&format!("ribbed_corduroy_{other}_4k.png")),
+                Role::Other,
+                "{other}"
+            );
         }
     }
 
@@ -444,8 +541,14 @@ mod tests {
         let mut entries = 0u16;
         for (name, data) in [
             ("material.u3m".to_owned(), u3m.as_bytes().to_vec()),
-            ("textures/Denim_Color.png".into(), std::fs::read(dir.join("Denim_Color.png")).unwrap()),
-            ("textures/Denim_NormalGL.png".into(), std::fs::read(dir.join("Denim_NormalGL.png")).unwrap()),
+            (
+                "textures/Denim_Color.png".into(),
+                std::fs::read(dir.join("Denim_Color.png")).unwrap(),
+            ),
+            (
+                "textures/Denim_NormalGL.png".into(),
+                std::fs::read(dir.join("Denim_NormalGL.png")).unwrap(),
+            ),
         ] {
             let offset = zip.len() as u32;
             let header = |sig: u32| {

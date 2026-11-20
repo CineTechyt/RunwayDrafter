@@ -25,7 +25,10 @@ pub const MAX_TRIANGLES: usize = 6_000_000;
 /// Corduroy's ribs, as the shader draws them (`cord_profile` in pbr.wgsl):
 /// 0 in the furrow, 1 on a rib's top.
 pub fn cord_profile(x: f32) -> f32 {
-    (std::f32::consts::PI * (x - x.floor())).sin().max(0.0).powf(0.7)
+    (std::f32::consts::PI * (x - x.floor()))
+        .sin()
+        .max(0.0)
+        .powf(0.7)
 }
 
 /// A scan's height map (0 low … 1 high), repeating.
@@ -48,14 +51,21 @@ impl HeightField {
                 let mut sum = 0.0;
                 for dy in 0..step {
                     for dx in 0..step {
-                        let (sx, sy) = ((x * step + dx).min(width - 1), (y * step + dy).min(height - 1));
+                        let (sx, sy) = (
+                            (x * step + dx).min(width - 1),
+                            (y * step + dy).min(height - 1),
+                        );
                         sum += f32::from(surface[(sy * width + sx) as usize][3]) / 255.0;
                     }
                 }
                 data.push(sum / (step * step) as f32);
             }
         }
-        Self { width: w, height: h, data }
+        Self {
+            width: w,
+            height: h,
+            data,
+        }
     }
 
     /// Bilinear, wrapping, as the GPU samples it (texel centres at halves).
@@ -93,11 +103,18 @@ impl Relief {
     fn sink(&self, uv: Vec2) -> f32 {
         match self {
             Relief::Ribs { count, depth } => depth * (1.0 - cord_profile(uv.x * count)),
-            Relief::Map { field, repeat, depth, shuffled } => {
+            Relief::Map {
+                field,
+                repeat,
+                depth,
+                shuffled,
+            } => {
                 let at = uv * Vec2::from(*repeat);
                 let h = if *shuffled {
                     let (offsets, weights) = stochastic_tiles(at);
-                    (0..3).map(|k| weights[k] * field.sample(at + offsets[k])).sum()
+                    (0..3)
+                        .map(|k| weights[k] * field.sample(at + offsets[k]))
+                        .sum()
                 } else {
                     field.sample(at)
                 };
@@ -115,7 +132,9 @@ fn hash(x: u32) -> u32 {
 }
 
 fn hash22(cell: [i32; 2]) -> Vec2 {
-    let a = hash((cell[0] as u32).wrapping_mul(1_597_334_677) ^ (cell[1] as u32).wrapping_mul(3_812_015_801));
+    let a = hash(
+        (cell[0] as u32).wrapping_mul(1_597_334_677) ^ (cell[1] as u32).wrapping_mul(3_812_015_801),
+    );
     let b = hash(a);
     Vec2::new((a & 0xffff) as f32, (b & 0xffff) as f32) / 65536.0
 }
@@ -132,7 +151,10 @@ pub fn stochastic_tiles(uv: Vec2) -> ([Vec2; 3], [f32; 3]) {
     let (w, corners) = if z > 0.0 {
         ([z, f.y, f.x], [c, [c[0], c[1] + 1], [c[0] + 1, c[1]]])
     } else {
-        ([-z, 1.0 - f.y, 1.0 - f.x], [[c[0] + 1, c[1] + 1], [c[0] + 1, c[1]], [c[0], c[1] + 1]])
+        (
+            [-z, 1.0 - f.y, 1.0 - f.x],
+            [[c[0] + 1, c[1] + 1], [c[0] + 1, c[1]], [c[0], c[1] + 1]],
+        )
     };
     let sharp = w.map(|v| v * v * v);
     let sum = (sharp[0] + sharp[1] + sharp[2]).max(1e-5);
@@ -164,7 +186,10 @@ pub fn refine(
             let corners = [t[0], t[1], t[2]].map(|i| vertices[i as usize]);
             // The outside face carries the relief; the inside and the cut
             // edge only need to be smooth.
-            let side = corners.iter().map(|v| v.wear[3]).fold(f32::INFINITY, f32::min);
+            let side = corners
+                .iter()
+                .map(|v| v.wear[3])
+                .fold(f32::INFINITY, f32::min);
             let outside = side > 0.5;
             let levels = if outside {
                 refinement.levels
@@ -174,7 +199,13 @@ pub fn refine(
                 0
             };
             let relief = refinement.relief.as_ref().filter(|_| outside);
-            triangle(&corners, levels, relief, &mut out_vertices, &mut out_indices);
+            triangle(
+                &corners,
+                levels,
+                relief,
+                &mut out_vertices,
+                &mut out_indices,
+            );
         }
         ranges.push(first..out_indices.len() as u32);
     }
@@ -206,7 +237,8 @@ fn triangle(
                 .map(|k| (flat - normal[k] * (flat - p[k]).dot(normal[k])) * w[k])
                 .sum();
             let mut position = flat.lerp(curved, PULL);
-            let shading = (normal[0] * w[0] + normal[1] * w[1] + normal[2] * w[2]).normalize_or(normal[0]);
+            let shading =
+                (normal[0] * w[0] + normal[1] * w[1] + normal[2] * w[2]).normalize_or(normal[0]);
             let uv = Vec2::new(lerp(w, &|v| v.uv[0]), lerp(w, &|v| v.uv[1]));
             if let Some(relief) = relief {
                 // Tops stay where the cloth is; the furrows sink.
@@ -257,7 +289,10 @@ mod tests {
             flat(Vec3::X, Vec2::X),
             flat(Vec3::Y, Vec2::Y),
         ];
-        let refinement = Refinement { levels: 3, relief: None };
+        let refinement = Refinement {
+            levels: 3,
+            relief: None,
+        };
         let (v, i, ranges) = refine(&vertices, &[0, 1, 2], &[(0..3, refinement)]);
         assert_eq!(i.len() / 3, 64);
         assert_eq!(ranges, vec![0..192]);
@@ -278,11 +313,20 @@ mod tests {
         ];
         let refinement = Refinement {
             levels: 5,
-            relief: Some(Relief::Ribs { count: 4.0, depth: 0.001 }),
+            relief: Some(Relief::Ribs {
+                count: 4.0,
+                depth: 0.001,
+            }),
         };
         let (v, _, _) = refine(&vertices, &[0, 1, 2], &[(0..3, refinement)]);
-        let lowest = v.iter().map(|v| v.position[2]).fold(f32::INFINITY, f32::min);
-        let highest = v.iter().map(|v| v.position[2]).fold(f32::NEG_INFINITY, f32::max);
+        let lowest = v
+            .iter()
+            .map(|v| v.position[2])
+            .fold(f32::INFINITY, f32::min);
+        let highest = v
+            .iter()
+            .map(|v| v.position[2])
+            .fold(f32::NEG_INFINITY, f32::max);
         assert!(lowest < -0.0008, "{lowest}");
         assert!(highest.abs() < 1e-5, "{highest}");
     }
@@ -293,14 +337,20 @@ mod tests {
         assert_eq!(hash(0), 129_708_002);
         let (offsets, weights) = stochastic_tiles(Vec2::new(0.3, 0.7));
         assert!((weights.iter().sum::<f32>() - 1.0).abs() < 1e-5);
-        assert!(offsets.iter().all(|o| (0.0..1.0).contains(&o.x) && (0.0..1.0).contains(&o.y)));
+        assert!(
+            offsets
+                .iter()
+                .all(|o| (0.0..1.0).contains(&o.x) && (0.0..1.0).contains(&o.y))
+        );
         // Deterministic.
         assert_eq!(stochastic_tiles(Vec2::new(0.3, 0.7)).0, offsets);
     }
 
     #[test]
     fn a_height_field_samples_like_the_gpu() {
-        let surface: Vec<[u8; 4]> = (0..16).map(|i| [0, 0, 0, if i % 2 == 0 { 0 } else { 255 }]).collect();
+        let surface: Vec<[u8; 4]> = (0..16)
+            .map(|i| [0, 0, 0, if i % 2 == 0 { 0 } else { 255 }])
+            .collect();
         let field = HeightField::from_surface(4, 4, &surface, 64);
         // At a texel centre: that texel.
         assert!((field.sample(Vec2::new(0.125, 0.125)) - 0.0).abs() < 1e-6);

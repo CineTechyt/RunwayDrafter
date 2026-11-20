@@ -68,11 +68,22 @@ impl Affine2D {
     };
 
     pub fn scale(s: f32) -> Self {
-        Self { a: s, b: 0.0, c: 0.0, d: s, e: 0.0, f: 0.0 }
+        Self {
+            a: s,
+            b: 0.0,
+            c: 0.0,
+            d: s,
+            e: 0.0,
+            f: 0.0,
+        }
     }
 
     pub fn translate(x: f32, y: f32) -> Self {
-        Self { e: x, f: y, ..Self::IDENTITY }
+        Self {
+            e: x,
+            f: y,
+            ..Self::IDENTITY
+        }
     }
 
     pub fn concat(&self, op: Self) -> Self {
@@ -93,7 +104,6 @@ impl Affine2D {
         )
     }
 }
-
 
 /// Reads vector paths from a PDF file and assembles pattern pieces.
 pub fn import_pattern_pdf(bytes: &[u8], options: &PdfOptions) -> Result<ImportedPattern, IoError> {
@@ -184,8 +194,18 @@ struct PageEntry {
 fn page_entries(bytes: &[u8], objects: &HashMap<u32, PdfObject>) -> Vec<PageEntry> {
     // The catalog the (last) trailer names, else any catalog.
     let root = find_last(bytes, b"/Root")
-        .and_then(|at| references(&String::from_utf8_lossy(&bytes[at..(at + 40).min(bytes.len())])).first().copied())
-        .filter(|n| objects.get(n).is_some_and(|o| has_type(&o.dictionary, "/Catalog")))
+        .and_then(|at| {
+            references(&String::from_utf8_lossy(
+                &bytes[at..(at + 40).min(bytes.len())],
+            ))
+            .first()
+            .copied()
+        })
+        .filter(|n| {
+            objects
+                .get(n)
+                .is_some_and(|o| has_type(&o.dictionary, "/Catalog"))
+        })
         .or_else(|| {
             let mut catalogs: Vec<u32> = objects
                 .iter()
@@ -248,10 +268,20 @@ fn page_entry(objects: &HashMap<u32, PdfObject>, number: u32) -> PageEntry {
     let rect = |key: &str| {
         inherited(key).and_then(|v| {
             let n = numbers(&v);
-            (n.len() == 4).then(|| [n[0].min(n[2]), n[1].min(n[3]), n[0].max(n[2]), n[1].max(n[3])])
+            (n.len() == 4).then(|| {
+                [
+                    n[0].min(n[2]),
+                    n[1].min(n[3]),
+                    n[0].max(n[2]),
+                    n[1].max(n[3]),
+                ]
+            })
         })
     };
-    let dictionary = objects.get(&number).map(|o| o.dictionary.as_str()).unwrap_or("");
+    let dictionary = objects
+        .get(&number)
+        .map(|o| o.dictionary.as_str())
+        .unwrap_or("");
     let contents = dictionary_value(dictionary, "/Contents")
         .map(|value| {
             references(value)
@@ -281,7 +311,10 @@ fn has_type(dictionary: &str, name: &str) -> bool {
     while let Some(found) = dictionary[search..].find("/Type") {
         let after = dictionary[search + found + 5..].trim_start();
         if let Some(rest) = after.strip_prefix(name)
-            && rest.chars().next().is_none_or(|c| !c.is_ascii_alphanumeric())
+            && rest
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_ascii_alphanumeric())
         {
             return true;
         }
@@ -332,7 +365,10 @@ impl ToUnicode {
         };
         let code = |b: &[u8]| b.iter().fold(0u32, |v, &x| (v << 8) | u32::from(x));
         let utf16 = |b: &[u8]| {
-            let units: Vec<u16> = b.chunks(2).map(|c| u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])).collect();
+            let units: Vec<u16> = b
+                .chunks(2)
+                .map(|c| u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)]))
+                .collect();
             String::from_utf16_lossy(&units)
         };
         let mut mode = "";
@@ -442,7 +478,11 @@ impl Font {
                     None if self.code_bytes == 1 => char::from(chunk[0]).to_string(),
                     None => String::new(),
                 };
-                let width = self.widths.get(&code).copied().unwrap_or(self.default_width);
+                let width = self
+                    .widths
+                    .get(&code)
+                    .copied()
+                    .unwrap_or(self.default_width);
                 (text, code, width / 1000.0)
             })
             .collect()
@@ -471,7 +511,9 @@ fn cid_widths(array: &str, out: &mut HashMap<u32, f32>) {
                 list = None;
             }
             _ => {
-                let Ok(value) = token.parse::<f32>() else { continue };
+                let Ok(value) = token.parse::<f32>() else {
+                    continue;
+                };
                 if let Some((first, index)) = list.as_mut() {
                     out.insert(*first + *index, value);
                     *index += 1;
@@ -514,10 +556,38 @@ impl Reader<'_> {
         let [x0, y0, x1, y1] = media;
         // As displayed: rotated clockwise by /Rotate, lower-left corner at 0.
         let view = match entry.rotate {
-            90 => Affine2D { a: 0.0, b: -1.0, c: 1.0, d: 0.0, e: -y0, f: x1 },
-            180 => Affine2D { a: -1.0, b: 0.0, c: 0.0, d: -1.0, e: x1, f: y1 },
-            270 => Affine2D { a: 0.0, b: 1.0, c: -1.0, d: 0.0, e: y1, f: -x0 },
-            _ => Affine2D { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: -x0, f: -y0 },
+            90 => Affine2D {
+                a: 0.0,
+                b: -1.0,
+                c: 1.0,
+                d: 0.0,
+                e: -y0,
+                f: x1,
+            },
+            180 => Affine2D {
+                a: -1.0,
+                b: 0.0,
+                c: 0.0,
+                d: -1.0,
+                e: x1,
+                f: y1,
+            },
+            270 => Affine2D {
+                a: 0.0,
+                b: 1.0,
+                c: -1.0,
+                d: 0.0,
+                e: y1,
+                f: -x0,
+            },
+            _ => Affine2D {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: -x0,
+                f: -y0,
+            },
         };
         let base = Affine2D::scale(scale).concat(view);
         let (w, h) = (x1 - x0, y1 - y0);
@@ -535,7 +605,11 @@ impl Reader<'_> {
 
         let mut content = Vec::new();
         for number in &entry.contents {
-            if let Some(data) = self.objects.get(number).and_then(|o| decode_stream(self.bytes, o)) {
+            if let Some(data) = self
+                .objects
+                .get(number)
+                .and_then(|o| decode_stream(self.bytes, o))
+            {
                 // Streams of one page continue each other.
                 content.extend_from_slice(&data);
                 content.push(b'\n');
@@ -681,12 +755,16 @@ impl Reader<'_> {
                     {
                         pending_subpaths.push(sub);
                     }
-                    let pt = state.ctm.transform(args[args.len() - 2], args[args.len() - 1]);
+                    let pt = state
+                        .ctm
+                        .transform(args[args.len() - 2], args[args.len() - 1]);
                     current_point = Some(pt);
                     current_subpath = Some(RawSubpath::new(pt));
                 }
                 "l" if args.len() >= 2 => {
-                    let pt = state.ctm.transform(args[args.len() - 2], args[args.len() - 1]);
+                    let pt = state
+                        .ctm
+                        .transform(args[args.len() - 2], args[args.len() - 1]);
                     if let Some(sub) = &mut current_subpath {
                         sub.segments.push(RawSegment::Line { to: pt });
                         current_point = Some(pt);
@@ -813,8 +891,13 @@ impl Reader<'_> {
                                     for ch in text.chars() {
                                         glyphs.push((ch, x * unit));
                                     }
-                                    let space = if single && code == 32 { word_spacing } else { 0.0 };
-                                    x += (width * font_size + char_spacing + space) * horizontal_scale;
+                                    let space = if single && code == 32 {
+                                        word_spacing
+                                    } else {
+                                        0.0
+                                    };
+                                    x += (width * font_size + char_spacing + space)
+                                        * horizontal_scale;
                                 }
                             }
                         }
@@ -916,11 +999,13 @@ impl Reader<'_> {
         if depth >= 12 {
             return;
         }
-        let Some(xobjects) = dictionary_value(resources, "/XObject").map(|v| deref(self.objects, v))
+        let Some(xobjects) =
+            dictionary_value(resources, "/XObject").map(|v| deref(self.objects, v))
         else {
             return;
         };
-        let Some(number) = dictionary_value(&xobjects, name).and_then(|v| references(v).first().copied())
+        let Some(number) =
+            dictionary_value(&xobjects, name).and_then(|v| references(v).first().copied())
         else {
             return;
         };
@@ -984,7 +1069,13 @@ fn parse_content_stream(stream: &[u8], scale: f32, drawing: &mut RawVectorDrawin
         objects: &objects,
         fonts: HashMap::new(),
     };
-    reader.run(stream, "", State::new(Affine2D::scale(scale), None), 0, drawing);
+    reader.run(
+        stream,
+        "",
+        State::new(Affine2D::scale(scale), None),
+        0,
+        drawing,
+    );
 }
 
 /// The bytes of a PDF string token: `(literal)` or `<hex>`.
@@ -1111,8 +1202,7 @@ fn index_objects(bytes: &[u8]) -> HashMap<u32, PdfObject> {
             continue;
         };
         let value = |key: &str| {
-            dictionary_value(&pack.dictionary, key)
-                .and_then(|v| v.trim().parse::<usize>().ok())
+            dictionary_value(&pack.dictionary, key).and_then(|v| v.trim().parse::<usize>().ok())
         };
         let (Some(count), Some(first)) = (value("/N"), value("/First")) else {
             continue;
@@ -1229,8 +1319,92 @@ fn dictionary_value<'a>(dictionary: &'a str, key: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
+/// Adobe ASCII85 decoding used in PDF streams.
+fn decode_ascii85(mut input: &[u8]) -> Option<Vec<u8>> {
+    if input.starts_with(b"<~") {
+        input = &input[2..];
+    }
+    if let Some(pos) = input.windows(2).position(|w| w == b"~>") {
+        input = &input[..pos];
+    }
 
-/// The decoded data of a stream object (Flate or uncompressed).
+    let mut out = Vec::with_capacity(input.len());
+    let mut tuple: u32 = 0;
+    let mut count = 0;
+
+    for &b in input {
+        if b.is_ascii_whitespace() || b == 0 {
+            continue;
+        }
+        if b == b'z' && count == 0 {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        if !(b'!'..=b'u').contains(&b) {
+            return None;
+        }
+        tuple = tuple.wrapping_mul(85) + (b - b'!') as u32;
+        count += 1;
+        if count == 5 {
+            out.push((tuple >> 24) as u8);
+            out.push((tuple >> 16) as u8);
+            out.push((tuple >> 8) as u8);
+            out.push(tuple as u8);
+            tuple = 0;
+            count = 0;
+        }
+    }
+
+    if count > 0 {
+        if count == 1 {
+            return None;
+        }
+        let pad = 5 - count;
+        for _ in 0..pad {
+            tuple = tuple.wrapping_mul(85) + 84;
+        }
+        let bytes = [
+            (tuple >> 24) as u8,
+            (tuple >> 16) as u8,
+            (tuple >> 8) as u8,
+            tuple as u8,
+        ];
+        out.extend_from_slice(&bytes[..count - 1]);
+    }
+
+    Some(out)
+}
+
+/// Hex decoding used in PDF streams.
+fn decode_ascii_hex(input: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut high: Option<u8> = None;
+    for &b in input {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        if b == b'>' {
+            break;
+        }
+        let nibble = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return None,
+        };
+        if let Some(h) = high.take() {
+            out.push((h << 4) | nibble);
+        } else {
+            high = Some(nibble);
+        }
+    }
+    if let Some(h) = high {
+        out.push(h << 4);
+    }
+    Some(out)
+}
+
+/// The decoded data of a stream object (Flate, ASCII85, or uncompressed).
 fn decode_stream(bytes: &[u8], object: &PdfObject) -> Option<Vec<u8>> {
     let whole = &bytes[object.stream.clone()?];
     let mut end = whole.len();
@@ -1238,25 +1412,42 @@ fn decode_stream(bytes: &[u8], object: &PdfObject) -> Option<Vec<u8>> {
         end -= 1;
     }
     let trimmed = &whole[..end];
-    if object.dictionary.contains("/FlateDecode")
-        || object.dictionary.contains("/Fl ")
-        || object.dictionary.contains("/Fl/")
-    {
-        // Compressed data may itself end in a byte that reads as a line
-        // break: inflate everything up to `endstream` first (the end of
-        // line after the data does no harm), the trimmed data second.
-        let inflate = |raw: &[u8]| {
-            miniz_oxide::inflate::decompress_to_vec_zlib(raw)
+    let dict = &object.dictionary;
+
+    let has_ascii85 = dict.contains("/ASCII85Decode") || dict.contains("/A85");
+    let has_hex = dict.contains("/ASCIIHexDecode") || dict.contains("/AHx");
+    let has_flate = dict.contains("/FlateDecode")
+        || dict.contains("/Fl ")
+        || dict.contains("/Fl/")
+        || dict.contains("/Fl]");
+
+    let raw = if has_ascii85 || trimmed.ends_with(b"~>") || trimmed.starts_with(b"<~") {
+        decode_ascii85(trimmed).or_else(|| decode_ascii85(whole))?
+    } else if has_hex {
+        decode_ascii_hex(trimmed).or_else(|| decode_ascii_hex(whole))?
+    } else {
+        trimmed.to_vec()
+    };
+
+    if has_flate {
+        let inflate = |raw_data: &[u8]| {
+            miniz_oxide::inflate::decompress_to_vec_zlib(raw_data)
                 .ok()
-                .or_else(|| miniz_oxide::inflate::decompress_to_vec(raw).ok())
+                .or_else(|| miniz_oxide::inflate::decompress_to_vec(raw_data).ok())
         };
-        inflate(whole)
-            .or_else(|| inflate(&whole[..end.max(whole.len().saturating_sub(1))]))
-            .or_else(|| inflate(trimmed))
-    } else if object.dictionary.contains("/Filter") {
+        inflate(&raw)
+            .or_else(|| {
+                if raw.len() > 1 {
+                    inflate(&raw[..raw.len() - 1])
+                } else {
+                    None
+                }
+            })
+            .or_else(|| inflate(whole))
+    } else if dict.contains("/Filter") && !has_ascii85 && !has_hex {
         None // other encodings are not supported
     } else {
-        Some(trimmed.to_vec())
+        Some(raw)
     }
 }
 
@@ -1282,7 +1473,6 @@ fn extract_all_streams(bytes: &[u8]) -> Vec<Vec<u8>> {
         // Look for preceding dictionary to check for /Filter /FlateDecode.
         let header_start = stream_pos.saturating_sub(400);
         let header_bytes = &bytes[header_start..stream_pos];
-        let is_flate = contains_flate_filter(header_bytes);
 
         // Find "endstream"
         let Some(end_rel) = find_subsequence(&bytes[data_start..], b"endstream") else {
@@ -1300,16 +1490,27 @@ fn extract_all_streams(bytes: &[u8]) -> Vec<Vec<u8>> {
         let raw_stream = &bytes[data_start..data_end];
         cursor = data_start + end_rel + 9;
 
+        let is_flate = contains_flate_filter(header_bytes);
+        let is_ascii85 = header_bytes.windows(14).any(|w| w == b"/ASCII85Decode")
+            || header_bytes.windows(4).any(|w| w == b"/A85")
+            || raw_stream.ends_with(b"~>");
+
+        let data = if is_ascii85 {
+            decode_ascii85(raw_stream).unwrap_or_else(|| raw_stream.to_vec())
+        } else {
+            raw_stream.to_vec()
+        };
+
         if is_flate {
-            if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec_zlib(raw_stream) {
+            if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec_zlib(&data) {
                 streams.push(decompressed);
-            } else if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec(raw_stream) {
+            } else if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec(&data) {
                 streams.push(decompressed);
             }
         } else {
             // Uncompressed stream: check if it contains vector commands
-            if contains_vector_commands(raw_stream) {
-                streams.push(raw_stream.to_vec());
+            if contains_vector_commands(&data) {
+                streams.push(data);
             }
         }
     }
@@ -1561,7 +1762,10 @@ trailer << /Root 1 0 R >>
         assert_eq!((layout.joined, layout.columns, layout.rows), (2, 2, 1));
         assert_eq!(pattern.pieces.len(), 1, "{pattern:#?}");
         let (lo, hi) = pattern.pieces[0].loops[0].bounds;
-        assert!(((hi - lo) - Vec2::new(140.0, 140.0)).abs().max_element() < 0.5, "{lo} {hi}");
+        assert!(
+            ((hi - lo) - Vec2::new(140.0, 140.0)).abs().max_element() < 0.5,
+            "{lo} {hi}"
+        );
 
         // Not joined, the pages lie side by side: two pieces cut open.
         let apart = import_pattern_pdf(
@@ -1646,5 +1850,48 @@ trailer << /Root 1 0 R >>
             outline.segments()[2],
             cad_core::Segment::Cubic { .. }
         ));
+    }
+
+    #[test]
+    fn parse_ascii85_and_flatedecode_pipeline_pdf() {
+        let uncompressed = b"0 0 m 100 0 l 100 100 l 0 100 l h S\n";
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(uncompressed, 6);
+
+        // Encode as ASCII85
+        let mut a85 = Vec::new();
+        for chunk in compressed.chunks(4) {
+            let mut tuple: u32 = 0;
+            for (i, &b) in chunk.iter().enumerate() {
+                tuple |= (b as u32) << (24 - i * 8);
+            }
+            if chunk.len() == 4 && tuple == 0 {
+                a85.push(b'z');
+            } else {
+                let mut chars = [0u8; 5];
+                let mut rem = tuple;
+                for j in (0..5).rev() {
+                    chars[j] = (rem % 85) as u8 + b'!';
+                    rem /= 85;
+                }
+                a85.extend_from_slice(&chars[..chunk.len() + 1]);
+            }
+        }
+        a85.extend_from_slice(b"~>");
+
+        let mut pdf = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.3\n1 0 obj\n<< /Length ");
+        pdf.extend_from_slice(a85.len().to_string().as_bytes());
+        pdf.extend_from_slice(b" /Filter [ /ASCII85Decode /FlateDecode ] >>\nstream\n");
+        pdf.extend_from_slice(&a85);
+        pdf.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<<>>\n%%EOF");
+
+        let options = PdfOptions {
+            scale: 1.0,
+            default_allowance_mm: 10.0,
+            ..Default::default()
+        };
+        let pattern = import_pattern_pdf(&pdf, &options).unwrap();
+        assert_eq!(pattern.pieces.len(), 1);
+        assert_eq!(pattern.pieces[0].loops[0].outline.edge_count(), 4);
     }
 }

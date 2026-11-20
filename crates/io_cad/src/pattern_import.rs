@@ -282,7 +282,11 @@ pub(crate) fn merge_text(labels: Vec<RawLabel>) -> Vec<RawLabel> {
         for label in &line {
             let base = (label.position - origin).dot(direction);
             for i in 0..label.glyphs.len() {
-                glyphs.push((base + label.glyphs[i].1, label.glyphs[i].0, base + label.glyph_end(i)));
+                glyphs.push((
+                    base + label.glyphs[i].1,
+                    label.glyphs[i].0,
+                    base + label.glyph_end(i),
+                ));
             }
         }
         glyphs.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -731,7 +735,11 @@ fn rough_length(path: &RawSubpath) -> f32 {
 /// The direction a path leaves at its end (`at_end`) or its start, pointing
 /// away from the path.
 fn outward(path: &RawSubpath, at_end: bool) -> Vec2 {
-    let Some(segment) = (if at_end { path.segments.last() } else { path.segments.first() }) else {
+    let Some(segment) = (if at_end {
+        path.segments.last()
+    } else {
+        path.segments.first()
+    }) else {
         return Vec2::ZERO;
     };
     let (tip, inner) = if at_end {

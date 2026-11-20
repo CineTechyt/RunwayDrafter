@@ -59,8 +59,14 @@ impl Panel for MaterialPanel {
                     // Real cloths: woven from their drafts, or corduroy.
                     ui.weak("Woven and pile fabrics");
                     for preset in cad_core::fabric_library::presets() {
-                        if ui.selectable_label(fabric.name == preset.name, &preset.name).clicked() {
-                            *fabric = cad_core::Fabric { id: fabric.id, ..preset };
+                        if ui
+                            .selectable_label(fabric.name == preset.name, &preset.name)
+                            .clicked()
+                        {
+                            *fabric = cad_core::Fabric {
+                                id: fabric.id,
+                                ..preset
+                            };
                             changed = true;
                         }
                     }
@@ -173,7 +179,10 @@ impl Panel for MaterialPanel {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("Open maps or U3M…").clicked() {
                         picked = rfd::FileDialog::new()
-                            .add_filter("Fabric maps", &["png", "jpg", "jpeg", "u3m", "u3ma", "zip"])
+                            .add_filter(
+                                "Fabric maps",
+                                &["png", "jpg", "jpeg", "u3m", "u3ma", "zip"],
+                            )
                             .pick_file();
                     }
                     if ui.button("Open folder…").clicked() {
@@ -220,7 +229,12 @@ impl Panel for MaterialPanel {
                             let mut edited = false;
                             for (k, c) in cm.iter_mut().enumerate() {
                                 edited |= ui
-                                    .add(egui::DragValue::new(c).range(0.5..=500.0).speed(0.2).suffix(" cm"))
+                                    .add(
+                                        egui::DragValue::new(c)
+                                            .range(0.5..=500.0)
+                                            .speed(0.2)
+                                            .suffix(" cm"),
+                                    )
                                     .on_hover_text("How much cloth one repeat of the images shows")
                                     .changed();
                                 if k == 0 {

@@ -527,7 +527,10 @@ impl ClothSolver for XpbdSolver {
     }
 
     fn set_grab(&mut self, vertex: u32, position: Vec3, radius: f32, strength: f32) {
-        if self.grab.is_none_or(|(v, _, r, _)| v != vertex || r != radius) {
+        if self
+            .grab
+            .is_none_or(|(v, _, r, _)| v != vertex || r != radius)
+        {
             self.release_held();
             self.grab_patch = grab_patch(&self.fabric_graph, vertex, radius.max(0.01));
             for &(index, weight) in &self.grab_patch {
@@ -794,8 +797,8 @@ impl XpbdSolver {
                 let i = i as usize;
                 let solved = self.contact_scratch[i];
                 let came = (solved - self.step_start[i]).length();
-                let shift = (self.state.positions[i] - solved)
-                    .clamp_length_max(came.max(MIN_PUT_BACK));
+                let shift =
+                    (self.state.positions[i] - solved).clamp_length_max(came.max(MIN_PUT_BACK));
                 self.state.positions[i] = solved + shift;
                 self.state.velocities[i] = Vec3A::ZERO;
                 self.state.previous[i] = self.state.positions[i];
@@ -1021,7 +1024,10 @@ mod tests {
             }
         }
         let patch = grab_patch(&graph, 0, 0.2);
-        assert!(patch.iter().all(|&(v, _)| v < 30), "the other strip stays put");
+        assert!(
+            patch.iter().all(|&(v, _)| v < 30),
+            "the other strip stays put"
+        );
         let weight = |v: u32| patch.iter().find(|p| p.0 == v).map_or(0.0, |p| p.1);
         assert_eq!(weight(0), 1.0);
         assert_eq!(weight(5), 1.0, "the inner part moves as one");
